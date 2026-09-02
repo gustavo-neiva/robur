@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "optparse"
 require "fileutils"
 require "robur/config"
 require "robur/plan"
@@ -143,17 +144,105 @@ module Robur
       puts "Config:  repo .ratchet.conf (PARSED, never sourced)  >  #{conf_dir} (sourced)  >  defaults."
     end
 
-    def run(argv)
+    COMMANDS = %w[init new plan doctor run once selftest stats watch status models fanout fanout-clean].freeze
+
+    # Flags that swallow the NEXT argv item as their value (bash pre_scan's
+    # shift-2 list). Only the tolerant pre-scan needs this; the authoritative
+    # parse is OptionParser and knows its own arity.
+    PRESCAN_VALUE_FLAGS = %w[-p --prompt -s --session -m --models --thinking --turn-timeout --cooldown
+                             --both-wait --step-token --done-token --verify-cmd --agent-cmd
+                             --cache-retention --tail --heartbeat].freeze
+
+    # Tolerant pre-scan (bin/ratchet:44): extract ONLY the subcommand + repo
+    # dir (+ the `new` idea) so the repo conf can load before the
+    # authoritative parse. Skips everything else; never errors.
+    def pre_scan(argv)
       command = nil
       dir = nil
-      argv.each do |a|
+      idea = nil
+      i = 0
+      while i < argv.length
+        a = argv[i]
         case a
-        when "-h", "--help" then usage; return 0
-        when /\A-/ then die("unknown option: #{a} (see --help)")
-        when "doctor", "status", "once" then command = a
-        else dir ||= a
+        when "-d", "--dir" then dir = argv[i + 1]; i += 2
+        when /\A--dir=/ then dir = a.sub(/\A--dir=/, ""); i += 1
+        when *PRESCAN_VALUE_FLAGS then i += 2
+        when *COMMANDS then command ||= a; i += 1
+        when /\A-/ then i += 1
+        else
+          if command == "new" && idea.nil? then idea = a
+          elsif dir.nil? then dir = a
+          end
+          i += 1
         end
       end
+      command ||= "run"
+      [command, dir, idea]
+    end
+
+    # Authoritative parse (bin/ratchet:75 parse_args): OptionParser over the
+    # full flag surface; unknown option -> bash `die` message shape (exit 1).
+    # Returns the conf-key => value overrides hash (values are strings, the
+    # same "1"/"0"/raw-text encoding .ratchet.conf uses).
+    def parse!(argv, command, prescan_dir, _idea)
+      o = {}
+      op = OptionParser.new do |p|
+        p.on("-d DIR", "--dir=DIR") { |v| o[:dir] = v }
+        p.on("-p TEXT", "--prompt=TEXT") { |v| o["PROMPT_OVERRIDE"] = v }
+        p.on("-s NAME", "--session=NAME") { |v| o["SESSION_NAME"] = v }
+        p.on("-m LIST", "--models=LIST") { |v| o["MODELS"] = v }
+        p.on("--agent-cmd=CMD") { |v| o["AGENT_CMD"] = v }
+        p.on("--thinking=LEVEL") { |v| o["THINKING"] = v }
+        p.on("--turn-timeout=N") { |v| o["TURN_TIMEOUT"] = v }
+        p.on("--cooldown=N") { |v| o["COOLDOWN"] = v }
+        p.on("--both-wait=N") { |v| o["BOTH_WAIT"] = v }
+        p.on("--step-token=T") { |v| o["STEP_TOKEN"] = v }
+        p.on("--done-token=T") { |v| o["DONE_TOKEN"] = v }
+        p.on("--commit") { o["COMMIT_EACH_TURN"] = "1" }
+        p.on("--no-commit") { o["COMMIT_EACH_TURN"] = "0" }
+        p.on("--verify-cmd=CMD") { |v| o["VERIFY_CMD"] = v }
+        p.on("--no-verify-gate") { o["COMMIT_VERIFY_GATE"] = "0" }
+        p.on("--push") { o["PUSH_ON_DONE"] = "1" }
+        p.on("--pr") { o["OPEN_PR"] = "1"; o["PUSH_ON_DONE"] = "1" }
+        p.on("--approve") { o["APPROVE_UI"] = "1" }
+        p.on("--resume") { o["RESUME_SESSION"] = "1" }
+        p.on("--no-resume") { o["RESUME_SESSION"] = "0" }
+        p.on("--cache-retention=R") { |v| o["CACHE_RETENTION"] = v }
+        p.on("--no-sanitize") { o["SANITIZE_THINKING"] = "0" }
+        p.on("--tail=N") { |v| o["TAIL_LINES"] = v }
+        p.on("--heartbeat=N") { |v| o["HEARTBEAT"] = v }
+        p.on("--stream") { o["STREAM_AGENT"] = "1" }
+        p.on("--cheap") { o["CHEAP_MODE"] = "1" }
+        p.on("--auto") { o["AUTO_PLAN"] = "1" }
+        p.on("--quiet") { o["QUIET"] = "1"; o["STREAM_AGENT"] = "0" }
+        p.on("--selftest") { o[:cmd] = "selftest" }
+        p.on("--stats") { o[:cmd] = "stats" }
+        p.on("--watch") { o[:cmd] ||= "watch" }
+        p.on("-v", "--verbose") { o["VERBOSE"] = "1" }
+        p.on("-h", "--help") { usage; exit 0 }
+      end
+      begin
+        # parse! mutates: options are stripped, POSITIONALS are what's left.
+        op.parse!(argv)
+      rescue OptionParser::ParseError => e
+        die "unknown option: #{e.args.first} (see --help)"
+      end
+      argv.each do |a|
+        next if a == command || a == prescan_dir # subcommand / pre_scanned dir (bin/ratchet:99,110)
+        if command == "new" && o["PROMPT_OVERRIDE"].nil?
+          o["PROMPT_OVERRIDE"] = a # for `new`, the idea rides in the prompt slot
+        else
+          die "unexpected argument: #{a}"
+        end
+      end
+      o
+    end
+
+    def run(argv)
+      command, dir, idea = pre_scan(argv)
+      @overrides = parse!(argv, command, dir, idea)
+      dir = @overrides.delete(:dir) || dir
+      command = @overrides.delete(:cmd) || command
 
       case command
       when "doctor"
@@ -165,6 +254,8 @@ module Robur
       when "once"
         warn_conf_issues(dir || ".")
         cmd_once(dir)
+      when *COMMANDS
+        die "#{command}: not ported yet (M6)"
       else die("unknown command: #{command.inspect}")
       end
     end
@@ -424,7 +515,7 @@ module Robur
       FileUtils.mkdir_p(log_dir)
       FileUtils.mkdir_p(File.join(dir, ".ratchet"))
       File.write(File.join(dir, ".ratchet", "last-log"), "#{log_dir}\n")
-      @quiet = Robur::Config.load(dir).values["QUIET"] == "1" # main() parses conf before preflight
+      @quiet = Robur::Config.load(dir, @overrides || {}).values["QUIET"] == "1" # main() parses conf before preflight
       @loop_log = File.join(log_dir, "loop.log") # bash main() wires LOOP_LOG before preflight
       emit "preflight (doctor) ..."
       require "stringio"
@@ -442,7 +533,7 @@ module Robur
 
     # One turn of bin/ratchet's main loop in --once mode (bin/ratchet:520-866).
     def run_once_loop(dir)
-      conf = Robur::Config.load(dir).values
+      conf = Robur::Config.load(dir, @overrides || {}).values
       plan = Plan.new(File.join(dir, conf["TRACKER_FILE"] || "PLAN.md"))
       models = Tier.chain_for("build", conf).to_s.split(",").reject(&:empty?)
       die "no models configured (-m chain, MODELS in .ratchet.conf, or global conf)." if models.empty?
