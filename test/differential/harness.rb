@@ -31,7 +31,10 @@ module Robur
     ].freeze
 
     Scenario = Struct.new(:name, :argv, :setup, :env, keyword_init: true) do
+      # setup: optional proc called with the fresh fixture repo path, per run,
+      # so each side gets an identical pre-state.
       def initialize(name:, argv:, setup: nil, env: {})
+        raise ArgumentError, "setup must be callable" if setup && !setup.respond_to?(:call)
         super
       end
     end
@@ -72,6 +75,7 @@ module Robur
             FileUtils.mkdir_p(r[:home])
             repo = File.join(tmp, "repo-#{File.basename(r[:home])}")
             pristine_fixture_repo(repo)
+            scenario.setup&.call(repo)
             env = {
               "RATCHET_HOME" => r[:home],
               "AGENT_CMD" => FAKE_AGENT,
