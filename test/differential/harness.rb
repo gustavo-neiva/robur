@@ -27,6 +27,7 @@ module Robur
       [/\d+\.\d+s\b/, "<elapsed>s"],
       [/\bin \d+s\b/, "in <elapsed>s"],
       [/\bpid[=: ]+\d+\b/i, "pid<PID>"],
+      [/\b[A-Za-z0-9-]+-\d{6}\b/, "<slug>"], # project_slug: cksum of abs path differs per side
     ].freeze
 
     Scenario = Struct.new(:name, :argv, :setup, :env, keyword_init: true) do
@@ -57,8 +58,10 @@ module Robur
     end
 
     class Runner
-      def self.normalize(text, temp_root: nil)
+      def self.normalize(text, temp_root: nil, home: nil)
+        text = text.gsub(home, "<RATCHET_HOME>") if home
         text = text.gsub(temp_root, "<TMP>") if temp_root
+        text = text.scrub # baseline logs may carry invalid UTF-8
         NORMALIZATIONS.each { |re, rep| text = text.gsub(re, rep) }
         text
       end
@@ -74,7 +77,9 @@ module Robur
           }
           results = runs.transform_values do |r|
             FileUtils.mkdir_p(r[:home])
-            repo = File.join(tmp, "repo-#{File.basename(r[:home])}")
+            # Repo inside the side's home dir so both sides share the repo
+            # basename — the home-path normalization then covers repo paths.
+            repo = File.join(r[:home], "repo")
             pristine_fixture_repo(repo)
             scenario.setup&.call(repo)
             env = {
@@ -86,7 +91,7 @@ module Robur
             {
               stdout: out, stderr: err, exit: st.exitstatus,
               files: snapshot_files(repo, r[:home]), git_log: git_log(repo),
-              tmp: tmp,
+              tmp: tmp, home: r[:home],
             }
           end
           build_report(scenario, results)
@@ -121,7 +126,7 @@ module Robur
         files = {}
         [File.join(repo, ".ratchet"), home].each do |root|
           Dir.glob("#{root}/**/*", File::FNM_DOTMATCH).sort.each do |path|
-            next if File.directory?(path)
+            next if File.directory?(path) || path.include?("/.git/")
             key = path.delete_prefix("#{root}/")
             key = "home/#{key}" unless root.end_with?(".ratchet")
             files[key] = File.read(path)
@@ -137,22 +142,22 @@ module Robur
       def build_report(scenario, results)
         base, cand = results[:baseline], results[:candidate]
         surfaces = {
-          "stdout" => [norm(base[:stdout], base[:tmp]), norm(cand[:stdout], cand[:tmp])],
-          "stderr" => [norm(base[:stderr], base[:tmp]), norm(cand[:stderr], cand[:tmp])],
+          "stdout" => [norm(base[:stdout], base[:tmp], base[:home]), norm(cand[:stdout], cand[:tmp], cand[:home])],
+          "stderr" => [norm(base[:stderr], base[:tmp], base[:home]), norm(cand[:stderr], cand[:tmp], cand[:home])],
           "exit code" => [base[:exit].to_s, cand[:exit].to_s],
           "git log" => [base[:git_log], cand[:git_log]],
         }
         keys = (base[:files].keys | cand[:files].keys).sort
         keys.each do |k|
-          surfaces["file #{k}"] = [norm(base[:files][k].to_s, base[:tmp]),
-                                   norm(cand[:files][k].to_s, cand[:tmp])]
+          surfaces["file #{k}"] = [norm(base[:files][k].to_s, base[:tmp], base[:home]),
+                                   norm(cand[:files][k].to_s, cand[:tmp], cand[:home])]
         end
         # metrics.tsv and loop.log live under RATCHET_HOME, already in files
         DiffReport.new(scenario, surfaces)
       end
 
-      def norm(text, tmp)
-        self.class.normalize(text, temp_root: tmp)
+      def norm(text, tmp, home = nil)
+        self.class.normalize(text, temp_root: tmp, home: home)
       end
     end
   end

@@ -17,6 +17,13 @@ keys, session/journal file formats, tokens).
 - **PLAN.md**: task roadmap (tracker grammar is documented at the top).
 - **LEARNINGS.md**: gotchas discovered while working here.
 
+## Gates
+
+Run both after any change:
+
+    ruby -Ilib -e 'Dir["test/**/*_test.rb"].each{|f| require File.expand_path(f)}'   # unit gate: exit 0
+    ruby test/differential/run.rb --suite milestone-1                                # diff gate: must print "0 diffs"
+
 ## Gotchas
 
 - Never put a `#` in any `.ratchet.conf` value — `parse_repo_conf` truncates at

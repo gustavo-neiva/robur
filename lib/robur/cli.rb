@@ -122,6 +122,7 @@ module Robur
 
     def usage(conf_dir = File.join(ratchet_home, "conf"))
       print HELP_BODY
+      puts
       puts "Config:  repo .ratchet.conf (PARSED, never sourced)  >  #{conf_dir} (sourced)  >  defaults."
     end
 
@@ -130,7 +131,7 @@ module Robur
       dir = nil
       argv.each do |a|
         case a
-        when "-h", "--help" then usage and return 0
+        when "-h", "--help" then usage; return 0
         when /\A-/ then die("unknown option: #{a} (see --help)")
         when "doctor" then command = a
         else dir ||= a

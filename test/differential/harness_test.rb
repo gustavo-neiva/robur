@@ -3,10 +3,10 @@ require_relative "harness"
 require "fileutils"
 require "tmpdir"
 
-# T1.5 done-criteria. The real baseline/candidate pair has no CLI parity yet
-# (the CLI port lands in M6), so the harness self-test runs the same binary on
-# both sides: identical output proves the plumbing reports zero differences,
-# and a deliberately injected space proves it catches exactly that difference.
+# T1.5 done-criteria. The self-test runs the same binary on both sides:
+# identical output proves the plumbing reports zero differences, and a
+# deliberately injected space (into the copied cli.rb) proves it catches
+# exactly that difference.
 class DifferentialHarnessTest < Minitest::Test
   H = Robur::Differential
 
@@ -31,14 +31,18 @@ class DifferentialHarnessTest < Minitest::Test
     Dir.mktmpdir("robur-mutant") do |dir|
       # exe/robur resolves lib/ relative to itself, so the mutant needs the
       # real lib/ beside it — a lone copy dies with LoadError before printing.
-      path = File.join(dir, "exe/robur")
-      src = File.read(H::CANDIDATE_CMD)
-      assert_includes src, "usage: robur", "usage text moved; update the injection"
-      FileUtils.cp_r(File.join(H::ROBUR_ROOT, "lib"), File.join(dir, "lib"))
-      FileUtils.mkdir_p(File.dirname(path))
-      File.write(path, src.sub("usage: robur", "usage:  robur"))
-      FileUtils.chmod(0o755, path)
-      report = H::Runner.new.run(help_scenario, candidate_cmd: path)
+      libdir = File.join(dir, "lib")
+      FileUtils.cp_r(File.join(H::ROBUR_ROOT, "lib"), libdir)
+      cli = File.join(libdir, "robur/cli.rb")
+      src = File.read(cli)
+      assert_includes src, 'Usage: #{PROG}', "usage text moved; update the injection"
+      FileUtils.mkdir_p(File.dirname(File.join(dir, "exe/robur")))
+      File.write(cli, src.sub('Usage: #{PROG}', 'Usage:  #{PROG}'))
+      # a copy of exe/robur beside the mutated lib/ so it resolves that lib/
+      exe = File.join(dir, "exe/robur")
+      FileUtils.cp(H::CANDIDATE_CMD, exe)
+      FileUtils.chmod(0o755, exe)
+      report = H::Runner.new.run(help_scenario, candidate_cmd: exe)
       assert_equal ["stdout"], report.differences
     end
   end

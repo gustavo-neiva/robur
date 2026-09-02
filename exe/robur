@@ -10,10 +10,6 @@ lib = File.expand_path("../lib", File.dirname(self_path))
 $LOAD_PATH.unshift(lib) unless $LOAD_PATH.include?(lib)
 
 require "robur"
+require "robur/cli"
 
-puts "robur #{Robur::VERSION} — Ruby replacement for the ratchet loop"
-puts
-puts "usage: robur <command> [options]"
-puts
-puts "commands: (none yet — see PLAN.md)"
-exit 0
+exit(Robur::CLI.run(ARGV) || 0)
