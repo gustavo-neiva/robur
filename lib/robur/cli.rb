@@ -14,6 +14,7 @@ require "robur/render"
 require "robur/observability"
 require "robur/state"
 require "robur/commands"
+require "robur/models_cmd"
 
 module Robur
   # CLI surfaces ported so far: --help, unknown-flag, doctor. Differential
@@ -248,6 +249,11 @@ module Robur
 
     def run(argv)
       command, dir, idea = pre_scan(argv)
+      # `models` owns its own arg parse (model ids + --tier/--pos would trip
+      # the general OptionParser) — dispatched right after the conf load,
+      # BEFORE the authoritative parse, same as bin/ratchet main() step 2.5.
+      return cmd_models(argv, dir) if command == "models"
+
       @overrides = parse!(argv, command, dir, idea)
       dir = @overrides.delete(:dir) || dir
       command = @overrides.delete(:cmd) || command
@@ -280,6 +286,22 @@ module Robur
 
     def cmd_init(dir)
       Commands.init(File.expand_path(dir || Dir.pwd), emit: method(:emit))
+    rescue StandardError => e
+      die e.message
+    end
+
+    # bin/ratchet main() step 2.5: strips the FIRST literal "models" token
+    # from argv (wherever it falls) and hands the rest to cmd_models, after
+    # the global+repo conf load but before parse_args.
+    def cmd_models(argv, dir)
+      warn_conf_issues(dir || ".")
+      repo_dir = File.expand_path(dir || Dir.pwd)
+      conf = Robur::Config.load(repo_dir).values
+      margs = argv.dup
+      idx = margs.index("models")
+      margs.delete_at(idx) if idx
+      Robur::ModelsCmd.run(margs, config: conf, dir: repo_dir, emit: method(:emit))
+      0
     rescue StandardError => e
       die e.message
     end
