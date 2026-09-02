@@ -12,3 +12,4 @@
 - Differential parity needs per-side path normalization, not just tmp-root: each side's RATCHET_HOME basename ("home-base"/"home-cand") and the repo path (now `<home>/repo`, shared basename) leak into stdout and `last-log`; the slug's 6-digit cksum of the abs path also differs per side and is normalized to `<slug>`.
 - Baseline help prints a blank line between the usage body and the `Config:` line, and baseline log files can carry invalid UTF-8 — the harness scrubs before gsub or it raises ArgumentError.
 - `exe/robur` resolves `lib/` beside itself, so a differential mutant must copy BOTH `exe/robur` and `lib/` into the shadow tree; mutating a lib copy while pointing candidate_cmd at the real exe silently tests the unmutated code.
+- M1 self-QA (T1.7): both gates green — unit gate 4 runs / 9 assertions, 0 failures; diff gate `0 diffs across 3 scenarios` (help, unknown-flag, doctor). Harness invocation lives in AGENTS.md under Gates.
