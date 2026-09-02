@@ -27,7 +27,6 @@ module Robur
       [/\d+\.\d+s\b/, "<elapsed>s"],
       [/\bin \d+s\b/, "in <elapsed>s"],
       [/\bpid[=: ]+\d+\b/i, "pid<PID>"],
-      [/\bPID=\d+\b/, "PID=<PID>"],
     ].freeze
 
     Scenario = Struct.new(:name, :argv, :setup, :env, keyword_init: true) do
@@ -64,12 +63,14 @@ module Robur
         text
       end
 
-      # Returns a DiffReport for one scenario.
-      def run(scenario)
+      # Returns a DiffReport for one scenario. The command pair is injectable
+      # so the harness can prove itself (zero-diff control, injected mutation)
+      # before the real pair has CLI parity — see test/differential/harness_test.rb.
+      def run(scenario, baseline_cmd: BASELINE_CMD, candidate_cmd: CANDIDATE_CMD)
         Dir.mktmpdir("robur-diff") do |tmp|
           runs = {
-            baseline: {cmd: BASELINE_CMD, home: File.join(tmp, "home-base")},
-            candidate: {cmd: CANDIDATE_CMD, home: File.join(tmp, "home-cand")},
+            baseline: {cmd: baseline_cmd, home: File.join(tmp, "home-base")},
+            candidate: {cmd: candidate_cmd, home: File.join(tmp, "home-cand")},
           }
           results = runs.transform_values do |r|
             FileUtils.mkdir_p(r[:home])
@@ -134,7 +135,8 @@ module Robur
         }
         keys = (base[:files].keys | cand[:files].keys).sort
         keys.each do |k|
-          surfaces["file #{k}"] = [base[:files][k].to_s, cand[:files][k].to_s]
+          surfaces["file #{k}"] = [norm(base[:files][k].to_s, base[:tmp]),
+                                   norm(cand[:files][k].to_s, cand[:tmp])]
         end
         # metrics.tsv and loop.log live under RATCHET_HOME, already in files
         DiffReport.new(scenario, surfaces)
