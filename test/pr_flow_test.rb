@@ -15,8 +15,11 @@ module Robur
     class FakeRepo
       attr_reader :checkout_calls, :pull_calls, :push_calls
 
+      attr_reader :add_calls, :commit_calls
+
       def initialize(remote: true, default_branch: "main", checkout_ok: true, pull_ok: true,
-                     current_branch: "milestone-branch", push_ok: true, diffstat: "", shortstat: "")
+                     current_branch: "milestone-branch", push_ok: true, diffstat: "", shortstat: "",
+                     diff: "", staged: [], commit_ok: true)
         @remote = remote
         @default_branch = default_branch
         @checkout_ok = checkout_ok
@@ -25,9 +28,14 @@ module Robur
         @push_ok = push_ok
         @diffstat = diffstat
         @shortstat = shortstat
+        @diff = diff
+        @staged = staged
+        @commit_ok = commit_ok
         @checkout_calls = []
         @pull_calls = 0
         @push_calls = []
+        @add_calls = []
+        @commit_calls = []
       end
 
       def remote?(_name = "origin") = @remote
@@ -52,6 +60,17 @@ module Robur
 
       def diffstat(_range) = @diffstat
       def shortstat(_range) = @shortstat
+      def diff(_range) = @diff
+      def staged_files = @staged
+
+      def add(pathspec)
+        @add_calls << pathspec
+      end
+
+      def commit(subject, _body = nil)
+        @commit_calls << subject
+        @commit_ok
+      end
     end
 
     # Sequenced `gh pr view ... -q .state` responses, then a fixed
@@ -333,6 +352,168 @@ module Robur
 
       assert_equal before_branch, Repo.new(dir).current_branch
       refute File.file?(File.join(dir, ".ratchet", "milestone.cur"))
+    ensure
+      FileUtils.remove_entry(dir) if dir
+    end
+
+    # --- run_review_turn ---------------------------------------------------
+
+    def write_agent_script(dir, name, output)
+      path = File.join(dir, name)
+      File.write(path, "#!/bin/sh\nprintf '%s' #{output.inspect}\n")
+      File.chmod(0o755, path)
+      path
+    end
+
+    def test_run_review_turn_pass_on_review_pass_token
+      dir = git_repo
+      agent = write_agent_script(dir, "agent-pass", "REVIEW_PASS")
+      conf = { "AGENT_CMD" => agent, "TURN_TIMEOUT" => "5", "STALL_TIMEOUT" => "5" }
+      status = Loop.run_review_turn("HEAD", "M1", 0, dir, conf, "", ["fake/model"], File.join(dir, "turn.out"))
+      assert_equal "pass", status
+    ensure
+      FileUtils.remove_entry(dir) if dir
+    end
+
+    def test_run_review_turn_fail_on_review_fail_token
+      dir = git_repo
+      agent = write_agent_script(dir, "agent-fail", "REVIEW_FAIL")
+      conf = { "AGENT_CMD" => agent, "TURN_TIMEOUT" => "5", "STALL_TIMEOUT" => "5" }
+      status = Loop.run_review_turn("HEAD", "M1", 0, dir, conf, "", ["fake/model"], File.join(dir, "turn.out"))
+      assert_equal "fail", status
+    ensure
+      FileUtils.remove_entry(dir) if dir
+    end
+
+    def test_run_review_turn_error_when_no_review_model_available
+      dir = git_repo
+      status = Loop.run_review_turn("HEAD", "M1", 0, dir, {}, "", [], File.join(dir, "turn.out"))
+      assert_equal "error", status
+    ensure
+      FileUtils.remove_entry(dir) if dir
+    end
+
+    def test_run_review_turn_error_on_neither_token
+      dir = git_repo
+      agent = write_agent_script(dir, "agent-neither", "nothing useful here")
+      conf = { "AGENT_CMD" => agent, "TURN_TIMEOUT" => "5", "STALL_TIMEOUT" => "5" }
+      status = Loop.run_review_turn("HEAD", "M1", 0, dir, conf, "", ["fake/model"], File.join(dir, "turn.out"))
+      assert_equal "error", status
+    ensure
+      FileUtils.remove_entry(dir) if dir
+    end
+
+    # --- milestone_complete_check --------------------------------------------
+
+    def test_milestone_complete_check_nil_without_milestone_cur
+      dir = Dir.mktmpdir
+      plan = Plan.new(File.join(dir, "PLAN.md"))
+      result = Loop.milestone_complete_check(dir, {}, plan, "", [], File.join(dir, "turn.out"), dir, repo: FakeRepo.new)
+      assert_nil result
+    ensure
+      FileUtils.remove_entry(dir) if dir
+    end
+
+    def test_milestone_complete_check_nil_when_still_in_same_milestone
+      dir = Dir.mktmpdir
+      File.write(File.join(dir, "PLAN.md"), "## M1\n- [IN PROGRESS] T1.1 (normal) t\n")
+      State.write_milestone_cur(dir, "M1", "abc", 0, 0)
+      plan = Plan.new(File.join(dir, "PLAN.md"))
+      result = Loop.milestone_complete_check(dir, {}, plan, "", [], File.join(dir, "turn.out"), dir, repo: FakeRepo.new)
+      assert_nil result
+    ensure
+      FileUtils.remove_entry(dir) if dir
+    end
+
+    def test_milestone_complete_check_pass_resets_errors_and_opens_pr
+      dir = Dir.mktmpdir
+      agent = write_agent_script(dir, "agent-pass", "REVIEW_PASS")
+      File.write(File.join(dir, "PLAN.md"), "## M1\n- [x] T1.1 done\n\n## M2\n- [IN PROGRESS] T2.1 (normal) t\n")
+      State.write_milestone_cur(dir, "M1", "abcd1234", 0, 1)
+      plan = Plan.new(File.join(dir, "PLAN.md"))
+      repo = FakeRepo.new
+      sys = FakeGh.new(states: ["MERGED"])
+      conf = { "AGENT_CMD" => agent, "TURN_TIMEOUT" => "5", "STALL_TIMEOUT" => "5", "PR_SOFT_MAX_LINES" => "400" }
+      with_gh_on_path
+
+      result = Loop.milestone_complete_check(dir, conf, plan, "", ["fake/model"], File.join(dir, "turn.out"), dir,
+                                             repo: repo, sys: sys, sleep_it: ->(_s) {})
+
+      assert_nil result
+      name, base_sha, cycle, errors = State.read_milestone_cur(dir)
+      assert_equal "M1", name
+      assert_equal "abcd1234", base_sha
+      assert_equal 0, cycle
+      assert_equal 0, errors
+      assert(log_lines.any? { |l| l.include?("review-pass | m=M1") })
+      assert_equal 1, repo.push_calls.length
+    ensure
+      FileUtils.remove_entry(dir) if dir
+    end
+
+    def test_milestone_complete_check_fail_increments_cycle_and_commits_injected_tasks
+      dir = Dir.mktmpdir
+      FileUtils.mkdir_p(File.join(dir, ".git")) # commit_review_injected_tasks gates on a real .git dir
+      agent = write_agent_script(dir, "agent-fail", "REVIEW_FAIL")
+      File.write(File.join(dir, "PLAN.md"), "## M1\n- [x] T1.1 done\n\n## M2\n- [IN PROGRESS] T2.1 (normal) t\n")
+      State.write_milestone_cur(dir, "M1", "abcd1234", 0, 0)
+      plan = Plan.new(File.join(dir, "PLAN.md"))
+      repo = FakeRepo.new(staged: ["PLAN.md"])
+      conf = { "AGENT_CMD" => agent, "TURN_TIMEOUT" => "5", "STALL_TIMEOUT" => "5", "MAX_REVIEW_CYCLES" => "2" }
+
+      result = Loop.milestone_complete_check(dir, conf, plan, "", ["fake/model"], File.join(dir, "turn.out"), dir, repo: repo)
+
+      assert_nil result
+      name, base_sha, cycle, errors = State.read_milestone_cur(dir)
+      assert_equal "M1", name
+      assert_equal "abcd1234", base_sha
+      assert_equal 1, cycle
+      assert_equal 0, errors
+      assert_equal ["review(ratchet): fix tasks from review cycle 1"], repo.commit_calls
+      assert(log_lines.any? { |l| l.include?("review-fail | m=M1 | cycle=1") })
+    ensure
+      FileUtils.remove_entry(dir) if dir
+    end
+
+    def test_milestone_complete_check_fail_stops_at_max_review_cycles
+      dir = Dir.mktmpdir
+      agent = write_agent_script(dir, "agent-fail", "REVIEW_FAIL")
+      File.write(File.join(dir, "PLAN.md"), "## M1\n- [x] T1.1 done\n\n## M2\n- [IN PROGRESS] T2.1 (normal) t\n")
+      State.write_milestone_cur(dir, "M1", "abcd1234", 1, 0)
+      plan = Plan.new(File.join(dir, "PLAN.md"))
+      repo = FakeRepo.new
+      conf = { "AGENT_CMD" => agent, "TURN_TIMEOUT" => "5", "STALL_TIMEOUT" => "5", "MAX_REVIEW_CYCLES" => "2" }
+
+      result = Loop.milestone_complete_check(dir, conf, plan, "", ["fake/model"], File.join(dir, "turn.out"), dir, repo: repo)
+
+      assert_equal :review_exceeded, result
+      assert(log_lines.any? { |l| l.include?("MAX_REVIEW_CYCLES exceeded") })
+      assert(log_lines.any? { |l| l.include?("HUMAN NEEDED") })
+    ensure
+      FileUtils.remove_entry(dir) if dir
+    end
+
+    def test_milestone_complete_check_error_twice_proceeds_and_opens_pr
+      dir = Dir.mktmpdir
+      # no review model AND no flat model -> run_review_turn always returns "error"
+      File.write(File.join(dir, "PLAN.md"), "## M1\n- [x] T1.1 done\n\n## M2\n- [IN PROGRESS] T2.1 (normal) t\n")
+      State.write_milestone_cur(dir, "M1", "abcd1234", 0, 1)
+      plan = Plan.new(File.join(dir, "PLAN.md"))
+      repo = FakeRepo.new
+      sys = FakeGh.new(states: ["MERGED"])
+      conf = {}
+      with_gh_on_path
+
+      result = Loop.milestone_complete_check(dir, conf, plan, "", [], File.join(dir, "turn.out"), dir,
+                                             repo: repo, sys: sys, sleep_it: ->(_s) {})
+
+      assert_nil result
+      name, _base_sha, cycle, errors = State.read_milestone_cur(dir)
+      assert_equal "M1", name
+      assert_equal 0, cycle
+      assert_equal 0, errors
+      assert(log_lines.any? { |l| l.include?("review turn errors twice") })
+      assert_equal 1, repo.push_calls.length
     ensure
       FileUtils.remove_entry(dir) if dir
     end

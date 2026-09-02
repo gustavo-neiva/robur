@@ -38,6 +38,10 @@ module Robur
       git("add", "-A")
     end
 
+    def add(pathspec)
+      git("add", "--", pathspec)
+    end
+
     # Un-stage a pathspec (glob wildcards resolve via git's own pathspec
     # matching, same as the bash `git reset -q -- "$g"` it replaces).
     def reset(pathspec)
@@ -99,6 +103,13 @@ module Robur
     def rev_parse(ref)
       out, _err, status = git("rev-parse", ref)
       status&.success? ? out.strip : nil
+    end
+
+    # Full unified diff for RANGE, or nil on failure (distinct from an empty
+    # string, which is a valid "no changes" diff).
+    def diff(range)
+      out, _err, status = git("diff", range)
+      status&.success? ? out : nil
     end
 
     # Parsed `git worktree list --porcelain` records; the primary worktree

@@ -13,6 +13,7 @@ require "robur/cli"
 require "robur/repo"
 require "robur/sys"
 require "robur/state"
+require "robur/commands"
 
 module Robur
   # The unattended run loop (port of bin/ratchet main's while-true cycle).
@@ -256,6 +257,19 @@ module Robur
           sleep_it.call(conf["SHORT_SLEEP"].to_i)
         end
 
+        # Milestone-complete detection + bounded review turn (PR_CADENCE=
+        # milestone only; bin/ratchet:768-830). Reached ONLY on the common
+        # tail -- the `done`/`human` branches `break` and the RED-gate-repair
+        # branches `next` above, both skipping this exactly like bash's
+        # `break`/`continue` skip the same block.
+        if commit_result.committed && (conf["PR_CADENCE"] || "done") == "milestone"
+          action = milestone_complete_check(dir, conf, plan, thinking, flat, turn_out, log_dir, sleep_it: sleep_it)
+          if action == :review_exceeded
+            stop_reason = "review_exceeded"
+            break
+          end
+        end
+
         # last-turn note for the next turn's prompt
         if commit_result.committed
           changed = Open3.capture3("git", "-C", dir, "diff", "HEAD~1", "--name-only")[0]
@@ -326,6 +340,103 @@ module Robur
 
       State.write_milestone_cur(dir, mname, base_sha, 0, 0)
       emit "milestone branch #{branch_name} created at #{base_sha}"
+    end
+
+    # Milestone-complete detection + bounded review turn (bin/ratchet:768-830,
+    # PR_CADENCE=milestone only). Fires when the just-committed turn moved
+    # the tracker's current milestone away from the one recorded in
+    # .ratchet/milestone.cur. Returns :review_exceeded when MAX_REVIEW_CYCLES
+    # is hit (the caller stops the loop), nil otherwise.
+    def milestone_complete_check(dir, conf, plan, thinking, flat, turn_out, log_dir,
+                                 repo: Repo.new(dir), sys: Sys::Proc.new, sleep_it: Kernel.method(:sleep))
+      stored = State.read_milestone_cur(dir)
+      return nil unless stored
+
+      stored_mname, base_sha, cycle_count, review_errors = stored
+      return nil if stored_mname.to_s.empty?
+
+      next_mname = plan.current_milestone&.fetch(:name)
+      return nil if next_mname == stored_mname
+
+      emit "milestone-complete | m=#{stored_mname}"
+      review_status = run_review_turn(base_sha, stored_mname, cycle_count, dir, conf, thinking, flat, turn_out, repo: repo)
+
+      case review_status
+      when "pass"
+        emit "review-pass | m=#{stored_mname}"
+        State.write_milestone_cur(dir, stored_mname, base_sha, cycle_count, 0)
+        open_milestone_pr(stored_mname, base_sha, dir, conf, plan, File.join(log_dir, "loop.log"), repo: repo, sys: sys, sleep_it: sleep_it)
+        nil
+      when "fail"
+        emit "review-fail | m=#{stored_mname} | cycle=#{cycle_count + 1}"
+        cycle_count += 1
+        State.write_milestone_cur(dir, stored_mname, base_sha, cycle_count, 0)
+        commit_review_injected_tasks(dir, conf, cycle_count, repo: repo)
+        max_cycles = conf["MAX_REVIEW_CYCLES"].to_s.empty? ? 2 : conf["MAX_REVIEW_CYCLES"].to_i
+        if cycle_count >= max_cycles
+          notify_human "milestone #{stored_mname} exceeded MAX_REVIEW_CYCLES (#{max_cycles}) — review and fix manually"
+          emit "MAX_REVIEW_CYCLES exceeded — STOPPING for human review."
+          :review_exceeded
+        end
+      else # "error"
+        review_errors += 1
+        emit "review-skip | m=#{stored_mname} | reason=reviewer-error (#{review_errors}/2)"
+        State.write_milestone_cur(dir, stored_mname, base_sha, cycle_count, review_errors)
+        if review_errors >= 2
+          emit "  review turn errors twice — proceeding (broken reviewer must not wedge pipeline)."
+          State.write_milestone_cur(dir, stored_mname, base_sha, cycle_count, 0)
+          open_milestone_pr(stored_mname, base_sha, dir, conf, plan, File.join(log_dir, "loop.log"), repo: repo, sys: sys, sleep_it: sleep_it)
+        end
+        nil
+      end
+    end
+
+    # Commit the tracker if the review turn injected fix tasks into it.
+    def commit_review_injected_tasks(dir, conf, cycle_count, repo: Repo.new(dir))
+      return unless File.directory?(File.join(dir, ".git"))
+
+      repo.add(conf["TRACKER_FILE"] || "PLAN.md")
+      return if repo.staged_files.empty?
+
+      repo.commit("review(ratchet): fix tasks from review cycle #{cycle_count}")
+      emit "  review-injected tasks committed"
+    end
+
+    # run_review_turn BASE_SHA MNAME CYCLE -> "pass"|"fail"|"error"
+    # (lib/run-turn.sh:148). Runs ONE read-only review turn with swapped
+    # tokens (STEP_TOKEN=REVIEW_PASS, DONE_TOKEN=REVIEW_FAIL) so classify
+    # works unmodified: step => pass, done => fail, anything else => error.
+    # Never strikes/benches the review model. `thinking` is the JUST-FINISHED
+    # build turn's thinking level — bash never calls thinking_for_tier
+    # "review" here, it reuses whatever $THINKING main() set for the build
+    # turn that triggered this check (bin/ratchet:593 sets it once per turn;
+    # run_review_turn never resets it).
+    def run_review_turn(base_sha, mname, cycle, dir, conf, thinking, flat, turn_out, repo: Repo.new(dir))
+      review_chain = Tier.chain_for("review", conf).to_s
+      review_model = review_chain.split(",").reject(&:empty?).first || flat.first
+      return "error" if review_model.to_s.empty?
+
+      diff_content = repo.diff("#{base_sha}..HEAD") || "<diff unavailable>"
+      template = File.read(File.join(Commands::TEMPLATES_DIR, "REVIEW.prompt.md"))
+      prompt = "#{template}\n\n```diff\n#{diff_content}\n```\n\n" \
+               "**Milestone**: #{mname} (review cycle #{cycle + 1})\n" \
+               "**Tracker**: #{conf["TRACKER_FILE"] || "PLAN.md"}\n"
+
+      cmd = [conf["AGENT_CMD"], "--model", review_model]
+      cmd += ["--thinking", thinking] unless thinking.to_s.empty?
+      cmd += ["--no-session", "-p", prompt]
+      result = Turn.run(cmd: cmd, turn_file: turn_out, chdir: dir,
+                        turn_timeout: conf["TURN_TIMEOUT"].to_i,
+                        stall_timeout: conf["STALL_TIMEOUT"].to_i,
+                        poll_interval: (ENV["POLL_INTERVAL"] || conf["POLL_INTERVAL"] || 3).to_i)
+      deadline = !result.kill_reason.nil?
+      klass = Classifier.classify(turn_out, step_token: "REVIEW_PASS", done_token: "REVIEW_FAIL",
+                                           deadline: deadline, json: false, human_token: conf["HUMAN_TOKEN"])
+      case klass
+      when :step then "pass"
+      when :done then "fail"
+      else "error"
+      end
     end
 
     # wait_for_merge BRANCH DIR CONF -> poll the PR until merged/closed/timeout
