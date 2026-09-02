@@ -34,6 +34,16 @@ module Robur
       out
     end
 
+    def add_all
+      git("add", "-A")
+    end
+
+    # Un-stage a pathspec (glob wildcards resolve via git's own pathspec
+    # matching, same as the bash `git reset -q -- "$g"` it replaces).
+    def reset(pathspec)
+      git("reset", "-q", "--", pathspec)
+    end
+
     def staged_files
       out, = git("diff", "--cached", "--name-only")
       out.split("\n")
