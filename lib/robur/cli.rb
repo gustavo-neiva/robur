@@ -2,6 +2,7 @@
 
 require "fileutils"
 require "robur/config"
+require "robur/plan"
 
 module Robur
   # CLI surfaces ported so far: --help, unknown-flag, doctor. Differential
@@ -85,8 +86,11 @@ module Robur
       ENV["RATCHET_HOME"] || File.join(ENV["HOME"], ".ratchet")
     end
 
+    # bash emit tees to $LOOP_LOG once main() wires the logs up (common.sh:108).
     def emit(msg)
-      puts "[#{Time.now.strftime('%Y-%m-%d %H:%M:%S')}] #{msg}"
+      line = "[#{Time.now.strftime('%Y-%m-%d %H:%M:%S')}] #{msg}"
+      puts line
+      File.write(@loop_log, "#{line}\n", mode: "a") if @loop_log
     end
 
     # bash `die` — emit + exit 1.
@@ -134,7 +138,7 @@ module Robur
         case a
         when "-h", "--help" then usage; return 0
         when /\A-/ then die("unknown option: #{a} (see --help)")
-        when "doctor" then command = a
+        when "doctor", "status", "once" then command = a
         else dir ||= a
         end
       end
@@ -143,6 +147,12 @@ module Robur
       when "doctor"
         warn_conf_issues(dir || ".") # main() parses the repo conf before dispatch
         cmd_doctor(File.expand_path(dir || Dir.pwd))
+      when "status"
+        warn_conf_issues(dir || ".")
+        cmd_status(dir)
+      when "once"
+        warn_conf_issues(dir || ".")
+        cmd_once(dir)
       else die("unknown command: #{command.inspect}")
       end
     end
@@ -162,10 +172,16 @@ module Robur
     # ponytail: only the no-.ratchet.conf doctor path is ported (the only one
     # the M1 suite exercises); conf-parsing checks arrive with the Config port.
     def cmd_doctor(dir)
+      problems = doctor_report(dir, out: $stdout)
+      exit problems
+    end
+
+    # The doctor body, printable to any IO so `once` can run it quiet first.
+    def doctor_report(dir, out: $stdout)
       problems = 0
-      pr_ok = ->(m) { puts "  ok   #{m}" }
+      pr_ok = ->(m) { out.puts "  ok   #{m}" }
       pr_fail = lambda do |m|
-        puts "  FAIL #{m}"
+        out.puts "  FAIL #{m}"
         problems += 1
       end
 
@@ -176,7 +192,7 @@ module Robur
       FileUtils.mkdir_p(File.join(dir, ".ratchet"))
       File.write(File.join(dir, ".ratchet", "last-log"), "#{log_dir}\n")
 
-      puts "doctor: #{dir}"
+      out.puts "doctor: #{dir}"
 
       pr_ok.call("git repo") if File.directory?(File.join(dir, ".git"))
 
@@ -198,7 +214,7 @@ module Robur
           pr_fail.call(".ratchet.conf has errors:")
           # baseline: printf '%b\n' "$RATCHET_CONF_ERRORS" | sed 's/^/         /'
           # where the errors string starts with \n — hence the blank line.
-          puts ("\n" + cerr.join("\n")).gsub(/^/, "         ")
+          out.puts ("\n" + cerr.join("\n")).gsub(/^/, "         ")
         end
         case conf_values["RATCHET_PROTOCOL"] || "1"
         when "1" then pr_ok.call("RATCHET_PROTOCOL=1 supported")
@@ -217,9 +233,18 @@ module Robur
 
       tr = %w[PLAN.md TODO.md TASKS.md].find { |f| File.file?(File.join(dir, f)) }
       if tr
-        if File.read(File.join(dir, tr)) =~ /^- \[ \]/
+        plan = Plan.new(File.join(dir, tr))
+        content = File.read(File.join(dir, tr))
+        # tracker_has_open is a plain grep (no heading skip); tracker_count_done
+        # counts [x] only, lowercase.
+        if content =~ /^[[:space:]]*-?[[:space:]]*\[ \]/
           pr_ok.call("tracker '#{tr}' has an open task")
-        elsif File.read(File.join(dir, tr)) =~ /^- \[x\]/
+          # tracker_next_id_and_text: first IN PROGRESS task, else first open
+          t = plan.next_task(:in_progress) || plan.next_task(:open)
+          if t.nil? || t.id == "?"
+            pr_fail.call("task id unresolved on first open task; parser degraded to '?' (see tracker grammar)")
+          end
+        elsif content.scan(/^[[:space:]]*-?[[:space:]]*\[x\]/).any?
           pr_ok.call("tracker '#{tr}' fully done (all [x]) — loop final-commits + stops")
         else
           pr_fail.call("tracker '#{tr}' has NO tasks (empty/unparsed) — add work")
@@ -252,19 +277,58 @@ module Robur
       pr_ok.call("pi registry cache missing/stale — model validation skipped (refresh: #{PROG} models list)")
       pr_ok.call("rank source: none (unranked no-join: 0)")
 
-      puts "---"
-      puts "tier routing:"
-      puts "  PLAN  : → MODELS (flat) (thinking=)"
-      puts "  AUTOPL: → PLAN (thinking=)"
-      puts "  BUILD : → MODELS (flat) (thinking=)"
-      puts "  LIGHT : → MODELS (flat) (thinking=)"
-      puts "---"
+      out.puts "---"
+      out.puts "tier routing:"
+      out.puts "  PLAN  : → MODELS (flat) (thinking=)"
+      out.puts "  AUTOPL: → PLAN (thinking=)"
+      out.puts "  BUILD : → MODELS (flat) (thinking=)"
+      out.puts "  LIGHT : → MODELS (flat) (thinking=)"
+      out.puts "---"
       if problems.zero?
-        puts "doctor: OK — repo is loop-ready."
+        out.puts "doctor: OK — repo is loop-ready."
       else
-        puts "doctor: #{problems} problem(s). Fix before running the loop."
+        out.puts "doctor: #{problems} problem(s). Fix before running the loop."
       end
-      exit problems
+      problems
+    end
+
+    # bash `status` no-log path (commands.sh:cmd_status): with no loop.log yet,
+    # status is a one-liner and exit 1. The log-parsing surface lands with the
+    # loop port (M6).
+    def cmd_status(dir)
+      dir = File.expand_path(dir || Dir.pwd)
+      log_dir = File.join(ratchet_home, "logs", project_slug(dir))
+      FileUtils.mkdir_p(log_dir)
+      FileUtils.mkdir_p(File.join(dir, ".ratchet"))
+      File.write(File.join(dir, ".ratchet", "last-log"), "#{log_dir}\n")
+      log = File.join(log_dir, "loop.log")
+      unless File.file?(log)
+        puts "status: no loop.log found at #{log} (nothing run here yet?)"
+        exit 1
+      end
+      die "status: loop.log parsing not ported yet (M6)"
+    end
+
+    # bash `once` up to the preflight gate (ratchet/bin/ratchet once path):
+    # quiet doctor first, loud only on failure, abort before any turn. The
+    # turn loop itself arrives with M4+ (models, Turn, Classifier).
+    def cmd_once(dir)
+      dir = File.expand_path(dir || Dir.pwd)
+      log_dir = File.join(ratchet_home, "logs", project_slug(dir))
+      FileUtils.mkdir_p(log_dir)
+      FileUtils.mkdir_p(File.join(dir, ".ratchet"))
+      File.write(File.join(dir, ".ratchet", "last-log"), "#{log_dir}\n")
+      @loop_log = File.join(log_dir, "loop.log") # bash main() wires LOOP_LOG before preflight
+      emit "preflight (doctor) ..."
+      require "stringio"
+      buf = StringIO.new
+      problems = doctor_report(dir, out: buf)
+      if problems.positive?
+        emit "preflight FAILED — run '#{PROG} doctor #{dir}' for details. Aborting before any turn."
+        print buf.string
+        exit 1
+      end
+      die "once: the turn loop is not ported yet (M4+)"
     end
   end
 end

@@ -206,7 +206,7 @@ port changed nothing.
     do: add `Plan#human_block_brief(id, title)` producing the Telegram DM body byte-identically to `ratchet/lib/tracker.sh:human_block_brief` — the title line, the 900-char task block, the unblock instruction naming the tracker path, and the `/blocked` pointer.
     done: Given the fixture repo and a known task id, When the brief is produced by both implementations, Then the two strings are identical including the 900-char bound and the fallback text when the block is not found.
     files: lib/robur/plan.rb, test/plan_test.rb
-- [ ] T3.5 (trivial, serial) M3 self-QA
+- [x] T3.5 (trivial, serial) M3 self-QA
     do: add the tracker scenarios to the differential suite and run both gates.
     done: `ruby test/differential/run.rb --suite milestone-3` reports `0 diffs` across all fixture repos, where each scenario runs `status` and `once` against a tracker variant — tagged, untagged, `[ ]`, all-done, placeholder-seeded, and the greedy-paren case — and compares stdout, exit code and the resulting `PLAN.md`. PASS is the literal `0 diffs`.
     files: test/differential/suites/milestone-3.rb, LEARNINGS.md

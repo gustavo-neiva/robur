@@ -147,10 +147,16 @@ module Robur
           "exit code" => [base[:exit].to_s, cand[:exit].to_s],
           "git log" => [base[:git_log], cand[:git_log]],
         }
-        keys = (base[:files].keys | cand[:files].keys).sort
-        keys.each do |k|
-          surfaces["file #{k}"] = [norm(base[:files][k].to_s, base[:tmp], base[:home]),
-                                   norm(cand[:files][k].to_s, cand[:tmp], cand[:home])]
+        # Group per-side snapshot keys by their normalized name: slug-bearing
+        # log paths (home/logs/<slug>/loop.log) differ per side by the path
+        # cksum but are the same surface.
+        groups = Hash.new { |h, k| h[k] = {} }
+        {baseline: base, candidate: cand}.each do |side, r|
+          r[:files].each { |orig, content| groups[self.class.normalize(orig, temp_root: r[:tmp], home: r[:home])][side] = content }
+        end
+        groups.sort.each do |k, pair|
+          surfaces["file #{k}"] = [norm(pair[:baseline].to_s, base[:tmp], base[:home]),
+                                   norm(pair[:candidate].to_s, cand[:tmp], cand[:home])]
         end
         # metrics.tsv and loop.log live under RATCHET_HOME, already in files
         DiffReport.new(scenario, surfaces)
