@@ -12,6 +12,7 @@ require "robur/commit_gate"
 require "robur/cli"
 require "robur/repo"
 require "robur/sys"
+require "robur/state"
 
 module Robur
   # The unattended run loop (port of bin/ratchet main's while-true cycle).
@@ -59,6 +60,8 @@ module Robur
       emit "  models    : #{flat.join(" ")}  (preference order, fallback chain)"
       emit "  loop log  : #{log_dir}/loop.log"
       emit "=" * 60
+
+      milestone_branch_lifecycle(dir, conf, plan)
 
       loop do
         turn += 1
@@ -292,6 +295,37 @@ module Robur
 
     def commit_turn(turn, model, conf, plan, dir)
       CLI.commit_turn(turn, model, conf, plan, dir)
+    end
+
+    # Milestone branch lifecycle (bin/ratchet:469-503, PR_CADENCE=milestone
+    # only). Runs ONCE at `run` startup, before the turn loop: if the
+    # tracker's current milestone differs from the one recorded in
+    # .ratchet/milestone.cur, create a fresh ratchet/m-<slug> branch off the
+    # default branch and record name/base_sha/cycle=0/errors=0. This does NOT
+    # re-fire mid-loop when a milestone completes (bash places it before the
+    # `while true`, not inside it) -- a supervisor's next `run` invocation
+    # picks up the following milestone.
+    def milestone_branch_lifecycle(dir, conf, plan, repo: Repo.new(dir))
+      return unless (conf["PR_CADENCE"] || "done") == "milestone"
+
+      mname = plan.current_milestone&.fetch(:name)
+      return if mname.nil? || mname.empty?
+
+      stored_mname, = State.read_milestone_cur(dir)
+      return if mname == stored_mname
+
+      prev = stored_mname.nil? ? "none" : stored_mname
+      emit "milestone-start | m=#{mname} | prev=#{prev}"
+
+      default_branch = repo.default_branch
+      base_sha = repo.rev_parse(default_branch) || repo.rev_parse("HEAD")
+      slug = mname.downcase.gsub(/[^a-z0-9]+/, "-").gsub(/\A-+|-+\z/, "")
+      branch_name = "ratchet/m-#{slug}"
+
+      CLI.die "failed to create #{branch_name}" unless repo.checkout_b(branch_name, default_branch)
+
+      State.write_milestone_cur(dir, mname, base_sha, 0, 0)
+      emit "milestone branch #{branch_name} created at #{base_sha}"
     end
 
     # wait_for_merge BRANCH DIR CONF -> poll the PR until merged/closed/timeout

@@ -2,6 +2,7 @@
 
 require "test_helper"
 require "robur/loop"
+require "robur/state"
 require "tmpdir"
 
 module Robur
@@ -230,6 +231,110 @@ module Robur
 
     def test_shortstat_changed_lines_insertions_only
       assert_equal 1, Loop.shortstat_changed_lines(" 1 file changed, 1 insertion(+)")
+    end
+
+    # --- milestone_branch_lifecycle ---------------------------------------
+    # Mirrors bash selftest suite 32's three simulated scenarios.
+
+    def git_repo
+      dir = Dir.mktmpdir
+      system("git", "-C", dir, "init", "-q", "-b", "main", out: File::NULL, err: File::NULL)
+      system("git", "-C", dir, "config", "user.email", "t@example.com", out: File::NULL, err: File::NULL)
+      system("git", "-C", dir, "config", "user.name", "T", out: File::NULL, err: File::NULL)
+      dir
+    end
+
+    def git(dir, *args) = system("git", "-C", dir, *args, out: File::NULL, err: File::NULL)
+
+    def test_milestone_branch_lifecycle_creates_branch_and_milestone_cur
+      dir = git_repo
+      File.write(File.join(dir, "PLAN.md"), <<~PLAN)
+        # Plan
+        ## Milestone 1 — first one
+        - [x] T1.1 (normal) done task
+        - [IN PROGRESS] T1.2 (normal) current task
+        - [ ] T1.3 (trivial) next task
+
+        ## Milestone 2 — second one
+        - [ ] T2.1 (normal) future task
+      PLAN
+      git(dir, "add", "PLAN.md")
+      git(dir, "commit", "-q", "-m", "init")
+      FileUtils.mkdir_p(File.join(dir, ".git", "refs", "remotes", "origin"))
+      File.write(File.join(dir, ".git", "refs", "remotes", "origin", "HEAD"), "ref: refs/remotes/origin/main\n")
+
+      plan = Plan.new(File.join(dir, "PLAN.md"))
+      Loop.milestone_branch_lifecycle(dir, { "PR_CADENCE" => "milestone" }, plan, repo: Repo.new(dir))
+
+      assert_equal "ratchet/m-milestone-1-first-one", Repo.new(dir).current_branch
+      name, base_sha, cycle, errors = State.read_milestone_cur(dir)
+      assert_equal "Milestone 1 — first one", name
+      refute_empty base_sha
+      assert_equal 0, cycle
+      assert_equal 0, errors
+    ensure
+      FileUtils.remove_entry(dir) if dir
+    end
+
+    def test_milestone_branch_lifecycle_same_milestone_does_not_recreate_branch
+      dir = git_repo
+      File.write(File.join(dir, "PLAN.md"), <<~PLAN)
+        ## Milestone 1
+        - [IN PROGRESS] T1.1 (normal) current
+      PLAN
+      git(dir, "add", "PLAN.md")
+      git(dir, "commit", "-q", "-m", "init")
+      base_sha = `git -C #{dir} rev-parse HEAD`.strip
+      State.write_milestone_cur(dir, "Milestone 1", base_sha, 0, 0)
+      before_branch = Repo.new(dir).current_branch
+
+      plan = Plan.new(File.join(dir, "PLAN.md"))
+      Loop.milestone_branch_lifecycle(dir, { "PR_CADENCE" => "milestone" }, plan, repo: Repo.new(dir))
+
+      assert_equal before_branch, Repo.new(dir).current_branch
+    ensure
+      FileUtils.remove_entry(dir) if dir
+    end
+
+    def test_milestone_branch_lifecycle_new_milestone_creates_new_branch
+      dir = git_repo
+      File.write(File.join(dir, "PLAN.md"), <<~PLAN)
+        ## Milestone 1 — first
+        - [x] T1.1 (normal) done
+
+        ## Milestone 2 — second
+        - [IN PROGRESS] T2.1 (normal) current
+      PLAN
+      git(dir, "add", "PLAN.md")
+      git(dir, "commit", "-q", "-m", "init")
+      FileUtils.mkdir_p(File.join(dir, ".git", "refs", "remotes", "origin"))
+      File.write(File.join(dir, ".git", "refs", "remotes", "origin", "HEAD"), "ref: refs/remotes/origin/main\n")
+      State.write_milestone_cur(dir, "Milestone 1 — first", `git -C #{dir} rev-parse HEAD`.strip, 0, 0)
+
+      plan = Plan.new(File.join(dir, "PLAN.md"))
+      Loop.milestone_branch_lifecycle(dir, { "PR_CADENCE" => "milestone" }, plan, repo: Repo.new(dir))
+
+      assert_equal "ratchet/m-milestone-2-second", Repo.new(dir).current_branch
+      name, = State.read_milestone_cur(dir)
+      assert_equal "Milestone 2 — second", name
+    ensure
+      FileUtils.remove_entry(dir) if dir
+    end
+
+    def test_milestone_branch_lifecycle_noop_when_pr_cadence_not_milestone
+      dir = git_repo
+      File.write(File.join(dir, "PLAN.md"), "## M1\n- [IN PROGRESS] T1.1 (normal) t\n")
+      git(dir, "add", "PLAN.md")
+      git(dir, "commit", "-q", "-m", "init")
+      before_branch = Repo.new(dir).current_branch
+
+      plan = Plan.new(File.join(dir, "PLAN.md"))
+      Loop.milestone_branch_lifecycle(dir, {}, plan, repo: Repo.new(dir))
+
+      assert_equal before_branch, Repo.new(dir).current_branch
+      refute File.file?(File.join(dir, ".ratchet", "milestone.cur"))
+    ensure
+      FileUtils.remove_entry(dir) if dir
     end
 
     def test_plan_milestone_completed_list

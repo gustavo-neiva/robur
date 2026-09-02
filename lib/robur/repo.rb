@@ -96,6 +96,11 @@ module Robur
       out
     end
 
+    def rev_parse(ref)
+      out, _err, status = git("rev-parse", ref)
+      status&.success? ? out.strip : nil
+    end
+
     # Parsed `git worktree list --porcelain` records; the primary worktree
     # is always first (git's own ordering).
     def worktrees
