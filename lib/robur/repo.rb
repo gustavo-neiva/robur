@@ -120,6 +120,42 @@ module Robur
       parse_worktrees(out)
     end
 
+    # [ok, stderr] -- stderr is inspected by the fanout config.lock retry loop.
+    def worktree_add(path, branch, base)
+      _out, err, status = git("worktree", "add", path, "-b", branch, base)
+      [status&.success? || false, err]
+    end
+
+    def worktree_remove(path)
+      _out, _err, status = git("worktree", "remove", path)
+      status&.success? || false
+    end
+
+    def worktree_prune
+      git("worktree", "prune")
+    end
+
+    def branch_delete_d(branch)
+      _out, _err, status = git("branch", "-D", branch)
+      status&.success? || false
+    end
+
+    # nil (fail toward KEEP) on a git failure, else the raw `git stash list`
+    # output (possibly empty).
+    def stash_list
+      out, _err, status = git("stash", "list")
+      status&.success? ? out : nil
+    end
+
+    # `git -C WT_PATH log --branches --not --remotes` -- repo-wide (ALL local
+    # branches not on ANY remote), scoped by cwd only per bash's own
+    # implementation; nil (fail toward KEEP) on failure, else the raw output
+    # (empty = nothing unpushed).
+    def unpushed_commits(wt_path)
+      out, _err, status = @proc.capture("git", "-C", wt_path, "log", "--branches", "--not", "--remotes")
+      status&.success? ? out : nil
+    end
+
     private
 
     def git(*args)

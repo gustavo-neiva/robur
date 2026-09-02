@@ -278,6 +278,12 @@ module Robur
       when "plan"
         warn_conf_issues(dir || ".")
         cmd_plan(dir)
+      when "fanout"
+        warn_conf_issues(dir || ".")
+        cmd_fanout(dir)
+      when "fanout-clean"
+        warn_conf_issues(dir || ".")
+        cmd_fanout_clean(dir)
       when *COMMANDS
         die "#{command}: not ported yet (M6)"
       else die("unknown command: #{command.inspect}")
@@ -585,6 +591,34 @@ module Robur
       pct = 100 if pct > 100
       fill = pct * w / 100
       (1..w).map { |i| i <= fill ? "▓" : "░" }.join
+    end
+
+    # bash dispatches fanout/fanout-clean right after LOG_DIR/LOOP_LOG setup,
+    # BEFORE the run/once doctor preflight block (bin/ratchet:371-372) -- no
+    # preflight gate for either.
+    def cmd_fanout(dir)
+      dir = File.expand_path(dir || Dir.pwd)
+      log_dir = File.join(ratchet_home, "logs", project_slug(dir))
+      FileUtils.mkdir_p(log_dir)
+      FileUtils.mkdir_p(File.join(dir, ".ratchet"))
+      File.write(File.join(dir, ".ratchet", "last-log"), "#{log_dir}\n")
+      conf = Robur::Config.load(dir, @overrides || {}).values
+      @quiet = conf["QUIET"] == "1"
+      @loop_log = File.join(log_dir, "loop.log")
+      Robur::Loop.fanout(dir, conf)
+    end
+
+    def cmd_fanout_clean(dir)
+      dir = File.expand_path(dir || Dir.pwd)
+      log_dir = File.join(ratchet_home, "logs", project_slug(dir))
+      FileUtils.mkdir_p(log_dir)
+      FileUtils.mkdir_p(File.join(dir, ".ratchet"))
+      File.write(File.join(dir, ".ratchet", "last-log"), "#{log_dir}\n")
+      conf = Robur::Config.load(dir, @overrides || {}).values
+      @quiet = conf["QUIET"] == "1"
+      @loop_log = File.join(log_dir, "loop.log")
+      Robur::Loop.fanout_clean(dir)
+      0
     end
 
     # bash `once` up to the preflight gate (ratchet/bin/ratchet once path):

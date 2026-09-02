@@ -620,5 +620,176 @@ module Robur
 
       File.readlines(log_path, chomp: true).reverse_each.find { |l| l =~ pattern }
     end
+
+    # exe/robur beside this repo's lib/ (Commands::TEMPLATES_DIR's sibling
+    # pattern) -- the binary `fanout` re-invokes per worktree as `... run`.
+    ROBUR_BIN = File.expand_path("../../exe/robur", __dir__)
+
+    # ratchet fanout (lib/commands.sh:cmd_fanout): serially create one git
+    # worktree per independent milestone, then fan out parallel `run` loops
+    # bounded by FANOUT_MAX, then sweep with fanout_clean. Returns the
+    # process exit code (0 on a clean run, 1 on a hard precondition/worktree
+    # failure).
+    def fanout(dir, conf, repo: Repo.new(dir), sleep_it: Kernel.method(:sleep),
+              launch: ->(wt_path) { Process.spawn({ "PARALLEL" => "1" }, ROBUR_BIN, "run", chdir: wt_path, out: File::NULL, err: File::NULL) },
+              wait_any: -> { Process.wait },
+              wait_pid: lambda do |pid|
+                Process.waitpid(pid)
+              rescue Errno::ECHILD
+                nil
+              end)
+      dir = File.expand_path(dir)
+      CLI.die "not a directory: #{dir}" unless File.directory?(dir)
+
+      unless conf["PARALLEL"] == "1"
+        emit "fanout requires PARALLEL=1 (set in .ratchet.conf or via env)"
+        return 1
+      end
+      unless CLI.on_path?("gh")
+        emit "fanout requires gh (GitHub CLI) on PATH"
+        return 1
+      end
+      unless repo.remote?("origin")
+        emit "fanout requires an 'origin' remote"
+        return 1
+      end
+
+      emit "ratchet fanout: #{dir}"
+
+      tracker_file = conf["TRACKER_FILE"]
+      tracker_file = Commands.detect_tracker_file(dir) if tracker_file.to_s.empty?
+      tracker_file = "PLAN.md" if tracker_file.to_s.empty?
+      milestones = Plan.new(File.join(dir, tracker_file)).independent_milestones
+
+      if milestones.empty?
+        emit "no independent milestones found (tag first open task with (independent))"
+        return 0
+      end
+
+      emit "  found #{milestones.length} independent milestone(s)"
+      default_branch = repo.default_branch
+
+      pairs = []
+      milestones.each do |m|
+        wt_path = "../ratchet-wt-#{m[:slug]}"
+        branch = "ratchet/m-#{m[:slug]}"
+        emit "  creating worktree: #{wt_path} (branch #{branch})"
+
+        created = false
+        wait_s = 1
+        attempt = 1
+        while attempt <= 5
+          ok, err = repo.worktree_add(wt_path, branch, "origin/#{default_branch}")
+          if ok
+            created = true
+            break
+          end
+          unless err.to_s.include?("config.lock")
+            emit "    worktree add failed:"
+            return 1
+          end
+          emit "    config.lock (attempt #{attempt}/5); waiting #{wait_s}s"
+          sleep_it.call(wait_s)
+          wait_s *= 2
+          attempt += 1
+        end
+        unless created
+          emit "    failed to create worktree after 5 attempts"
+          return 1
+        end
+
+        pairs << [wt_path, branch]
+        State.write_fanout(dir, pairs)
+      end
+
+      emit "  all worktrees created"
+
+      max = conf["FANOUT_MAX"].to_s.empty? ? 4 : conf["FANOUT_MAX"].to_i
+      active = 0
+      pids = []
+      reaped = {}
+
+      pairs.each do |wt_path, _branch|
+        while active >= max
+          pid = wait_any.call
+          reaped[pid] = true
+          active -= 1
+        end
+        emit "  launching loop: #{wt_path}"
+        pids << launch.call(wt_path)
+        active += 1
+      end
+
+      emit "  waiting for all loops to complete"
+      pids.each { |pid| wait_pid.call(pid) unless reaped[pid] }
+      emit "  all loops complete"
+
+      fanout_clean(dir, repo: repo)
+      emit "fanout complete"
+      0
+    end
+
+    # ratchet fanout-clean (lib/commands.sh:cmd_fanout_clean): fail-safe
+    # worktree sweep -- NEVER --force removes; a stash for the worktree's
+    # branch, an unpushed commit, or a dirty tree (git's own removal refusal)
+    # each KEEP the worktree. Returns [removed_count, kept_count].
+    def fanout_clean(dir, repo: Repo.new(dir))
+      dir = File.expand_path(dir)
+      CLI.die "not a directory: #{dir}" unless File.directory?(dir)
+
+      emit "fanout-clean: #{dir}"
+
+      worktrees = repo.worktrees
+      if worktrees.empty?
+        emit "  no worktrees found"
+        return [0, 0]
+      end
+
+      removed = 0
+      kept = 0
+      pairs = State.read_fanout(dir)
+
+      worktrees.drop(1).each do |wt|
+        next if wt.branch.to_s.empty?
+
+        stash = repo.stash_list
+        if stash.nil?
+          emit "  KEEP: #{wt.path} (stash check failed, fail toward KEEP)"
+          kept += 1
+          next
+        end
+        if stash.match?(/(?:WIP )?[Oo]n #{Regexp.escape(wt.branch)}:/)
+          emit "  KEEP: #{wt.path} (stash entry exists for #{wt.branch})"
+          kept += 1
+          next
+        end
+
+        unpushed = repo.unpushed_commits(wt.path)
+        if unpushed.nil?
+          emit "  KEEP: #{wt.path} (unpushed check failed, fail toward KEEP)"
+          kept += 1
+          next
+        end
+        unless unpushed.strip.empty?
+          emit "  KEEP: #{wt.path} (unpushed commits)"
+          kept += 1
+          next
+        end
+
+        if repo.worktree_remove(wt.path)
+          emit "  REMOVED: #{wt.path}"
+          removed += 1
+          emit "    deleted branch #{wt.branch}" if repo.branch_delete_d(wt.branch)
+          pairs = pairs.reject { |p, _b| p == wt.path }
+          State.write_fanout(dir, pairs)
+        else
+          emit "  KEEP: #{wt.path} (git worktree remove refused)"
+          kept += 1
+        end
+      end
+
+      emit "fanout-clean: removed=#{removed} kept=#{kept}"
+      [removed, kept]
+    end
   end
 end

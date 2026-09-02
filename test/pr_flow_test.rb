@@ -15,11 +15,12 @@ module Robur
     class FakeRepo
       attr_reader :checkout_calls, :checkout_b_calls, :pull_calls, :push_calls
 
-      attr_reader :add_calls, :commit_calls
+      attr_reader :add_calls, :commit_calls, :worktree_add_calls, :worktree_remove_calls, :branch_delete_calls
 
       def initialize(remote: true, default_branch: "main", checkout_ok: true, checkout_b_ok: true, pull_ok: true,
                      current_branch: "milestone-branch", push_ok: true, diffstat: "", shortstat: "",
-                     diff: "", staged: [], commit_ok: true)
+                     diff: "", staged: [], commit_ok: true, worktrees: [], stash: "", unpushed: {},
+                     worktree_add_results: [], worktree_remove_ok: true, branch_delete_ok: true)
         @remote = remote
         @default_branch = default_branch
         @checkout_ok = checkout_ok
@@ -32,13 +33,42 @@ module Robur
         @diff = diff
         @staged = staged
         @commit_ok = commit_ok
+        @worktrees = worktrees
+        @stash = stash
+        @unpushed = unpushed
+        @worktree_add_results = worktree_add_results.dup
+        @worktree_remove_ok = worktree_remove_ok
+        @branch_delete_ok = branch_delete_ok
         @checkout_calls = []
         @checkout_b_calls = []
         @pull_calls = 0
         @push_calls = []
         @add_calls = []
         @commit_calls = []
+        @worktree_add_calls = []
+        @worktree_remove_calls = []
+        @branch_delete_calls = []
       end
+
+      def worktrees = @worktrees
+
+      def worktree_add(path, branch, base)
+        @worktree_add_calls << [path, branch, base]
+        @worktree_add_results.empty? ? [true, ""] : @worktree_add_results.shift
+      end
+
+      def worktree_remove(path)
+        @worktree_remove_calls << path
+        @worktree_remove_ok
+      end
+
+      def branch_delete_d(branch)
+        @branch_delete_calls << branch
+        @branch_delete_ok
+      end
+
+      def stash_list = @stash
+      def unpushed_commits(wt_path) = @unpushed.fetch(wt_path, "")
 
       def remote?(_name = "origin") = @remote
       def default_branch = @default_branch
@@ -632,6 +662,261 @@ module Robur
       assert_nil result
       assert_equal [["ratchet/plan", "main"]], repo.checkout_b_calls
       assert(log_lines.any? { |l| l.include?("auto-plan: PR #0 merged, continuing into build loop") })
+    ensure
+      FileUtils.remove_entry(dir) if dir
+    end
+
+    # --- fanout -----------------------------------------------------------
+    # Mirrors bash selftest suite 36's guard-clause scenarios.
+
+    def test_fanout_requires_parallel_1
+      dir = Dir.mktmpdir
+      result = Loop.fanout(dir, {}, repo: FakeRepo.new)
+      assert_equal 1, result
+      assert(log_lines.any? { |l| l.include?("fanout requires PARALLEL=1") })
+    ensure
+      FileUtils.remove_entry(dir) if dir
+    end
+
+    def test_fanout_requires_gh_on_path
+      ENV["PATH"] = "/nonexistent-bin-only"
+      dir = Dir.mktmpdir
+      result = Loop.fanout(dir, { "PARALLEL" => "1" }, repo: FakeRepo.new)
+      assert_equal 1, result
+      assert(log_lines.any? { |l| l.include?("fanout requires gh") })
+    ensure
+      FileUtils.remove_entry(dir) if dir
+    end
+
+    def test_fanout_requires_origin_remote
+      with_gh_on_path
+      dir = Dir.mktmpdir
+      result = Loop.fanout(dir, { "PARALLEL" => "1" }, repo: FakeRepo.new(remote: false))
+      assert_equal 1, result
+      assert(log_lines.any? { |l| l.include?("fanout requires an 'origin' remote") })
+    ensure
+      FileUtils.remove_entry(dir) if dir
+    end
+
+    def test_fanout_no_independent_milestones_returns_0
+      with_gh_on_path
+      dir = Dir.mktmpdir
+      File.write(File.join(dir, "PLAN.md"), "## M1\n- [ ] T1.1 (normal) not independent\n")
+      result = Loop.fanout(dir, { "PARALLEL" => "1", "TRACKER_FILE" => "PLAN.md" }, repo: FakeRepo.new)
+      assert_equal 0, result
+      assert(log_lines.any? { |l| l.include?("no independent milestones found") })
+    ensure
+      FileUtils.remove_entry(dir) if dir
+    end
+
+    def test_fanout_creates_worktrees_launches_and_cleans
+      with_gh_on_path
+      dir = Dir.mktmpdir
+      File.write(File.join(dir, "PLAN.md"), <<~PLAN)
+        ## Milestone A
+        - [ ] T1 (independent) first
+
+        ## Milestone B
+        - [ ] T2 (independent) second
+      PLAN
+      repo = FakeRepo.new
+      launched = []
+      result = Loop.fanout(dir, { "PARALLEL" => "1", "TRACKER_FILE" => "PLAN.md", "FANOUT_MAX" => "4" },
+                           repo: repo, sleep_it: ->(_s) {},
+                           launch: ->(wt_path) { launched << wt_path; 12_345 + launched.length },
+                           wait_any: -> { raise "should not need to wait: FANOUT_MAX not reached" },
+                           wait_pid: ->(_pid) { nil })
+      assert_equal 0, result
+      # fanout_independent_milestones's slug is NOT lowercased (unlike the
+      # milestone-branch-lifecycle slug) -- ported byte-for-byte from bash.
+      assert_equal [["../ratchet-wt-Milestone-A", "ratchet/m-Milestone-A", "origin/main"],
+                    ["../ratchet-wt-Milestone-B", "ratchet/m-Milestone-B", "origin/main"]], repo.worktree_add_calls
+      assert_equal ["../ratchet-wt-Milestone-A", "../ratchet-wt-Milestone-B"], launched
+      assert_equal [["../ratchet-wt-Milestone-A", "ratchet/m-Milestone-A"],
+                    ["../ratchet-wt-Milestone-B", "ratchet/m-Milestone-B"]], State.read_fanout(dir)
+      assert(log_lines.any? { |l| l.include?("found 2 independent milestone(s)") })
+      assert(log_lines.any? { |l| l.include?("all worktrees created") })
+      assert(log_lines.any? { |l| l.include?("all loops complete") })
+      assert(log_lines.any? { |l| l.include?("fanout complete") })
+    ensure
+      FileUtils.remove_entry(dir) if dir
+    end
+
+    def test_fanout_retries_on_config_lock_then_succeeds
+      with_gh_on_path
+      dir = Dir.mktmpdir
+      File.write(File.join(dir, "PLAN.md"), "## M1\n- [ ] T1 (independent) t\n")
+      repo = FakeRepo.new(worktree_add_results: [[false, "fatal: could not lock config.lock file"], [true, ""]])
+      result = Loop.fanout(dir, { "PARALLEL" => "1", "TRACKER_FILE" => "PLAN.md" },
+                           repo: repo, sleep_it: ->(_s) {}, launch: ->(_wt) { 1 }, wait_pid: ->(_pid) { nil })
+      assert_equal 0, result
+      assert_equal 2, repo.worktree_add_calls.length
+      assert(log_lines.any? { |l| l.include?("config.lock (attempt 1/5)") })
+    ensure
+      FileUtils.remove_entry(dir) if dir
+    end
+
+    def test_fanout_worktree_add_hard_failure_returns_1
+      with_gh_on_path
+      dir = Dir.mktmpdir
+      File.write(File.join(dir, "PLAN.md"), "## M1\n- [ ] T1 (independent) t\n")
+      repo = FakeRepo.new(worktree_add_results: [[false, "fatal: some other error"]])
+      result = Loop.fanout(dir, { "PARALLEL" => "1", "TRACKER_FILE" => "PLAN.md" }, repo: repo)
+      assert_equal 1, result
+      assert(log_lines.any? { |l| l.include?("worktree add failed") })
+    ensure
+      FileUtils.remove_entry(dir) if dir
+    end
+
+    def test_fanout_exhausts_retries_returns_1
+      with_gh_on_path
+      dir = Dir.mktmpdir
+      File.write(File.join(dir, "PLAN.md"), "## M1\n- [ ] T1 (independent) t\n")
+      lock_err = [false, "config.lock exists"]
+      repo = FakeRepo.new(worktree_add_results: Array.new(5) { lock_err.dup })
+      result = Loop.fanout(dir, { "PARALLEL" => "1", "TRACKER_FILE" => "PLAN.md" }, repo: repo, sleep_it: ->(_s) {})
+      assert_equal 1, result
+      assert_equal 5, repo.worktree_add_calls.length
+      assert(log_lines.any? { |l| l.include?("failed to create worktree after 5 attempts") })
+    ensure
+      FileUtils.remove_entry(dir) if dir
+    end
+
+    def test_fanout_bounds_concurrency_by_fanout_max
+      with_gh_on_path
+      dir = Dir.mktmpdir
+      File.write(File.join(dir, "PLAN.md"), <<~PLAN)
+        ## Milestone A
+        - [ ] T1 (independent) a
+        ## Milestone B
+        - [ ] T2 (independent) b
+        ## Milestone C
+        - [ ] T3 (independent) c
+      PLAN
+      repo = FakeRepo.new
+      launched = []
+      waited = []
+      result = Loop.fanout(dir, { "PARALLEL" => "1", "TRACKER_FILE" => "PLAN.md", "FANOUT_MAX" => "2" },
+                           repo: repo, sleep_it: ->(_s) {},
+                           launch: ->(wt_path) { launched << wt_path; launched.length },
+                           wait_any: -> { waited << :any; 1 },
+                           wait_pid: ->(pid) { waited << [:pid, pid] })
+      assert_equal 0, result
+      assert_equal 3, launched.length
+      assert_equal [:any], waited.first(1)
+    ensure
+      FileUtils.remove_entry(dir) if dir
+    end
+
+    # --- fanout_clean -------------------------------------------------------
+    # Mirrors bash selftest suite 37's fail-toward-KEEP scenarios.
+
+    def test_fanout_clean_no_worktrees
+      dir = Dir.mktmpdir
+      removed, kept = Loop.fanout_clean(dir, repo: FakeRepo.new(worktrees: []))
+      assert_equal [0, 0], [removed, kept]
+      assert(log_lines.any? { |l| l.include?("no worktrees found") })
+    ensure
+      FileUtils.remove_entry(dir) if dir
+    end
+
+    def test_fanout_clean_skips_primary_worktree
+      dir = Dir.mktmpdir
+      primary = Repo::Worktree.new(path: dir, head: "abc", branch: "main", detached: false)
+      repo = FakeRepo.new(worktrees: [primary])
+      removed, kept = Loop.fanout_clean(dir, repo: repo)
+      assert_equal [0, 0], [removed, kept]
+    ensure
+      FileUtils.remove_entry(dir) if dir
+    end
+
+    def test_fanout_clean_skips_detached_worktree
+      dir = Dir.mktmpdir
+      primary = Repo::Worktree.new(path: dir, head: "abc", branch: "main", detached: false)
+      detached = Repo::Worktree.new(path: "/tmp/wt", head: "def", branch: nil, detached: true)
+      repo = FakeRepo.new(worktrees: [primary, detached])
+      removed, kept = Loop.fanout_clean(dir, repo: repo)
+      assert_equal [0, 0], [removed, kept]
+    ensure
+      FileUtils.remove_entry(dir) if dir
+    end
+
+    def test_fanout_clean_keeps_worktree_with_stash_entry
+      dir = Dir.mktmpdir
+      primary = Repo::Worktree.new(path: dir, head: "abc", branch: "main", detached: false)
+      wt = Repo::Worktree.new(path: "/tmp/wt", head: "def", branch: "test-branch", detached: false)
+      repo = FakeRepo.new(worktrees: [primary, wt], stash: "stash@{0}: WIP on test-branch: some work\n")
+      removed, kept = Loop.fanout_clean(dir, repo: repo)
+      assert_equal [0, 1], [removed, kept]
+      assert(log_lines.any? { |l| l.include?("KEEP: /tmp/wt (stash entry exists for test-branch)") })
+      assert_empty repo.worktree_remove_calls
+    ensure
+      FileUtils.remove_entry(dir) if dir
+    end
+
+    def test_fanout_clean_keeps_worktree_when_stash_check_fails
+      dir = Dir.mktmpdir
+      primary = Repo::Worktree.new(path: dir, head: "abc", branch: "main", detached: false)
+      wt = Repo::Worktree.new(path: "/tmp/wt", head: "def", branch: "test-branch", detached: false)
+      repo = FakeRepo.new(worktrees: [primary, wt], stash: nil)
+      removed, kept = Loop.fanout_clean(dir, repo: repo)
+      assert_equal [0, 1], [removed, kept]
+      assert(log_lines.any? { |l| l.include?("KEEP: /tmp/wt (stash check failed, fail toward KEEP)") })
+    ensure
+      FileUtils.remove_entry(dir) if dir
+    end
+
+    def test_fanout_clean_keeps_worktree_with_unpushed_commits
+      dir = Dir.mktmpdir
+      primary = Repo::Worktree.new(path: dir, head: "abc", branch: "main", detached: false)
+      wt = Repo::Worktree.new(path: "/tmp/wt", head: "def", branch: "dirty-branch", detached: false)
+      repo = FakeRepo.new(worktrees: [primary, wt], unpushed: { "/tmp/wt" => "abc123 some commit\n" })
+      removed, kept = Loop.fanout_clean(dir, repo: repo)
+      assert_equal [0, 1], [removed, kept]
+      assert(log_lines.any? { |l| l.include?("KEEP: /tmp/wt (unpushed commits)") })
+    ensure
+      FileUtils.remove_entry(dir) if dir
+    end
+
+    def test_fanout_clean_keeps_worktree_when_unpushed_check_fails
+      dir = Dir.mktmpdir
+      primary = Repo::Worktree.new(path: dir, head: "abc", branch: "main", detached: false)
+      wt = Repo::Worktree.new(path: "/tmp/wt", head: "def", branch: "dirty-branch", detached: false)
+      repo = FakeRepo.new(worktrees: [primary, wt], unpushed: {})
+      def repo.unpushed_commits(_wt_path) = nil
+      removed, kept = Loop.fanout_clean(dir, repo: repo)
+      assert_equal [0, 1], [removed, kept]
+      assert(log_lines.any? { |l| l.include?("KEEP: /tmp/wt (unpushed check failed, fail toward KEEP)") })
+    ensure
+      FileUtils.remove_entry(dir) if dir
+    end
+
+    def test_fanout_clean_keeps_dirty_worktree_git_refuses_removal
+      dir = Dir.mktmpdir
+      primary = Repo::Worktree.new(path: dir, head: "abc", branch: "main", detached: false)
+      wt = Repo::Worktree.new(path: "/tmp/wt", head: "def", branch: "dirty-branch", detached: false)
+      repo = FakeRepo.new(worktrees: [primary, wt], worktree_remove_ok: false)
+      removed, kept = Loop.fanout_clean(dir, repo: repo)
+      assert_equal [0, 1], [removed, kept]
+      assert(log_lines.any? { |l| l.include?("KEEP: /tmp/wt (git worktree remove refused)") })
+      assert_equal ["/tmp/wt"], repo.worktree_remove_calls
+    ensure
+      FileUtils.remove_entry(dir) if dir
+    end
+
+    def test_fanout_clean_removes_clean_pushed_worktree_and_deletes_branch
+      dir = Dir.mktmpdir
+      primary = Repo::Worktree.new(path: dir, head: "abc", branch: "main", detached: false)
+      wt = Repo::Worktree.new(path: "/tmp/wt", head: "def", branch: "clean-branch", detached: false)
+      repo = FakeRepo.new(worktrees: [primary, wt])
+      State.write_fanout(dir, [["/tmp/wt", "clean-branch"]])
+      removed, kept = Loop.fanout_clean(dir, repo: repo)
+      assert_equal [1, 0], [removed, kept]
+      assert(log_lines.any? { |l| l.include?("REMOVED: /tmp/wt") })
+      assert(log_lines.any? { |l| l.include?("deleted branch clean-branch") })
+      assert_equal ["clean-branch"], repo.branch_delete_calls
+      assert_empty State.read_fanout(dir)
+      assert(log_lines.any? { |l| l.include?("fanout-clean: removed=1 kept=0") })
     ensure
       FileUtils.remove_entry(dir) if dir
     end
