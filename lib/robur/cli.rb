@@ -10,6 +10,9 @@ require "robur/model_chain"
 require "robur/turn"
 require "robur/classifier"
 require "robur/commit_gate"
+require "robur/render"
+require "robur/observability"
+require "robur/state"
 
 module Robur
   # CLI surfaces ported so far: --help, unknown-flag, doctor. Differential
@@ -123,7 +126,10 @@ module Robur
       end
       data.each_byte { |b| upd.call(b) }
       len = data.bytesize
-      8.times { upd.call(len & 0xFF); len >>= 8 }
+      while len.positive?
+        upd.call(len & 0xFF)
+        len >>= 8
+      end
       (~crc) & 0xFFFFFFFF
     end
 
@@ -406,9 +412,12 @@ module Robur
       problems
     end
 
-    # bash `status` no-log path (commands.sh:cmd_status): with no loop.log yet,
-    # status is a one-liner and exit 1. The log-parsing surface lands with the
-    # loop port (M6).
+    # bash `status` (commands.sh:cmd_status): one-shot snapshot of a running
+    # or finished loop, reading loop.log + tracker + last_turn.out and
+    # checking loop.pid for liveness. Note the bash quirk this preserves ON
+    # PURPOSE for byte parity: unlike run/once/doctor, TRACKER_FILE here is
+    # NEVER defaulted to PLAN.md via detect_tracker_file, so a repo with a
+    # PLAN.md but no .ratchet.conf TRACKER_FILE= line shows "?" counts.
     def cmd_status(dir)
       dir = File.expand_path(dir || Dir.pwd)
       log_dir = File.join(ratchet_home, "logs", project_slug(dir))
@@ -420,7 +429,144 @@ module Robur
         puts "status: no loop.log found at #{log} (nothing run here yet?)"
         exit 1
       end
-      die "status: loop.log parsing not ported yet (M6)"
+      print status_report(dir, log_dir, log)
+      0
+    end
+
+    def status_report(dir, log_dir, log)
+      tracker = File.join(dir, Config.load(dir)[:values]["TRACKER_FILE"].to_s)
+      turn_out = File.join(log_dir, "last_turn.out")
+      log_text = File.read(log)
+
+      node, merge_pr, merge_since = status_node(log_text)
+      review_cycle = (cur = State.read_milestone_cur(dir)) ? cur[2] : 0
+      turn_num, tier, model, thinking, task = status_turn_line(log_text)
+      elapsed_took = status_elapsed(log_text, turn_num)
+      done_n, open_n, total_n = status_task_counts(tracker)
+      loop_alive_dot, loop_status = status_liveness(File.join(log_dir, "loop.pid"))
+      pct = total_n != "?" && total_n.positive? ? (done_n * 100 / total_n) : 0
+
+      plan = File.file?(tracker) ? Plan.new(tracker) : nil
+      cur_ms = plan&.current_milestone
+      mname = cur_ms&.fetch(:name)
+
+      avg_s = Observability.avg_turn_secs(log)
+      remaining_n = open_n == "?" ? 0 : open_n
+      eta_str = Render.eta(remaining_n, avg_s)
+
+      out = +"#{Render.c_bold(File.basename(dir))} #{loop_alive_dot}\n"
+      out << "Step #{done_n}/#{total_n}  [#{Render.c_green(Render.bar(pct, 12))} #{Render.c_blue("#{pct}%")}]\n"
+      plan&.milestones&.each do |ms|
+        ms_pct = ms[:total].positive? ? ms[:done] * 100 / ms[:total] : 0
+        line = format("%-34s [%s]  %d/%d", ms[:name], Render.bar(ms_pct, 6), ms[:done], ms[:total])
+        out << (ms[:name] == mname ? "#{Render.c_blue('▶')} #{Render.c_bold(line)}\n" : "  #{Render.c_dim(line)}\n")
+      end
+      out << "\nCurrent: #{Render.c_bold(task)}\n" if task != "\u2014"
+      out << "Tier/Model: #{Render.c_purple(tier)} / #{Render.c_purple(model)} (thinking=#{thinking})\n"
+      out << (review_cycle.positive? ? "Node: #{node} (review cycle #{review_cycle})\n" : "Node: #{node}\n")
+      out << "Waiting on PR #{merge_pr} since #{merge_since}\n" if node == "merge-wait" && !merge_pr.empty?
+      out << "Turn #{turn_num}: #{elapsed_took}\n" if turn_num != "\u2014"
+      out << "ETA: #{eta_str}\n"
+      doing_now = status_doing_now(turn_out)
+      out << "\nDoing: #{doing_now}\n" if doing_now && !doing_now.empty?
+      out << (loop_status.start_with?("running") ? "\nLoop: #{Render.c_green(loop_status)}\n" : "\nLoop: #{Render.c_dim(loop_status)}\n")
+      out << "Log: #{log}\n"
+      out
+    end
+
+    # Newest state line -> [node, merge_pr, merge_since] (commands.sh:286).
+    def status_node(log_text)
+      node_line = log_text.lines.select { |l| l =~ /milestone-complete|review-pass|review-fail|review-skip|merge-wait/ }.last
+      return ["build", "", ""] unless node_line
+
+      node_ts = node_line[/\A\[([^\]]+)\]/, 1].to_s
+      case node_line
+      when /milestone-complete/ then ["review", "", ""]
+      when /review-pass|review-fail|review-skip/ then ["build", "", ""]
+      when /merge-wait/
+        if node_line.include?("state=OPEN")
+          ["merge-wait", node_line[/pr=([^|\s]+)/, 1].to_s, node_ts]
+        else
+          ["build", "", ""]
+        end
+      else ["build", "", ""]
+      end
+    end
+
+    # Last turn line -> [turn_num, tier, model, thinking, task]
+    # (commands.sh:306), including the old-format fallback whose model regex
+    # stops at the first '-' (`[^-[:space:]]+`) — a bash quirk preserved for
+    # byte parity, not fixed.
+    def status_turn_line(log_text)
+      lines = log_text.lines
+      turn_line = lines.select { |l| l =~ /\A\[[^\]]+\] turn \d+ \| tier=/ }.last
+      if turn_line
+        [turn_line[/turn (\d+) /, 1], turn_line[/tier=([^|\s]+)/, 1], turn_line[/model=([^|\s]+)/, 1],
+         turn_line[/thinking=([^|\s]+)/, 1], turn_line[/task=(.*)\z/, 1].to_s.strip]
+      elsif (turn_line = lines.select { |l| l =~ /\A\[[^\]]+\] --- turn \d+ \| model=/ }.last)
+        [turn_line[/turn (\d+) /, 1], "\u2014", turn_line[/model=([^-\s]+)/, 1], "\u2014", "\u2014"]
+      else
+        ["\u2014"] * 5
+      end
+    end
+
+    # Same-turn end line -> "took Ns" / "finished" / "running" (commands.sh:333).
+    def status_elapsed(log_text, turn_num)
+      end_line = log_text.lines.select { |l| l =~ /\A\[[^\]]+\] turn \d+ end \| class=/ }.last
+      return "running" unless end_line && end_line[/turn (\d+) end/, 1] == turn_num
+
+      took = end_line[/took=(\d+)s/, 1]
+      took ? "took #{took}s" : "finished"
+    end
+
+    # [done, open, total] as plain (non-heading-aware) grep counts
+    # (commands.sh:346) — "?" triples when there is no tracker to count.
+    def status_task_counts(tracker)
+      return %w[? ? ?] unless File.file?(tracker)
+
+      lines = File.readlines(tracker)
+      done_n = lines.count { |l| l =~ /\A[[:space:]]*-?[[:space:]]*\[x\]/ }
+      open_n = lines.count { |l| l =~ /\A[[:space:]]*-?[[:space:]]*\[( |IN PROGRESS)\]/ }
+      [done_n, open_n, done_n + open_n]
+    end
+
+    # loop.pid -> [dot, status text] (commands.sh:358).
+    def status_liveness(pid_file)
+      return ["\u25CB", "not running"] unless File.file?(pid_file)
+
+      pid = File.read(pid_file).strip
+      if !pid.empty? && process_alive?(pid)
+        [Render.ansi_ok? ? "\u25CF" : "*", "running (pid #{pid})"]
+      else
+        ["\u25CB", "not running (stale pid #{pid})"]
+      end
+    end
+
+    def process_alive?(pid)
+      Process.kill(0, Integer(pid))
+      true
+    rescue StandardError
+      false
+    end
+
+    # last_turn.out -> the last non-blank summary line (commands.sh:441),
+    # handling both plain-text agent output and the pi JSON stream (joining
+    # text_delta fragments). ponytail: only \n, \t, \\ and \" are
+    # unescaped from printf '%b' — full octal/hex escape support is not worth
+    # it for a status preview line; widen if a real transcript needs it.
+    def status_doing_now(turn_out)
+      return nil unless File.file?(turn_out) && !File.zero?(turn_out)
+
+      content = File.read(turn_out)
+      if content.byteslice(0, 32).to_s.start_with?('{"type":"session"')
+        joined = content.each_line.grep(/"type":"text_delta"/)
+                         .map { |l| l.sub(/.*"delta":"/, "").sub(/","partial.*/, "") }
+                         .join.gsub('\\"', '"')
+                         .gsub('\\n', "\n").gsub('\\t', "\t").gsub('\\\\', '\\')
+        Render.summary(joined, 1)
+      else
+        Render.summary(content, 1)
+      end
     end
 
     # term_only: stdout only, never the loop log (common.sh:124); a no-op

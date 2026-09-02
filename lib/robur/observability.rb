@@ -118,6 +118,24 @@ module Robur
       "0\t0\t0"
     end
 
+    # avg_turn_secs LOGFILE -> mean turn duration in seconds from took= lines
+    # (observability.sh:118). 0 when the file is missing or has no took= line —
+    # the "before any recorded duration" case render_eta/ETA renders honestly.
+    def self.avg_turn_secs(logfile)
+      return 0 unless File.file?(logfile)
+
+      sum = 0
+      count = 0
+      File.foreach(logfile) do |line|
+        s = line[/took=(\d+)s/, 1]
+        next unless s
+
+        sum += s.to_i
+        count += 1
+      end
+      count.positive? ? sum / count : 0
+    end
+
     # stats DIR -> baseline metrics text (observability.sh:132 cmd_stats).
     # Prefers DIR/events.jsonl (structured `class=` on turn_end, no prose
     # regex) and falls back to DIR/loop.log so pre-robur logs still report;

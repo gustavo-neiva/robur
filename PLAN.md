@@ -279,7 +279,7 @@ port changed nothing.
     do: add `lib/robur/state.rb` owning every `.ratchet/` file with the frozen formats: `stop_reason` (one word), `loop-backoff` (`count<TAB>until_epoch`), `last_task.state` (`taskid<TAB>status`), `milestone.cur` (`name<TAB>base_sha<TAB>cycle<TAB>errors`), `conf.hash`, `last-log`, `fanout.state`. Reads tolerate a missing file; writes never raise.
     done: Given each state file as written by bash ratchet, When robur reads it, Then the parsed value is correct; Given robur writes each one, Then bash ratchet's own readers — `stop_reason`, `backed_off`, `cut -f1 last_task.state` — return the same values, asserted by executing them.
     files: lib/robur/state.rb, test/state_test.rb
-- [ ] T6.4 (normal) render and the status board
+- [x] T6.4 (normal) render and the status board
     do: add `lib/robur/render.rb` for the PM header, progress bar, timing and ETA lines, and `robur status` for the fleet board including liveness from the pid file and the milestone bars. Keep the ETA honestly labelled with the `~` prefix and `ETA unknown` before any recorded duration.
     done: Given the `logs/*.log` fixtures, When `robur status` renders, Then stdout is byte-identical to `ratchet status` on the same fixtures; Given no recorded turn duration, Then the ETA line reads `ETA unknown`.
     files: lib/robur/render.rb, test/render_test.rb
