@@ -70,7 +70,7 @@ module Robur
         Dir.mktmpdir("robur-diff") do |tmp|
           runs = {
             baseline: {cmd: baseline_cmd, home: File.join(tmp, "home-base")},
-            candidate: {cmd: candidate_cmd, home: File.join(tmp, "home-cand")},
+            candidate: {cmd: candidate_cmd, home: File.join(tmp, "home-cand"), extra: asdf_env},
           }
           results = runs.transform_values do |r|
             FileUtils.mkdir_p(r[:home])
@@ -81,7 +81,7 @@ module Robur
               "RATCHET_HOME" => r[:home],
               "AGENT_CMD" => FAKE_AGENT,
               "HOME" => r[:home],
-            }.merge(scenario.env)
+            }.merge(r[:extra] || {}).merge(scenario.env)
             out, err, st = Open3.capture3(env, r[:cmd], *scenario.argv, chdir: repo)
             {
               stdout: out, stderr: err, exit: st.exitstatus,
@@ -91,6 +91,15 @@ module Robur
           end
           build_report(scenario, results)
         end
+      end
+
+      private
+
+      # Redirecting HOME breaks the asdf ruby shim (its global-version
+      # fallback reads $HOME/.tool-versions), so exe/robur exits 126. Pin
+      # the version the harness itself is running under.
+      def asdf_env
+        {"ASDF_RUBY_VERSION" => RUBY_VERSION}
       end
 
       private
