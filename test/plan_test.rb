@@ -24,8 +24,9 @@ class PlanTest < Minitest::Test
 
   def test_task_block_starts_at_current_task
     block = own_plan.task_block
-    first = own_plan.next_task
-    assert block.start_with?("- [ ] #{first.id}")
+    first = own_plan.next_task(:in_progress) || own_plan.next_task(:open)
+    assert block.start_with?("- ["), block
+    assert block.match?(/\A- \[[^\]]+\] #{Regexp.escape(first.id)}(\s|$)/)
     refute block.include?("\n- [")
   end
 

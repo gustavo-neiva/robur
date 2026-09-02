@@ -252,11 +252,11 @@ port changed nothing.
     do: add `lib/robur/observability.rb` with an `Event` record and an `emit` that appends one JSON line to `events.jsonl` AND renders the frozen human line into `loop.log`. The log becomes a rendering of the events, killing the write-prose-then-regex-parse-it-back round-trip: bash writes English prose and parses it back with 5 regexes and 9 exact-wording substring checks, so rewording a log line silently zeroes a metric. The human-readable line format does not change.
     done: Given a run producing turn-start, turn-end, commit, bench and stop events, When the run finishes, Then `loop.log` is byte-identical to what bash ratchet writes for the same run, AND `events.jsonl` has one parseable record per line whose fields reconstruct that log line exactly.
     files: lib/robur/observability.rb, test/observability_test.rb
-- [ ] T5.4 (normal) metrics.tsv and turn usage
+- [x] T5.4 (normal) metrics.tsv and turn usage
     do: add `Observability#metrics_append` writing the same 12 tab-separated columns in the same order, defaulting to `RATCHET_HOME/metrics.tsv` and honouring `RATCHET_METRICS` — never `$HOME` directly, because hardcoding it made 333 of 340 recorded rows fixture noise. Add `turn_usage` summing per-message usage deltas deduped by `id`, `message.id`, `message.responseId` or `responseId` — zai streams carry no `id` and repeat the same usage 3–6 times per message.
     done: Given the `turn-usage` fixtures, When `turn_usage` runs, Then the in/out/cost triple equals the bash `_turn_usage` output exactly; Given `RATCHET_METRICS` pointed at a temp file, Then nothing is written to the real metrics file and the appended row has 12 fields in the frozen order.
     files: lib/robur/observability.rb, test/observability_test.rb
-- [ ] T5.5 (normal) notify_human and stats
+- [x] T5.5 (normal) notify_human and stats
     do: add `notify_human` — emit `HUMAN NEEDED:`, ring the bell on a TTY, run `NOTIFY_CMD` in the background with the message as `$1`, and never accept `NOTIFY_CMD` from the repo conf. Add `stats` computing the baseline metrics from `events.jsonl` rather than by re-parsing prose, with a fallback that reads a legacy `loop.log` so old logs still report.
     done: Given a `NOTIFY_CMD` stub, When `notify_human` runs, Then the stub receives the message as its first argument exactly once; Given the `logs/*.log` fixtures, When `stats` runs on them, Then the printed metrics match `ratchet stats` on the same files line for line.
     files: lib/robur/observability.rb, test/observability_test.rb
