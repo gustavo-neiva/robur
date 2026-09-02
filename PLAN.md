@@ -144,7 +144,7 @@ port changed nothing.
     do: `.ratchet.conf` and `.gitignore` were bootstrapped by hand — verify them, do not rewrite them. Add `AGENTS.md` describing what robur is, the stdlib-only rule, the no-Sorbet rule, and the frozen-format list — no loop mechanics, that travels in the harness prompt. Add `LEARNINGS.md` with the append-only header, seeded with this gotcha: `.ratchet.conf` values are truncated at the first `#` by `parse_repo_conf`, so a `VERIFY_CMD` containing Ruby string interpolation like a `#{...}` sequence is silently cut in half and RED-locks the loop. That is why the gate uses `File.expand_path(f)` and not interpolation. Never put a `#` in any `.ratchet.conf` value.
     done: Given the three files, When `ratchet doctor .` runs from the bash ratchet, Then it exits 0 and reports the conf parses, the tracker has open tasks, and the protocol is current; the `VERIFY_CMD` it echoes ends in `}'` and is not truncated.
     files: AGENTS.md, LEARNINGS.md
-- [ ] T1.3 (trivial, serial) the test entrypoint
+- [x] T1.3 (trivial, serial) the test entrypoint
     do: add `test/test_helper.rb` requiring `minitest/autorun` and putting `lib/` on the load path, plus one `test/smoke_test.rb` asserting `Robur::VERSION`. Confirm the `VERIFY_CMD` one-liner discovers and runs it with no bundler and no Rakefile.
     done: Given the two files, When `ruby -Ilib -e 'Dir["test/**/*_test.rb"].each{|f| require File.expand_path(f)}'` runs, Then it reports 1 run, 1 assertion, 0 failures and exits 0.
     files: test/test_helper.rb, test/smoke_test.rb
