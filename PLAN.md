@@ -198,7 +198,7 @@ port changed nothing.
     do: add `lib/robur/plan.rb` wrapping a tracker file: `next_task`, `open?`, `in_progress?`, `counts` (open, in-progress, done), `completed_list`, `completed_subject`, `task_block`, `class_marker`. `counts` is the single counter — bash has three implementations and `atlas/bin/board-update.sh:13` gets it wrong by omitting `[ ]`. Honour the heading skip rule: `[ ]` lines under a heading whose lowercased text matches `done` or `checklist` are not tasks.
     done: Given `ratchet/PLAN.md`, When `counts` runs, Then it matches `tracker_count_done` and the bash open-count for that file; Given a `[ ]` line under a `### Definition of Done` heading, Then `next_task` skips it and `open?` ignores it.
     files: lib/robur/plan.rb, test/plan_test.rb
-- [ ] T3.3 (normal) Plan — milestones and readiness
+- [x] T3.3 (normal) Plan — milestones and readiness
     do: add `milestones` (name, done, total per `## ` section), `current_milestone` (name, index, count, done, total for the section holding the first open task), `ready?` (no `_(...)_` placeholders outside backticks, at least one tagged open task, and an all-done tracker counts as ready), and `independent_milestones`.
     done: Given `ratchet/PLAN.md` and `ratchet/templates/PLAN.seed.md`, When each method runs, Then the outputs equal the bash `tracker_milestones`, `tracker_current_milestone`, `plan_is_ready` and `fanout_independent_milestones` results for the same files, asserted by executing both.
     files: lib/robur/plan.rb, test/plan_test.rb
