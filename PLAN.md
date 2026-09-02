@@ -167,7 +167,7 @@ port changed nothing.
 
 ## M2 — Config and the boundaries
 
-- [ ] T2.1 (normal) Sys — the injected boundaries
+- [x] T2.1 (normal) Sys — the injected boundaries
     do: add `lib/robur/sys.rb` defining four tiny collaborators with real default implementations and no interfaces beyond what is used: `Sys::Fs` (read, write, exist?, mkdir_p, glob), `Sys::Clock` (now, monotonic, sleep), `Sys::Proc` (capture, spawn-with-deadline via `Open3`), `Sys::Http` (get, post via `Net::HTTP`). Every other class takes a `sys:` keyword defaulting to the real one. No plugin registry, no factory — these exist so tests need no fake `$HOME`.
     done: Given a test double for `Sys::Clock`, When a class that sleeps is constructed with it, Then no real time passes and the recorded sleep durations are assertable.
     files: lib/robur/sys.rb, test/sys_test.rb
