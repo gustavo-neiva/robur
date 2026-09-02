@@ -12,9 +12,11 @@ module Robur
     # Runs cmd with output redirected to turn_file. kill_reason is nil,
     # "deadline-<TURN_TIMEOUT>s" or "stall-<STALL_TIMEOUT>s".
     def self.run(cmd:, turn_file:, turn_timeout:, stall_timeout:, poll_interval:,
-                 proc: Sys::Proc.new, clock: Sys::Clock.new)
+                 chdir: nil, proc: Sys::Proc.new, clock: Sys::Clock.new)
       File.open(turn_file, "w") do |f|
-        pid = proc.spawn(cmd, out: f, err: f)
+        # bash cd's into REPO_DIR in main() before every turn: the agent must
+        # run in the repo or stubs/agents edit the wrong tree (infinite step loop).
+        pid = proc.spawn(cmd, out: f, err: f, chdir: chdir)
         start = clock.monotonic
         last_size = 0
         last_growth = start
@@ -57,8 +59,10 @@ module Robur
 
   module Sys
     class Proc
-      def spawn(cmd, out:, err:)
-        Process.spawn(*cmd, out: out, err: err)
+      def spawn(cmd, out:, err:, chdir: nil)
+        opts = { out: out, err: err }
+        opts[:chdir] = chdir if chdir
+        Process.spawn(*cmd, **opts)
       end
 
       def reap(pid)

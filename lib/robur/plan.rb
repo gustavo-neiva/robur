@@ -200,7 +200,9 @@ module Robur
     end
 
     def all_lines
-      @all_lines ||= File.exist?(@path) ? File.readlines(@path, chomp: true) : []
+      # No memo: the run loop holds one Plan across turns while the agent edits
+      # the file — bash re-reads per tracker call and so must we.
+      File.exist?(@path) ? File.readlines(@path, chomp: true) : []
     end
 
     # Lines from the `- [...] id` task line through just before the next task

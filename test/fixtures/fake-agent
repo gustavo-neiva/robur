@@ -57,7 +57,7 @@ if done_i is not None:
     for j in range(done_i + 1, len(lines)):
         m = open_re.search(lines[j])
         if m:
-            lines[j] = lines[j][:m.start()] + m.group(1) + 'IN PROGRESS' + lines[j][m.end():]
+            lines[j] = lines[j][:m.start()] + m.group(1) + 'IN PROGRESS]' + lines[j][m.end():]
             break
 
 open(plan, 'w').write('\n'.join(lines))

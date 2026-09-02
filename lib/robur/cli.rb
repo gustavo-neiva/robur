@@ -3,6 +3,7 @@
 require "optparse"
 require "fileutils"
 require "robur/config"
+require "robur/loop"
 require "robur/plan"
 require "robur/tier"
 require "robur/model_chain"
@@ -254,6 +255,9 @@ module Robur
       when "once"
         warn_conf_issues(dir || ".")
         cmd_once(dir)
+      when "run"
+        warn_conf_issues(dir || ".")
+        Robur::Loop.run(dir || ".")
       when *COMMANDS
         die "#{command}: not ported yet (M6)"
       else die("unknown command: #{command.inspect}")
@@ -621,7 +625,7 @@ module Robur
       cmd = [conf["AGENT_CMD"], "--model", model]
       cmd += ["--thinking", thinking] unless thinking.to_s.empty?
       cmd += ["--no-session", "-p", "turn"]
-      result = Turn.run(cmd: cmd, turn_file: turn_out,
+      result = Turn.run(cmd: cmd, turn_file: turn_out, chdir: dir,
                         turn_timeout: conf["TURN_TIMEOUT"].to_i,
                         stall_timeout: conf["STALL_TIMEOUT"].to_i,
                         poll_interval: (ENV["POLL_INTERVAL"] || conf["POLL_INTERVAL"] || 3).to_i)

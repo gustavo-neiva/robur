@@ -126,7 +126,7 @@ module Robur
         cmd = [conf["AGENT_CMD"], "--model", model]
         cmd += ["--thinking", thinking] unless thinking.to_s.empty?
         cmd += ["--no-session", "-p", "turn"]
-        result = Turn.run(cmd: cmd, turn_file: turn_out,
+        result = Turn.run(cmd: cmd, turn_file: turn_out, chdir: dir,
                           turn_timeout: conf["TURN_TIMEOUT"].to_i,
                           stall_timeout: conf["STALL_TIMEOUT"].to_i,
                           poll_interval: (ENV["POLL_INTERVAL"] || conf["POLL_INTERVAL"] || 3).to_i)
