@@ -183,7 +183,7 @@ port changed nothing.
     do: add `Config#conf_hash` producing the same SHA-256 hex `ratchet/lib/contract.sh:conf_hash` produces, and read/write `.ratchet/conf.hash` in the same one-line format.
     done: Given `ratchet/.ratchet.conf`, When `Config#conf_hash` runs, Then it equals `shasum -a 256 .ratchet.conf | awk '{print $1}'`; Given a `.ratchet/conf.hash` written by bash ratchet, Then robur reads it and reports no tampering.
     files: lib/robur/config.rb, test/config_test.rb
-- [ ] T2.5 (trivial, serial) M2 self-QA
+- [x] T2.5 (trivial, serial) M2 self-QA
     do: extend the differential suite to cover config resolution and run both gates.
     done: `ruby test/differential/run.rb --suite milestone-2` reports `0 diffs` across the conf-parsing scenarios — valid conf, unknown key, malformed line, quoted value, numeric coercion, per-provider cooldown — where the compared surface is `doctor` stdout and exit code. PASS is `0 diffs` plus a green unit run.
     files: test/differential/suites/milestone-2.rb, LEARNINGS.md

@@ -11,5 +11,6 @@ $LOAD_PATH.unshift(lib) unless $LOAD_PATH.include?(lib)
 
 require "robur"
 require "robur/cli"
+require "robur/config"
 
 exit(Robur::CLI.run(ARGV) || 0)

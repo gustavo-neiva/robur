@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "fileutils"
+require "robur/config"
 
 module Robur
   # CLI surfaces ported so far: --help, unknown-flag, doctor. Differential
@@ -139,9 +140,23 @@ module Robur
       end
 
       case command
-      when "doctor" then cmd_doctor(File.expand_path(dir || Dir.pwd))
+      when "doctor"
+        warn_conf_issues(dir || ".") # main() parses the repo conf before dispatch
+        cmd_doctor(File.expand_path(dir || Dir.pwd))
       else die("unknown command: #{command.inspect}")
       end
+    end
+
+    # main() parity (ratchet/bin/ratchet:307): any command with a repo conf
+    # that fails to parse surfaces a stderr warning — tolerate at run time,
+    # doctor is the strict gate. Uses the RAW dir arg like bash REPO_DIR.
+    def warn_conf_issues(dir)
+      conf = File.join(dir, ".ratchet.conf")
+      return unless File.directory?(dir) && File.file?(conf)
+      _, errors = Robur::Config.parse_repo(File.read(conf))
+      return if errors.empty?
+      warn "[#{Time.now.strftime('%Y-%m-%d %H:%M:%S')}] WARNING: #{dir}/.ratchet.conf has issues (run 'ratchet doctor'):"
+      warn "\n" + errors.join("\n")
     end
 
     # ponytail: only the no-.ratchet.conf doctor path is ported (the only one
@@ -181,7 +196,9 @@ module Robur
           pr_ok.call(".ratchet.conf parses (allowlisted keys)")
         else
           pr_fail.call(".ratchet.conf has errors:")
-          puts cerr.join("\n").gsub(/^/, "         ")
+          # baseline: printf '%b\n' "$RATCHET_CONF_ERRORS" | sed 's/^/         /'
+          # where the errors string starts with \n — hence the blank line.
+          puts ("\n" + cerr.join("\n")).gsub(/^/, "         ")
         end
         case conf_values["RATCHET_PROTOCOL"] || "1"
         when "1" then pr_ok.call("RATCHET_PROTOCOL=1 supported")
@@ -216,6 +233,12 @@ module Robur
         pr_fail.call("VERIFY_CMD is EMPTY — set it in .ratchet.conf (no-gate is loud by design)")
       else
         pr_ok.call("VERIFY_CMD is set: '#{verify_cmd}'")
+        # dry-run: resolve first token (commands.sh:822)
+        first = verify_cmd.split[0]
+        builtins = %w[if then else elif fi for while do done case esac function return continue break :]
+        if !builtins.include?(first) && !on_path?(first) && !File.readable?(File.join(dir, first))
+          pr_fail.call("VERIFY_CMD references unresolved executable: '#{first}' (not found via command -v or as file)")
+        end
       end
 
       pr_ok.call("tokens: defined in conf (prompt delivery)")
