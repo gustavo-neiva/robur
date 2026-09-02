@@ -105,10 +105,11 @@ module Robur
       status&.success? ? out.strip : nil
     end
 
-    # Full unified diff for RANGE, or nil on failure (distinct from an empty
-    # string, which is a valid "no changes" diff).
-    def diff(range)
-      out, _err, status = git("diff", range)
+    # Full unified diff for RANGE (optionally scoped to a pathspec), or nil on
+    # failure (distinct from an empty string, which is a valid "no changes" diff).
+    def diff(range, pathspec = nil)
+      args = pathspec ? ["diff", range, "--", pathspec] : ["diff", range]
+      out, _err, status = git(*args)
       status&.success? ? out : nil
     end
 

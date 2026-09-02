@@ -13,16 +13,17 @@ module Robur
     Status = Struct.new(:success?)
 
     class FakeRepo
-      attr_reader :checkout_calls, :pull_calls, :push_calls
+      attr_reader :checkout_calls, :checkout_b_calls, :pull_calls, :push_calls
 
       attr_reader :add_calls, :commit_calls
 
-      def initialize(remote: true, default_branch: "main", checkout_ok: true, pull_ok: true,
+      def initialize(remote: true, default_branch: "main", checkout_ok: true, checkout_b_ok: true, pull_ok: true,
                      current_branch: "milestone-branch", push_ok: true, diffstat: "", shortstat: "",
                      diff: "", staged: [], commit_ok: true)
         @remote = remote
         @default_branch = default_branch
         @checkout_ok = checkout_ok
+        @checkout_b_ok = checkout_b_ok
         @pull_ok = pull_ok
         @current_branch = current_branch
         @push_ok = push_ok
@@ -32,6 +33,7 @@ module Robur
         @staged = staged
         @commit_ok = commit_ok
         @checkout_calls = []
+        @checkout_b_calls = []
         @pull_calls = 0
         @push_calls = []
         @add_calls = []
@@ -44,6 +46,11 @@ module Robur
       def checkout(branch)
         @checkout_calls << branch
         @checkout_ok
+      end
+
+      def checkout_b(branch, base)
+        @checkout_b_calls << [branch, base]
+        @checkout_b_ok
       end
 
       def pull_ff_only
@@ -60,7 +67,7 @@ module Robur
 
       def diffstat(_range) = @diffstat
       def shortstat(_range) = @shortstat
-      def diff(_range) = @diff
+      def diff(_range, _pathspec = nil) = @diff
       def staged_files = @staged
 
       def add(pathspec)
@@ -368,7 +375,7 @@ module Robur
     def test_run_review_turn_pass_on_review_pass_token
       dir = git_repo
       agent = write_agent_script(dir, "agent-pass", "REVIEW_PASS")
-      conf = { "AGENT_CMD" => agent, "TURN_TIMEOUT" => "5", "STALL_TIMEOUT" => "5" }
+      conf = { "AGENT_CMD" => agent, "TURN_TIMEOUT" => "5", "STALL_TIMEOUT" => "5", "POLL_INTERVAL" => "0.1" }
       status = Loop.run_review_turn("HEAD", "M1", 0, dir, conf, "", ["fake/model"], File.join(dir, "turn.out"))
       assert_equal "pass", status
     ensure
@@ -378,7 +385,7 @@ module Robur
     def test_run_review_turn_fail_on_review_fail_token
       dir = git_repo
       agent = write_agent_script(dir, "agent-fail", "REVIEW_FAIL")
-      conf = { "AGENT_CMD" => agent, "TURN_TIMEOUT" => "5", "STALL_TIMEOUT" => "5" }
+      conf = { "AGENT_CMD" => agent, "TURN_TIMEOUT" => "5", "STALL_TIMEOUT" => "5", "POLL_INTERVAL" => "0.1" }
       status = Loop.run_review_turn("HEAD", "M1", 0, dir, conf, "", ["fake/model"], File.join(dir, "turn.out"))
       assert_equal "fail", status
     ensure
@@ -396,7 +403,7 @@ module Robur
     def test_run_review_turn_error_on_neither_token
       dir = git_repo
       agent = write_agent_script(dir, "agent-neither", "nothing useful here")
-      conf = { "AGENT_CMD" => agent, "TURN_TIMEOUT" => "5", "STALL_TIMEOUT" => "5" }
+      conf = { "AGENT_CMD" => agent, "TURN_TIMEOUT" => "5", "STALL_TIMEOUT" => "5", "POLL_INTERVAL" => "0.1" }
       status = Loop.run_review_turn("HEAD", "M1", 0, dir, conf, "", ["fake/model"], File.join(dir, "turn.out"))
       assert_equal "error", status
     ensure
@@ -433,7 +440,7 @@ module Robur
       plan = Plan.new(File.join(dir, "PLAN.md"))
       repo = FakeRepo.new
       sys = FakeGh.new(states: ["MERGED"])
-      conf = { "AGENT_CMD" => agent, "TURN_TIMEOUT" => "5", "STALL_TIMEOUT" => "5", "PR_SOFT_MAX_LINES" => "400" }
+      conf = { "AGENT_CMD" => agent, "TURN_TIMEOUT" => "5", "STALL_TIMEOUT" => "5", "POLL_INTERVAL" => "0.1", "PR_SOFT_MAX_LINES" => "400" }
       with_gh_on_path
 
       result = Loop.milestone_complete_check(dir, conf, plan, "", ["fake/model"], File.join(dir, "turn.out"), dir,
@@ -459,7 +466,7 @@ module Robur
       State.write_milestone_cur(dir, "M1", "abcd1234", 0, 0)
       plan = Plan.new(File.join(dir, "PLAN.md"))
       repo = FakeRepo.new(staged: ["PLAN.md"])
-      conf = { "AGENT_CMD" => agent, "TURN_TIMEOUT" => "5", "STALL_TIMEOUT" => "5", "MAX_REVIEW_CYCLES" => "2" }
+      conf = { "AGENT_CMD" => agent, "TURN_TIMEOUT" => "5", "STALL_TIMEOUT" => "5", "POLL_INTERVAL" => "0.1", "MAX_REVIEW_CYCLES" => "2" }
 
       result = Loop.milestone_complete_check(dir, conf, plan, "", ["fake/model"], File.join(dir, "turn.out"), dir, repo: repo)
 
@@ -482,7 +489,7 @@ module Robur
       State.write_milestone_cur(dir, "M1", "abcd1234", 1, 0)
       plan = Plan.new(File.join(dir, "PLAN.md"))
       repo = FakeRepo.new
-      conf = { "AGENT_CMD" => agent, "TURN_TIMEOUT" => "5", "STALL_TIMEOUT" => "5", "MAX_REVIEW_CYCLES" => "2" }
+      conf = { "AGENT_CMD" => agent, "TURN_TIMEOUT" => "5", "STALL_TIMEOUT" => "5", "POLL_INTERVAL" => "0.1", "MAX_REVIEW_CYCLES" => "2" }
 
       result = Loop.milestone_complete_check(dir, conf, plan, "", ["fake/model"], File.join(dir, "turn.out"), dir, repo: repo)
 
@@ -514,6 +521,117 @@ module Robur
       assert_equal 0, errors
       assert(log_lines.any? { |l| l.include?("review turn errors twice") })
       assert_equal 1, repo.push_calls.length
+    ensure
+      FileUtils.remove_entry(dir) if dir
+    end
+
+    # --- auto_plan_pr0 --------------------------------------------------------
+    # Mirrors bash selftest suite 31's auto-plan flow.
+
+    def test_auto_plan_pr0_skips_when_pr_cadence_not_milestone
+      dir = Dir.mktmpdir
+      File.write(File.join(dir, "PLAN.md"), "- [ ] T1 (trivial) task _(placeholder)_\n")
+      plan = Plan.new(File.join(dir, "PLAN.md"))
+      repo = FakeRepo.new
+      result = Loop.auto_plan_pr0(dir, {}, plan, File.join(dir, "turn.out"), @loop_log, repo: repo)
+      assert_nil result
+      assert_empty repo.checkout_b_calls
+    ensure
+      FileUtils.remove_entry(dir) if dir
+    end
+
+    def test_auto_plan_pr0_skips_when_plan_already_ready
+      dir = Dir.mktmpdir
+      File.write(File.join(dir, "PLAN.md"), "- [ ] T1 (trivial) task\n")
+      plan = Plan.new(File.join(dir, "PLAN.md"))
+      repo = FakeRepo.new
+      result = Loop.auto_plan_pr0(dir, { "PR_CADENCE" => "milestone" }, plan, File.join(dir, "turn.out"), @loop_log, repo: repo)
+      assert_nil result
+      assert_empty repo.checkout_b_calls
+    ensure
+      FileUtils.remove_entry(dir) if dir
+    end
+
+    def test_auto_plan_pr0_dies_when_branch_creation_fails
+      dir = Dir.mktmpdir
+      File.write(File.join(dir, "PLAN.md"), "- [ ] T1 (trivial) task _(placeholder)_\n")
+      plan = Plan.new(File.join(dir, "PLAN.md"))
+      repo = FakeRepo.new(checkout_b_ok: false)
+      assert_raises(SystemExit) do
+        Loop.auto_plan_pr0(dir, { "PR_CADENCE" => "milestone" }, plan, File.join(dir, "turn.out"), @loop_log, repo: repo)
+      end
+      assert(log_lines.any? { |l| l.include?("FATAL: failed to create ratchet/plan branch") })
+    ensure
+      FileUtils.remove_entry(dir) if dir
+    end
+
+    def test_auto_plan_pr0_push_failure_returns_2
+      dir = Dir.mktmpdir
+      agent = write_agent_script(dir, "agent-plan", "STEP_COMPLETE")
+      File.write(File.join(dir, "PLAN.md"), "- [ ] T1 (trivial) task _(placeholder)_\n")
+      plan = Plan.new(File.join(dir, "PLAN.md"))
+      repo = FakeRepo.new(push_ok: false)
+      conf = { "PR_CADENCE" => "milestone", "AGENT_CMD" => agent, "MODELS" => "fake/model",
+               "TURN_TIMEOUT" => "5", "STALL_TIMEOUT" => "5", "POLL_INTERVAL" => "0.1" }
+      result = Loop.auto_plan_pr0(dir, conf, plan, File.join(dir, "turn.out"), @loop_log, repo: repo)
+      assert_equal 2, result
+      assert(log_lines.any? { |l| l.include?("HUMAN NEEDED") && l.include?("git push failed") })
+    ensure
+      FileUtils.remove_entry(dir) if dir
+    end
+
+    def test_auto_plan_pr0_no_gh_manual_mode_returns_2
+      ENV["PATH"] = "/nonexistent-bin-only"
+      dir = Dir.mktmpdir
+      agent = write_agent_script(dir, "agent-plan", "STEP_COMPLETE")
+      File.write(File.join(dir, "PLAN.md"), "- [ ] T1 (trivial) task _(placeholder)_\n")
+      plan = Plan.new(File.join(dir, "PLAN.md"))
+      repo = FakeRepo.new
+      conf = { "PR_CADENCE" => "milestone", "AGENT_CMD" => agent, "MODELS" => "fake/model",
+               "TURN_TIMEOUT" => "5", "STALL_TIMEOUT" => "5", "POLL_INTERVAL" => "0.1" }
+      result = Loop.auto_plan_pr0(dir, conf, plan, File.join(dir, "turn.out"), @loop_log, repo: repo)
+      assert_equal 2, result
+      assert(log_lines.any? { |l| l.include?("HUMAN NEEDED") && l.include?("no gh/origin") })
+    ensure
+      FileUtils.remove_entry(dir) if dir
+    end
+
+    def test_auto_plan_pr0_gh_pr_create_failure_returns_1
+      with_gh_on_path
+      dir = Dir.mktmpdir
+      agent = write_agent_script(dir, "agent-plan", "STEP_COMPLETE")
+      File.write(File.join(dir, "PLAN.md"), "- [ ] T1 (trivial) task _(placeholder)_\n")
+      plan = Plan.new(File.join(dir, "PLAN.md"))
+      repo = FakeRepo.new
+      sys = FakeGh.new(create_ok: false)
+      conf = { "PR_CADENCE" => "milestone", "AGENT_CMD" => agent, "MODELS" => "fake/model",
+               "TURN_TIMEOUT" => "5", "STALL_TIMEOUT" => "5", "POLL_INTERVAL" => "0.1" }
+      result = Loop.auto_plan_pr0(dir, conf, plan, File.join(dir, "turn.out"), @loop_log, repo: repo, sys: sys)
+      assert_equal 1, result
+      assert(log_lines.any? { |l| l.include?("gh pr create failed") })
+    ensure
+      FileUtils.remove_entry(dir) if dir
+    end
+
+    def test_auto_plan_pr0_success_pushes_opens_pr_and_waits_for_merge
+      with_gh_on_path
+      dir = git_repo
+      agent = write_agent_script(dir, "agent-plan", "STEP_COMPLETE")
+      File.write(File.join(dir, "PLAN.md"), "- [ ] T1 (trivial) task _(placeholder)_\n")
+      git(dir, "add", "PLAN.md")
+      git(dir, "commit", "-q", "-m", "init")
+      plan = Plan.new(File.join(dir, "PLAN.md"))
+      repo = FakeRepo.new
+      sys = FakeGh.new(states: ["MERGED"])
+      conf = { "PR_CADENCE" => "milestone", "AGENT_CMD" => agent, "MODELS" => "fake/model",
+               "TURN_TIMEOUT" => "5", "STALL_TIMEOUT" => "5", "POLL_INTERVAL" => "0.1" }
+
+      result = Loop.auto_plan_pr0(dir, conf, plan, File.join(dir, "turn.out"), @loop_log,
+                                  repo: repo, sys: sys, sleep_it: ->(_s) {})
+
+      assert_nil result
+      assert_equal [["ratchet/plan", "main"]], repo.checkout_b_calls
+      assert(log_lines.any? { |l| l.include?("auto-plan: PR #0 merged, continuing into build loop") })
     ensure
       FileUtils.remove_entry(dir) if dir
     end

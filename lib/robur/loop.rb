@@ -62,6 +62,9 @@ module Robur
       emit "  loop log  : #{log_dir}/loop.log"
       emit "=" * 60
 
+      exit_code = auto_plan_pr0(dir, conf, plan, turn_out, File.join(log_dir, "loop.log"), sleep_it: sleep_it)
+      return exit_code if exit_code
+
       milestone_branch_lifecycle(dir, conf, plan)
 
       loop do
@@ -309,6 +312,60 @@ module Robur
 
     def commit_turn(turn, model, conf, plan, dir)
       CLI.commit_turn(turn, model, conf, plan, dir)
+    end
+
+    # Auto-plan PR #0 (bin/ratchet:424-467, PR_CADENCE=milestone only, and
+    # only when the tracker is not yet `Plan#ready?`): branch off the default
+    # branch, run ONE plan turn, push, open a PR, then block on
+    # `wait_for_merge` before the build loop starts. Returns nil to continue
+    # into the build loop, or an Integer process exit code (1 or 2) when the
+    # caller must stop immediately — mirroring bash's direct `exit 1`/`exit 2`
+    # calls in this block, which skip the pid-file write, the turn loop, and
+    # the "ratchet END" epilogue entirely.
+    def auto_plan_pr0(dir, conf, plan, turn_out, log_path, repo: Repo.new(dir), sys: Sys::Proc.new, sleep_it: Kernel.method(:sleep))
+      return nil unless (conf["PR_CADENCE"] || "done") == "milestone"
+      return nil if plan.ready?
+
+      emit "auto-plan: tracker not ready, running plan turn on ratchet/plan branch ..."
+      default_branch = repo.default_branch
+      CLI.die "failed to create ratchet/plan branch" unless repo.checkout_b("ratchet/plan", default_branch)
+
+      Commands.plan_turn(dir, conf, auto: conf["AUTO_PLAN"] == "1", turn_out: turn_out, emit: method(:emit))
+
+      if repo.remote?("origin")
+        emit "pushing ratchet/plan ..."
+        unless repo.push("-u", "origin", "ratchet/plan")
+          notify_human "auto-plan: git push failed (see #{log_path}) — push ratchet/plan manually and merge the PR"
+          return 2
+        end
+      end
+
+      if CLI.on_path?("gh") && repo.remote?("origin")
+        repo_name = File.basename(dir)
+        diff_text = repo.diff("#{default_branch}..HEAD", conf["TRACKER_FILE"] || "PLAN.md") || ""
+        pr_body = diff_text.lines.select { |l| l.start_with?("+") && !l.start_with?("+++") }
+                            .map { |l| l.sub(/\A\+/, "") }.join
+        emit "opening PR #0 (plan review) ..."
+        _out, _err, status = sys.capture("gh", "pr", "create", "--base", default_branch,
+                                         "--title", "ratchet plan: #{repo_name}", "--body", "Plan turn output:\n\n#{pr_body}")
+        unless status&.success?
+          emit "gh pr create failed (see #{log_path})"
+          return 1
+        end
+        emit "PR #0 opened — waiting for merge ..."
+      else
+        notify_human "auto-plan: merge ratchet/plan PR manually (no gh/origin)"
+        return 2
+      end
+
+      rc = wait_for_merge("ratchet/plan", dir, conf, repo: repo, sys: sys, sleep_it: sleep_it)
+      if rc != 0
+        emit "auto-plan: merge wait failed or PR closed — stopping."
+        return 1
+      end
+
+      emit "auto-plan: PR #0 merged, continuing into build loop ..."
+      nil
     end
 
     # Milestone branch lifecycle (bin/ratchet:469-503, PR_CADENCE=milestone
