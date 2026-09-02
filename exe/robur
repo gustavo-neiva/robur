@@ -6,7 +6,7 @@ self_path = File.expand_path(__FILE__)
 while File.symlink?(self_path)
   self_path = File.expand_path(File.readlink(self_path), File.dirname(self_path))
 end
-lib = File.expand_path("../lib", self_path)
+lib = File.expand_path("../lib", File.dirname(self_path))
 $LOAD_PATH.unshift(lib) unless $LOAD_PATH.include?(lib)
 
 require "robur"
