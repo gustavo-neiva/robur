@@ -221,7 +221,7 @@ port changed nothing.
     do: add `lib/robur/tier.rb` resolving a task tag to a tier (`trivial`→light, `hard`→build-hard, else build), the chain for a tier with the documented fallback order, the thinking level per tier, `AUTOPLAN` falling back to `PLAN` then flat, and the `--cheap` override that forces every tier to light. Include the `MODEL_RANK` auto-slice for unset tiers.
     done: Given each combination of set and unset tier keys from the bash suite-5, suite-21 and suite-22 cases, When the tier chain is resolved, Then it equals what `chain_for_tier` returns for the same conf, asserted against recorded bash output.
     files: lib/robur/tier.rb, test/tier_test.rb
-- [ ] T4.3 (hard) Turn — one agent invocation with a watchdog
+- [x] T4.3 (hard) Turn — one agent invocation with a watchdog
     do: add `lib/robur/turn.rb` running one `AGENT_CMD` invocation through `Sys::Proc`, streaming output to the turn file, enforcing `TURN_TIMEOUT` and the `STALL_TIMEOUT` no-growth kill, and recording the kill reason. Use `Process.wait` and a monotonic clock; the bash version hand-rolls this with `kill -0` and `$SECONDS` because bash 3.2 has no `timeout`.
     done: Given a stub agent that sleeps past the deadline, When the turn runs, Then it is killed, the kill reason is `deadline`, and the elapsed time is within one poll interval of the cap; Given a stub that emits nothing for longer than `STALL_TIMEOUT` then would finish, Then it is killed with reason `stall`; Given a stub that finishes normally, Then the exit code and captured output are intact.
     files: lib/robur/turn.rb, test/turn_test.rb
