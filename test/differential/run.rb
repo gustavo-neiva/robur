@@ -8,9 +8,18 @@
 require_relative "harness"
 
 SCENARIOS = []
+UNSUPPORTED = []
 
 def scenario(name:, argv:, setup: nil, env: {}, only: nil)
   SCENARIOS << Robur::Differential::Scenario.new(name: name, argv: argv, setup: setup, env: env, only: only)
+end
+
+# unsupported: a command/scenario the differential harness structurally
+# cannot compare (e.g. it shells out to a live, auth/network-dependent
+# external tool on BOTH sides) — listed in the report so it is never
+# silently missing from the suite, but excluded from the diff count.
+def unsupported(name:, reason:)
+  UNSUPPORTED << [name, reason]
 end
 
 i = ARGV.index("--suite")
@@ -38,5 +47,6 @@ SCENARIOS.each do |sc|
     puts "DIFF #{sc.name}: #{report.differences.join(", ")}"
   end
 end
-puts "#{diffs} diffs across #{SCENARIOS.size} scenarios"
+UNSUPPORTED.each { |name, reason| puts "unsupported #{name}: #{reason}" }
+puts "#{diffs} diffs across #{SCENARIOS.size} scenarios (#{UNSUPPORTED.size} unsupported)"
 exit(diffs.zero? ? 0 : 1)

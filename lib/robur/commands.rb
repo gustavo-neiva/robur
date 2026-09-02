@@ -6,6 +6,7 @@ require "robur/config"
 require "robur/plan"
 require "robur/tier"
 require "robur/turn"
+require "robur/classifier"
 
 module Robur
   # init | doctor | new | plan (port of ratchet/lib/commands.sh). PROG mirrors
@@ -408,8 +409,21 @@ module Robur
                         stall_timeout: conf["STALL_TIMEOUT"].to_i,
                         poll_interval: (conf["POLL_INTERVAL"] || 3).to_i)
       took = (Process.clock_gettime(Process::CLOCK_MONOTONIC) - start).to_i
-      klass = result.kill_reason || result.status.exitstatus
+      deadline = !result.kill_reason.nil?
+      step_token = conf["STEP_TOKEN"].to_s.empty? ? Config::DEFAULTS["STEP_TOKEN"] : conf["STEP_TOKEN"]
+      done_token = conf["DONE_TOKEN"].to_s.empty? ? Config::DEFAULTS["DONE_TOKEN"] : conf["DONE_TOKEN"]
+      human_token = conf["HUMAN_TOKEN"].to_s.empty? ? Config::DEFAULTS["HUMAN_TOKEN"] : conf["HUMAN_TOKEN"]
+      klass = Classifier.classify(turn_out, step_token: step_token, done_token: done_token,
+                                           deadline: deadline, json: false, human_token: human_token)
       emit.call("plan turn 1 end | class=#{klass} | took=#{took}s")
+
+      # show_excerpt (observability.sh:41)
+      if !ENV.fetch("SUMMARY_LINES", "4").to_i.zero? && File.exist?(turn_out) && !File.zero?(turn_out)
+        emit.call("--- summary ---")
+        lines = File.read(turn_out).lines.reject { |l| l =~ /^[[:space:]]*$/ }
+        lines.last(ENV.fetch("SUMMARY_LINES", "4").to_i).each { |l| CLI.flow(l) }
+        emit.call("---")
+      end
 
       plan_commit(dir, tracker_file, conf, emit)
       tracker_file

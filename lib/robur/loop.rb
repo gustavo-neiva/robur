@@ -54,18 +54,33 @@ module Robur
 
       emit = ->(m) { CLI.emit(m) }
 
+      session_id = conf["SESSION_NAME"].to_s.empty? ? "ratchet-#{CLI.project_slug(dir)}" : "ratchet-#{conf["SESSION_NAME"]}"
+      resume = conf["RESUME_SESSION"] == "1" ? "yes" : "no"
+      thinking_banner = conf["THINKING"].to_s.empty? ? "inherit" : conf["THINKING"]
+
       emit "=" * 60
       emit "ratchet START"
       emit "  repo      : #{dir}"
+      emit "  session   : #{session_id} (resume=#{resume})"
       emit "  tracker   : #{conf["TRACKER_FILE"] || "PLAN.md"}"
       emit "  models    : #{flat.join(" ")}  (preference order, fallback chain)"
+      emit "  turn cap  : #{conf["TURN_TIMEOUT"]}s   cooldown: #{conf["COOLDOWN"]}s   both-wait: #{conf["BOTH_WAIT"]}s"
+      emit "  tokens    : step='#{conf["STEP_TOKEN"]}'  done='#{conf["DONE_TOKEN"]}'"
+      emit "  agent     : #{conf["AGENT_CMD"]}"
+      emit "  thinking  : #{thinking_banner}"
+      emit "  verify    : #{conf["VERIFY_CMD"].to_s.empty? ? "<EMPTY — loud warning, no gate>" : conf["VERIFY_CMD"]}"
+      emit "  commit    : per-turn=#{conf["COMMIT_EACH_TURN"] == "1" ? "yes" : "no"}  push-on-done=#{conf["PUSH_ON_DONE"] == "1" ? "yes" : "no"}  pr=#{conf["OPEN_PR"] == "1" ? "yes" : "no"}"
       emit "  loop log  : #{log_dir}/loop.log"
+      emit "  stop      : Ctrl-C"
       emit "=" * 60
 
       exit_code = auto_plan_pr0(dir, conf, plan, turn_out, File.join(log_dir, "loop.log"), sleep_it: sleep_it)
       return exit_code if exit_code
 
       milestone_branch_lifecycle(dir, conf, plan)
+
+      # write PID file (bin/ratchet:511) so `ratchet status` can check liveness.
+      File.write(File.join(log_dir, "loop.pid"), "#{Process.pid}\n")
 
       loop do
         turn += 1
@@ -155,6 +170,14 @@ module Robur
 
         FileUtils.mkdir_p(File.join(dir, ".ratchet"))
         File.write(File.join(dir, ".ratchet", "last_task.state"), "#{task ? task.id : "?"}\t#{klass}\n")
+
+        # show_excerpt (observability.sh:41)
+        if !ENV.fetch("SUMMARY_LINES", "4").to_i.zero? && File.exist?(turn_out) && !File.zero?(turn_out)
+          emit "--- summary ---"
+          lines = File.read(turn_out).lines.reject { |l| l =~ /^[[:space:]]*$/ }
+          lines.last(ENV.fetch("SUMMARY_LINES", "4").to_i).each { |l| CLI.flow(l) }
+          emit "---"
+        end
 
         # sanity-gate BEFORE the case: done-with-open-tasks is mid-work. Setting
         # the status inside a `done` arm would never re-dispatch (the bash bug
@@ -277,9 +300,9 @@ module Robur
         if commit_result.committed
           changed = Open3.capture3("git", "-C", dir, "diff", "HEAD~1", "--name-only")[0]
                        .lines.first(5).map(&:strip).join(",")
-          write_note(log_dir, "Last turn changed: #{changed}")
+          write_note(log_dir, commit_result.committed, "Last turn changed: #{changed}")
         else
-          write_note(log_dir, "Last turn: gate RED, left staged.")
+          write_note(log_dir, commit_result.committed, "Last turn: gate RED, left staged.")
         end
       end
 
@@ -291,8 +314,12 @@ module Robur
       stop_reason == "gate_red" || stop_reason == "human_blocked" ? 1 : 0
     end
 
-    def write_note(log_dir, text)
-      File.write(File.join(log_dir, "last_turn.note"), "#{text}\n")
+    # write_turn_note (bin/ratchet:179): the gate-status FIRST line is
+    # ALWAYS derived from whether this turn committed, so the next turn's
+    # prompt never trusts a stale note; REASON is the optional extra line.
+    def write_note(log_dir, committed, reason)
+      first = committed ? "Verify gate after last turn: GREEN" : "Verify gate after last turn: RED (fix this first)"
+      File.write(File.join(log_dir, "last_turn.note"), "#{first}\n#{reason}\n")
     rescue StandardError
       nil
     end

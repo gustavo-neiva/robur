@@ -29,6 +29,7 @@ module Robur
       [/\btook=\d+s\b/, "took=<elapsed>s"], # loop.log's took=Ns is wall-clock and can tick over a 1s boundary
       [/\bpid[=: ]+\d+\b/i, "pid<PID>"],
       [/\b[A-Za-z0-9-]+-\d{6}\b/, "<slug>"], # project_slug: cksum of abs path differs per side
+      [/\A\d+\n\z/, "<pid>\n"], # loop.pid: the real process pid, always a different number per side
     ].freeze
 
     Scenario = Struct.new(:name, :argv, :setup, :env, :only, keyword_init: true) do

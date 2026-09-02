@@ -270,7 +270,7 @@ module Robur
         cmd_once(dir)
       when "run"
         warn_conf_issues(dir || ".")
-        Robur::Loop.run(dir || ".")
+        cmd_run(dir)
       when "init"
         cmd_init(dir)
       when "new"
@@ -284,6 +284,9 @@ module Robur
       when "fanout-clean"
         warn_conf_issues(dir || ".")
         cmd_fanout_clean(dir)
+      when "stats"
+        warn_conf_issues(dir || ".")
+        cmd_stats(dir)
       when *COMMANDS
         die "#{command}: not ported yet (M6)"
       else die("unknown command: #{command.inspect}")
@@ -291,9 +294,26 @@ module Robur
     end
 
     def cmd_init(dir)
-      Commands.init(File.expand_path(dir || Dir.pwd), emit: method(:emit))
+      dir = File.expand_path(dir || Dir.pwd)
+      wire_logs!(dir)
+      Commands.init(dir, emit: method(:emit))
+      0 # exit code, not Commands.init's own return value
     rescue StandardError => e
       die e.message
+    end
+
+    # bin/ratchet main()'s LOG_DIR/LOOP_LOG/last-log wiring (bin/ratchet:346-
+    # 352) happens ONCE, before EVERY command dispatch (not just run/once) --
+    # `emit` tees to loop.log and `status`/`stats` read the same log_dir back.
+    # `doctor` does its own copy inline (Commands.doctor_report); every other
+    # command that emits needs this called first.
+    def wire_logs!(dir)
+      log_dir = File.join(ratchet_home, "logs", project_slug(dir))
+      FileUtils.mkdir_p(log_dir)
+      FileUtils.mkdir_p(File.join(dir, ".ratchet"))
+      File.write(File.join(dir, ".ratchet", "last-log"), "#{log_dir}\n")
+      @loop_log = File.join(log_dir, "loop.log")
+      log_dir
     end
 
     # bin/ratchet main() step 2.5: strips the FIRST literal "models" token
@@ -313,7 +333,10 @@ module Robur
     end
 
     def cmd_new(idea, dir)
+      dir = File.expand_path(dir || Dir.pwd)
+      wire_logs!(dir)
       Commands.new_repo(idea, dir, emit: method(:emit))
+      0 # exit code, not Commands.new_repo's own return value
     rescue StandardError => e
       die e.message
     end
@@ -329,6 +352,7 @@ module Robur
       @loop_log = File.join(log_dir, "loop.log")
       turn_out = File.join(log_dir, "last_turn.out")
       Commands.plan(dir, conf, auto: conf["AUTO_PLAN"] == "1", turn_out: turn_out, emit: method(:emit))
+      0 # exit code, not Commands.plan's own return value
     rescue StandardError => e
       die e.message
     end
@@ -343,6 +367,27 @@ module Robur
       return if errors.empty?
       warn "[#{Time.now.strftime('%Y-%m-%d %H:%M:%S')}] WARNING: #{dir}/.ratchet.conf has issues (run 'ratchet doctor'):"
       warn "\n" + errors.join("\n")
+    end
+
+    # bash `stats) init_models "$MODELS"; cmd_stats; exit $?` (bin/ratchet:361):
+    # init_models dies on an empty chain before cmd_stats ever runs, so the
+    # empty-chain message wins over a missing loop.log.
+    def cmd_stats(dir)
+      dir = File.expand_path(dir || Dir.pwd)
+      log_dir = File.join(ratchet_home, "logs", project_slug(dir))
+      FileUtils.mkdir_p(log_dir)
+      FileUtils.mkdir_p(File.join(dir, ".ratchet"))
+      File.write(File.join(dir, ".ratchet", "last-log"), "#{log_dir}\n")
+      conf = Config.load(dir, @overrides || {}).values
+      @quiet = conf["QUIET"] == "1"
+      @loop_log = File.join(log_dir, "loop.log")
+      chain = conf["MODELS"].to_s
+      flat = chain.split(",").reject(&:empty?)
+      die "no models configured (MODELS='#{chain}')" if flat.empty?
+      puts Observability.stats(log_dir, cheap_model: flat.first)
+      0
+    rescue StandardError => e
+      die e.message
     end
 
     def cmd_doctor(dir)
@@ -621,6 +666,25 @@ module Robur
       0
     end
 
+    # bash main()'s shared run/once preflight (bin/ratchet:375-383): quiet
+    # doctor first, loud (re-run + print) only on failure, abort before any
+    # turn.
+    def cmd_run(dir)
+      dir = File.expand_path(dir || Dir.pwd)
+      wire_logs!(dir)
+      @quiet = Robur::Config.load(dir, @overrides || {}).values["QUIET"] == "1"
+      emit "preflight (doctor) ..."
+      require "stringio"
+      buf = StringIO.new
+      problems = Commands.doctor_report(dir, out: buf)
+      if problems.positive?
+        emit "preflight FAILED — run '#{PROG} doctor #{dir}' for details. Aborting before any turn."
+        print buf.string
+        return 1
+      end
+      Robur::Loop.run(dir)
+    end
+
     # bash `once` up to the preflight gate (ratchet/bin/ratchet once path):
     # quiet doctor first, loud only on failure, abort before any turn. Then
     # ONE turn of the loop (banner, tier routing, watchdog run, classify,
@@ -675,6 +739,9 @@ module Robur
       emit "  loop log  : #{@loop_log}"
       emit "  stop      : Ctrl-C"
       emit "=" * 60
+
+      # write PID file (bin/ratchet:511) so `ratchet status` can check liveness.
+      File.write(File.join(log_dir, "loop.pid"), "#{Process.pid}\n")
 
       stop_reason = ""
       turn = 1

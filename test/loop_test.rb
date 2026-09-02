@@ -51,7 +51,6 @@ class LoopTest < Minitest::Test
       QUIET="1"
       COMMIT_EACH_TURN="1"
       COMMIT_VERIFY_GATE="1"
-      MAX_DONE_GATE_FAILS="3"
       #{extra_conf}
     CONF
     git repo, "init", "-q"
@@ -89,7 +88,7 @@ class LoopTest < Minitest::Test
     # ALL_DONE sanity-gate downgrade never fires either — so every turn hits
     # the `done` dispatch branch and can accumulate gate failures.
     no_tasks = "# Plan\n\n## M1\nnothing tracked yet.\n"
-    repo = make_repo(extra_conf: "MAX_DONE_GATE_FAILS=\"2\"", plan: no_tasks)
+    repo = make_repo(plan: no_tasks)
     # Stub: writes a secret + ALL_DONE. The secret-scan blocks the commit ->
     # every done turn is RED at the gate until MAX_DONE_GATE_FAILS is hit.
     agent = File.join(repo, "red-agent")
