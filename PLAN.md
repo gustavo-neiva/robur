@@ -160,7 +160,7 @@ port changed nothing.
     do: add `test/differential/run.rb` as the single entrypoint: `ruby test/differential/run.rb [--suite NAME]`. It loads scenario files from `test/differential/suites/`, runs each, prints one line per scenario (`ok` or the diffing surfaces), and ends with `N diffs across M scenarios`. Exit 0 only when N is 0. Seed `suites/milestone-1.rb` with the `--help`, unknown-flag, and `doctor` scenarios.
     done: Given the seeded suite, When `ruby test/differential/run.rb --suite milestone-1` runs, Then it prints one line per scenario and a final count, and its exit code is 0 if and only if that count is 0.
     files: test/differential/run.rb, test/differential/suites/milestone-1.rb
-- [ ] T1.7 (trivial, serial) M1 self-QA
+- [x] T1.7 (trivial, serial) M1 self-QA
     do: run both gates and record the harness invocation in `AGENTS.md` so a fresh agent finds it.
     done: `ruby -Ilib -e 'Dir["test/**/*_test.rb"].each{|f| require File.expand_path(f)}'` exits 0, AND `ruby test/differential/run.rb --suite milestone-1` reports `0 diffs`. PASS is both exit 0 and the literal string `0 diffs` in the harness output.
     files: AGENTS.md, LEARNINGS.md
