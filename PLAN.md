@@ -213,7 +213,7 @@ port changed nothing.
 
 ## M4 — Models, turns, classification
 
-- [ ] T4.1 (normal) ModelChain — first-available, bench, cooldown
+- [x] T4.1 (normal) ModelChain — first-available, bench, cooldown
     do: add `lib/robur/model_chain.rb` holding the chain, the per-model transient strike counts and bench-until timestamps, with `pick`, `bench!`, `strike!`, `reset_all`, and the per-provider `COOLDOWN_<PROVIDER>` override resolved from the model's leading path segment. Take `Sys::Clock` by injection so cooldown expiry is testable without sleeping.
     done: Given a three-model chain, When the first is benched, Then `pick` returns the second; When all are benched, Then `pick` returns nil; When the injected clock advances past the cooldown, Then the first is picked again; Given `COOLDOWN_ZAI=3600` and a global `COOLDOWN=14400`, Then a `zai/...` model unbenches after 3600 simulated seconds.
     files: lib/robur/model_chain.rb, test/model_chain_test.rb
