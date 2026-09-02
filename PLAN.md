@@ -1,7 +1,7 @@
 <!-- class: MACHINE -->
 # PLAN.md — Track B: ratchet bash → robur (Ruby)
 
-> Tracker grammar: `[ ]` open → `[IN PROGRESS]` → `[x]`. Tags `(trivial|normal|hard)`
+> Tracker grammar: `[x]` open → `[ ]` → `[x]`. Tags `(trivial|normal|hard)`
 > route the model tier; `serial` forbids parallel siblings.
 
 **robur** is the Ruby replacement for the bash ratchet loop. It is a NEW sibling
@@ -148,9 +148,9 @@ port changed nothing.
     do: add `test/test_helper.rb` requiring `minitest/autorun` and putting `lib/` on the load path, plus one `test/smoke_test.rb` asserting `Robur::VERSION`. Confirm the `VERIFY_CMD` one-liner discovers and runs it with no bundler and no Rakefile.
     done: Given the two files, When `ruby -Ilib -e 'Dir["test/**/*_test.rb"].each{|f| require File.expand_path(f)}'` runs, Then it reports 1 run, 1 assertion, 0 failures and exits 0.
     files: test/test_helper.rb, test/smoke_test.rb
-- [ ] T1.4 (normal, serial) port the fixtures
+- [IN PROGRESS T1.4 (normal, serial) port the fixtures
     do: copy `ratchet/test/fixtures/` into `test/fixtures/` — `fake-agent`, `fixture-repo/` with its `PLAN.md`/`verify.sh`/`.gitignore`/`README.md`, `turn-usage/*.json`, and `logs/*.log`. Copy only; do not edit `ratchet/`. The `fake-agent` script must stay byte-identical so both binaries face the same stub, including its `RATCHET_LOOP`/`RATCHET_FANOUT` stderr echoes.
-    done: Given the copy, When `diff -r ratchet/test/fixtures test/fixtures` runs, Then it reports no differences; When `fake-agent` is invoked in a copy of `fixture-repo`, Then it ticks the first `[ ]`, marks the next `[IN PROGRESS]`, and prints `STEP_COMPLETE`.
+    done: Given the copy, When `diff -r ratchet/test/fixtures test/fixtures` runs, Then it reports no differences; When `fake-agent` is invoked in a copy of `fixture-repo`, Then it ticks the first `[ ]`, marks the next `[ ]`, and prints `STEP_COMPLETE`.
     files: test/fixtures/
 - [ ] T1.5 (hard, serial) the differential harness — core
     do: add `test/differential/harness.rb` with a `Scenario` (name, argv, fixture setup, env) and a `Runner` that, for one scenario, builds two pristine copies of the fixture repo, points `RATCHET_HOME` at two separate temp dirs, sets `AGENT_CMD` to the fake-agent, runs `ratchet/bin/ratchet ARGV` in one and `exe/robur ARGV` in the other, and captures stdout, stderr, exit code, every file under `.ratchet/`, `metrics.tsv`, `loop.log`, and `git log --format='%s'`. Normalization is an explicit, narrow substitution list — timestamps, temp paths, elapsed seconds, PIDs, commit shas — and nothing else, because a wide normalizer hides the regressions this exists to catch.
@@ -195,7 +195,7 @@ port changed nothing.
     done: Given `- [ ] T1.2 (normal, serial) rewrite the greedy matcher`, When parsed, Then id is `T1.2`, tags are `normal` and `serial`, status is open; Given a line tagged `(trivial)` whose title text later contains a parenthesised occurrence of the word hard, Then the tag is still `trivial` — this is the `:145` regression and it must be a named test.
     files: lib/robur/task.rb, test/task_test.rb
 - [ ] T3.2 (normal) Plan — the one open-task counter
-    do: add `lib/robur/plan.rb` wrapping a tracker file: `next_task`, `open?`, `in_progress?`, `counts` (open, in-progress, done), `completed_list`, `completed_subject`, `task_block`, `class_marker`. `counts` is the single counter — bash has three implementations and `atlas/bin/board-update.sh:13` gets it wrong by omitting `[IN PROGRESS]`. Honour the heading skip rule: `[ ]` lines under a heading whose lowercased text matches `done` or `checklist` are not tasks.
+    do: add `lib/robur/plan.rb` wrapping a tracker file: `next_task`, `open?`, `in_progress?`, `counts` (open, in-progress, done), `completed_list`, `completed_subject`, `task_block`, `class_marker`. `counts` is the single counter — bash has three implementations and `atlas/bin/board-update.sh:13` gets it wrong by omitting `[ ]`. Honour the heading skip rule: `[ ]` lines under a heading whose lowercased text matches `done` or `checklist` are not tasks.
     done: Given `ratchet/PLAN.md`, When `counts` runs, Then it matches `tracker_count_done` and the bash open-count for that file; Given a `[ ]` line under a `### Definition of Done` heading, Then `next_task` skips it and `open?` ignores it.
     files: lib/robur/plan.rb, test/plan_test.rb
 - [ ] T3.3 (normal) Plan — milestones and readiness
@@ -208,7 +208,7 @@ port changed nothing.
     files: lib/robur/plan.rb, test/plan_test.rb
 - [ ] T3.5 (trivial, serial) M3 self-QA
     do: add the tracker scenarios to the differential suite and run both gates.
-    done: `ruby test/differential/run.rb --suite milestone-3` reports `0 diffs` across all fixture repos, where each scenario runs `status` and `once` against a tracker variant — tagged, untagged, `[IN PROGRESS]`, all-done, placeholder-seeded, and the greedy-paren case — and compares stdout, exit code and the resulting `PLAN.md`. PASS is the literal `0 diffs`.
+    done: `ruby test/differential/run.rb --suite milestone-3` reports `0 diffs` across all fixture repos, where each scenario runs `status` and `once` against a tracker variant — tagged, untagged, `[ ]`, all-done, placeholder-seeded, and the greedy-paren case — and compares stdout, exit code and the resulting `PLAN.md`. PASS is the literal `0 diffs`.
     files: test/differential/suites/milestone-3.rb, LEARNINGS.md
 
 ## M4 — Models, turns, classification

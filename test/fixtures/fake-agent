@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# =============================================================================
+#  fake-agent — a stand-in for pi/claude used by ratchet's selftest.
+# =============================================================================
+#  Ignores ALL flags, does ONE tracker task per invocation (ticks the first
+#  open task [x], marks the next open task [IN PROGRESS]), then prints the
+#  completion token. This lets the whole loop (spawn -> watchdog -> classify ->
+#  green gate -> commit) run end-to-end with ZERO api keys, which is what makes
+#  ratchet testable in CI. cwd is the repo root, so the tracker is ./PLAN.md.
+#
+#  It is intentionally a fake: real agents (pi, claude) do genuine work. This
+#  one only advances the tracker grammar, which is all the loop needs to prove
+#  its mechanics are correct.
+# =============================================================================
+set -euo pipefail
+STEP="${STEP_TOKEN:-STEP_COMPLETE}"
+DONE="${DONE_TOKEN:-ALL_DONE}"
+PLAN="${TRACKER_FILE:-PLAN.md}"
+
+# tolerate every pi-style flag the loop may pass (--model, --thinking,
+# --no-session, --no-extensions, --session-id, -p <prompt>): we ignore them all.
+# (the work does not depend on the prompt — it is deterministic per the tracker)
+
+# Echo FANOUT env vars if set (for selftest verification)
+[ -n "${RATCHET_LOOP:-}" ] && echo "RATCHET_LOOP=$RATCHET_LOOP" >&2
+[ -n "${RATCHET_FANOUT:-}" ] && echo "RATCHET_FANOUT=$RATCHET_FANOUT" >&2
+[ -n "${RATCHET_SCOUT_MODELS:-}" ] && echo "RATCHET_SCOUT_MODELS=$RATCHET_SCOUT_MODELS" >&2
+
+python3 - "$PLAN" "$STEP" "$DONE" <<'PY'
+import sys, re
+plan, step, done = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    lines = open(plan).read().split('\n')
+except FileNotFoundError:
+    print(done); sys.exit(0)
+
+open_re = re.compile(r'([ \t]*-?[ \t]*\[) (\])')         # [ ]
+ip_re   = re.compile(r'([ \t]*-?[ \t]*\[)IN PROGRESS(\])') # [IN PROGRESS]
+
+# clear any existing in-progress back to open (one task at a time)
+for i, l in enumerate(lines):
+    m = ip_re.search(l)
+    if m:
+        lines[i] = l[:m.start()] + m.group(1) + ' ' + m.group(2) + l[m.end():]
+
+# tick the first open task
+done_i = None
+for i, l in enumerate(lines):
+    m = open_re.search(l)
+    if m:
+        lines[i] = l[:m.start()] + m.group(1) + 'x' + m.group(2) + l[m.end():]
+        done_i = i
+        break
+
+# mark the next open task as in-progress
+if done_i is not None:
+    for j in range(done_i + 1, len(lines)):
+        m = open_re.search(lines[j])
+        if m:
+            lines[j] = lines[j][:m.start()] + m.group(1) + 'IN PROGRESS' + lines[j][m.end():]
+            break
+
+open(plan, 'w').write('\n'.join(lines))
+print(done if done_i is None else step)
+PY

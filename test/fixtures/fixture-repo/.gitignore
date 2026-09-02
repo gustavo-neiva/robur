@@ -1,0 +1,5 @@
+# ratchet runtime artifacts (per-repo)
+.ratchet/
+
+# macOS
+.DS_Store
