@@ -283,7 +283,7 @@ port changed nothing.
     do: add `lib/robur/render.rb` for the PM header, progress bar, timing and ETA lines, and `robur status` for the fleet board including liveness from the pid file and the milestone bars. Keep the ETA honestly labelled with the `~` prefix and `ETA unknown` before any recorded duration.
     done: Given the `logs/*.log` fixtures, When `robur status` renders, Then stdout is byte-identical to `ratchet status` on the same fixtures; Given no recorded turn duration, Then the ETA line reads `ETA unknown`.
     files: lib/robur/render.rb, test/render_test.rb
-- [ ] T6.5 (hard) init, doctor, new, plan
+- [x] T6.5 (hard) init, doctor, new, plan
     do: add `lib/robur/commands.rb` with `init` (stamp `.ratchet.conf`, `AGENTS.md`, seed `PLAN.md`, `LEARNINGS.md`, strip a legacy `ratchet-protocol:v1` block while preserving surrounding prose, write `conf.hash`), `doctor` (conf parses, tracker has work, tokens align, protocol current, mid-operation detection, tier warnings, conf-hash tamper), `new`, and `plan` with its `--auto` variant and the KTLO prompt for a caught-up tracker.
     done: Given a bare repo, When `robur init` runs, Then the stamped files are byte-identical to `ratchet init`'s output; Given a repo mid-rebase, a repo with a legacy protocol block, and a repo with `LIGHT_MODELS` but no `THINKING_LIGHT=off`, When `robur doctor` runs on each, Then stdout and exit code match `ratchet doctor` exactly.
     files: lib/robur/commands.rb, test/commands_test.rb

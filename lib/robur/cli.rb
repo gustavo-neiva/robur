@@ -13,6 +13,7 @@ require "robur/commit_gate"
 require "robur/render"
 require "robur/observability"
 require "robur/state"
+require "robur/commands"
 
 module Robur
   # CLI surfaces ported so far: --help, unknown-flag, doctor. Differential
@@ -264,10 +265,44 @@ module Robur
       when "run"
         warn_conf_issues(dir || ".")
         Robur::Loop.run(dir || ".")
+      when "init"
+        cmd_init(dir)
+      when "new"
+        cmd_new(@overrides["PROMPT_OVERRIDE"], dir)
+      when "plan"
+        warn_conf_issues(dir || ".")
+        cmd_plan(dir)
       when *COMMANDS
         die "#{command}: not ported yet (M6)"
       else die("unknown command: #{command.inspect}")
       end
+    end
+
+    def cmd_init(dir)
+      Commands.init(File.expand_path(dir || Dir.pwd), emit: method(:emit))
+    rescue StandardError => e
+      die e.message
+    end
+
+    def cmd_new(idea, dir)
+      Commands.new_repo(idea, dir, emit: method(:emit))
+    rescue StandardError => e
+      die e.message
+    end
+
+    def cmd_plan(dir)
+      dir = File.expand_path(dir || Dir.pwd)
+      log_dir = File.join(ratchet_home, "logs", project_slug(dir))
+      FileUtils.mkdir_p(log_dir)
+      FileUtils.mkdir_p(File.join(dir, ".ratchet"))
+      File.write(File.join(dir, ".ratchet", "last-log"), "#{log_dir}\n")
+      conf = Robur::Config.load(dir, @overrides || {}).values
+      @quiet = conf["QUIET"] == "1"
+      @loop_log = File.join(log_dir, "loop.log")
+      turn_out = File.join(log_dir, "last_turn.out")
+      Commands.plan(dir, conf, auto: conf["AUTO_PLAN"] == "1", turn_out: turn_out, emit: method(:emit))
+    rescue StandardError => e
+      die e.message
     end
 
     # main() parity (ratchet/bin/ratchet:307): any command with a repo conf
@@ -282,134 +317,9 @@ module Robur
       warn "\n" + errors.join("\n")
     end
 
-    # ponytail: only the no-.ratchet.conf doctor path is ported (the only one
-    # the M1 suite exercises); conf-parsing checks arrive with the Config port.
     def cmd_doctor(dir)
-      problems = doctor_report(dir, out: $stdout)
+      problems = Commands.doctor_report(dir, out: $stdout)
       exit problems
-    end
-
-    # The doctor body, printable to any IO so `once` can run it quiet first.
-    def doctor_report(dir, out: $stdout)
-      problems = 0
-      pr_ok = ->(m) { out.puts "  ok   #{m}" }
-      pr_fail = lambda do |m|
-        out.puts "  FAIL #{m}"
-        problems += 1
-      end
-
-      # wire up logs like main() does before dispatch, so last-log exists
-      slug = project_slug(dir)
-      log_dir = File.join(ratchet_home, "logs", slug)
-      FileUtils.mkdir_p(log_dir)
-      FileUtils.mkdir_p(File.join(dir, ".ratchet"))
-      File.write(File.join(dir, ".ratchet", "last-log"), "#{log_dir}\n")
-
-      out.puts "doctor: #{dir}"
-
-      # conf parsed up front (PARSED, never sourced — see Robur::Config trust
-      # boundary); the agent check below reads the conf AGENT_CMD. Reporting
-      # keeps the baseline line order: agent check, then conf-parse result.
-      conf_path = File.join(dir, ".ratchet.conf")
-      conf_values = {}
-      conf_errors = []
-      if File.file?(conf_path)
-        conf_values, conf_errors = Robur::Config.parse_repo(File.read(conf_path))
-      end
-
-      pr_ok.call("git repo") if File.directory?(File.join(dir, ".git"))
-      # conf AGENT_CMD overrides the built-in default (commands.sh:766 checks
-      # the effective $AGENT_CMD, which parse_repo_conf has already overridden).
-      agent = conf_values["AGENT_CMD"] || "pi"
-      if on_path?(agent)
-        pr_ok.call("agent command '#{agent}' on PATH")
-      else
-        pr_fail.call("agent command '#{agent}' not found (set AGENT_CMD / install it)")
-      end
-
-      if File.file?(conf_path)
-        if conf_errors.empty?
-          pr_ok.call(".ratchet.conf parses (allowlisted keys)")
-        else
-          pr_fail.call(".ratchet.conf has errors:")
-          # baseline: printf '%b\n' "$RATCHET_CONF_ERRORS" | sed 's/^/         /'
-          # where the errors string starts with \n — hence the blank line.
-          out.puts ("\n" + conf_errors.join("\n")).gsub(/^/, "         ")
-        end
-        case conf_values["RATCHET_PROTOCOL"] || "1"
-        when "1" then pr_ok.call("RATCHET_PROTOCOL=1 supported")
-        else pr_fail.call("RATCHET_PROTOCOL=#{conf_values["RATCHET_PROTOCOL"]} unsupported (want 1)")
-        end
-      else
-        pr_fail.call("no .ratchet.conf (run: #{PROG} init #{dir})")
-      end
-
-      agents = File.join(dir, "AGENTS.md")
-      if File.file?(agents) && File.read(agents) =~ /ratchet-protocol:.*:begin/
-        pr_fail.call("AGENTS.md carries a legacy loop-in-file protocol block; run `#{PROG} init #{dir}` to migrate (loop protocol now travels in the harness prompt)")
-      else
-        pr_ok.call("protocol delivery: harness-prompt (loop briefs its own turns)")
-      end
-
-      tr = %w[PLAN.md TODO.md TASKS.md].find { |f| File.file?(File.join(dir, f)) }
-      if tr
-        plan = Plan.new(File.join(dir, tr))
-        content = File.read(File.join(dir, tr))
-        # tracker_has_open is a plain grep (no heading skip); tracker_count_done
-        # counts [x] only, lowercase.
-        if content =~ /^[[:space:]]*-?[[:space:]]*\[ \]/
-          pr_ok.call("tracker '#{tr}' has an open task")
-          # tracker_next_id_and_text: first IN PROGRESS task, else first open
-          t = plan.next_task(:in_progress) || plan.next_task(:open)
-          if t.nil? || t.id == "?"
-            pr_fail.call("task id unresolved on first open task; parser degraded to '?' (see tracker grammar)")
-          end
-        elsif content.scan(/^[[:space:]]*-?[[:space:]]*\[x\]/).any?
-          pr_ok.call("tracker '#{tr}' fully done (all [x]) — loop final-commits + stops")
-        else
-          pr_fail.call("tracker '#{tr}' has NO tasks (empty/unparsed) — add work")
-        end
-      else
-        pr_fail.call("no tracker found (PLAN.md/TODO.md/TASKS.md) — run: #{PROG} init #{dir}")
-      end
-
-      verify_cmd = conf_values["VERIFY_CMD"] || ENV["VERIFY_CMD"]
-      if verify_cmd.to_s.empty?
-        pr_fail.call("VERIFY_CMD is EMPTY — set it in .ratchet.conf (no-gate is loud by design)")
-      else
-        pr_ok.call("VERIFY_CMD is set: '#{verify_cmd}'")
-        # dry-run: resolve first token (commands.sh:822)
-        first = verify_cmd.split[0]
-        builtins = %w[if then else elif fi for while do done case esac function return continue break :]
-        if !builtins.include?(first) && !on_path?(first) && !File.readable?(File.join(dir, first))
-          pr_fail.call("VERIFY_CMD references unresolved executable: '#{first}' (not found via command -v or as file)")
-        end
-      end
-
-      pr_ok.call("tokens: defined in conf (prompt delivery)")
-
-      if on_path?("gitleaks")
-        pr_ok.call("gitleaks available (rich secret scan)")
-      else
-        pr_ok.call("gitleaks missing — builtin pattern scan will run (install gitleaks for more)")
-      end
-
-      pr_ok.call("pi registry cache missing/stale — model validation skipped (refresh: #{PROG} models list)")
-      pr_ok.call("rank source: none (unranked no-join: 0)")
-
-      out.puts "---"
-      out.puts "tier routing:"
-      out.puts "  PLAN  : → MODELS (flat) (thinking=)"
-      out.puts "  AUTOPL: → PLAN (thinking=)"
-      out.puts "  BUILD : → MODELS (flat) (thinking=)"
-      out.puts "  LIGHT : → MODELS (flat) (thinking=)"
-      out.puts "---"
-      if problems.zero?
-        out.puts "doctor: OK — repo is loop-ready."
-      else
-        out.puts "doctor: #{problems} problem(s). Fix before running the loop."
-      end
-      problems
     end
 
     # bash `status` (commands.sh:cmd_status): one-shot snapshot of a running
@@ -670,7 +580,7 @@ module Robur
       emit "preflight (doctor) ..."
       require "stringio"
       buf = StringIO.new
-      problems = doctor_report(dir, out: buf)
+      problems = Commands.doctor_report(dir, out: buf)
       if problems.positive?
         emit "preflight FAILED — run '#{PROG} doctor #{dir}' for details. Aborting before any turn."
         print buf.string
