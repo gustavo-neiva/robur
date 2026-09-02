@@ -8,12 +8,24 @@
 repo. The working bash ratchet in `ratchet/` builds it and therefore cannot break
 itself.
 
+**Path convention — read this before running any command.** Paths starting
+`ratchet/`, `atlas/`, `harbor/` or `robur/` are written **estate-relative**: they
+name sibling directories under `~/Code/gustavo-neiva/`. Your working directory is
+the `robur` repo, so reach a sibling with `../` — `ratchet/lib/tracker.sh` is
+`../ratchet/lib/tracker.sh` from where you are, and the bash binary the
+differential harness compares against is `../ratchet/bin/ratchet`. Paths with no
+such prefix (`lib/`, `test/`, `exe/`) are relative to this repo. Sibling repos are
+separate git repos, and `../ratchet` is READ-ONLY — read it freely, never write it.
+
 **This plan must NOT touch:** `ratchet/` — read-only for the entire migration, no
 task may edit a byte of it — nor `atlas/bin/`, nor `atlas/cycles.conf` except the
 one HUMAN task that adds this repo to it.
 
-**Sequencing:** Track A (`harbor/PLAN.md`) ships first. Track B may start once
-Track A's Milestone 1 is green; the two touch disjoint repos and share no files.
+**Sequencing:** both tracks are live in `atlas/cycles.conf` as of 2026-09-01 and
+run concurrently — `harbor` first in the chain, then `robur`. They touch disjoint
+repos and share no files, so neither blocks the other. Track A still ships first
+at *cutover*: it closes a security hole and takes the shell out of the daily path,
+and its cutover is signed off before Track B's.
 
 **Behaviour-compatible, not code-compatible.** These formats are FROZEN — robur
 reads and writes them byte-identically, in both directions, so a rollback after
@@ -124,7 +136,7 @@ solely to constrain bash.
 The harness is the primary deliverable. Nothing is ported until it can prove a
 port changed nothing.
 
-- [ ] T1.1 (trivial, serial) scaffold the repo
+- [x] T1.1 (trivial, serial) scaffold the repo
     do: `git init` this directory; create `exe/`, `lib/robur/`, `test/`, `test/differential/`, `test/fixtures/`; add `.gitignore` covering `.ratchet/`, `tmp/`, `*.log`; add `lib/robur.rb` requiring nothing yet and defining `module Robur; VERSION = "0.0.1"; end`; add `exe/robur` as an executable stub that resolves its own symlink chain to find `lib/` and prints usage. Make one commit.
     done: Given a clean checkout, When `ruby -Ilib -e 'require "robur"; puts Robur::VERSION'` runs, Then it prints `0.0.1`; When `exe/robur` is symlinked onto PATH from another directory and invoked, Then it still finds `lib/` and prints usage.
     files: .gitignore, lib/robur.rb, exe/robur
@@ -296,7 +308,7 @@ port must be provably identical before any live reference moves.
 - [ ] T7.2 (trivial, serial) publish the parity evidence
     do: run the parity gate and paste its verbatim output, the date, and the robur git sha into the Track B evidence block of `atlas/MIGRATION-CUTOVER.md`. Do not perform any rewiring and do not tick any checklist box — that document is human-owned.
     done: Given a green parity run, When this task completes, Then `atlas/MIGRATION-CUTOVER.md` contains the verbatim output under `## Track B — parity evidence` with a date and a sha, and every checklist box in that document is still unticked.
-    files: atlas/MIGRATION-CUTOVER.md
+    files: ../atlas/MIGRATION-CUTOVER.md
 - [ ] T7.3 (normal, serial) the rewiring inventory
     do: produce `REWIRING.md` in this repo: every live reference to the bash ratchet that cutover must move, each with its file, line, current value, target value, and the exact revert. Cover at minimum the `ratchet` symlink on PATH, `atlas/cycles.conf` repo paths, `~/.ratchet/conf` `NOTIFY_CMD`, the launchd plist, `atlas/bin/money-loop.sh`'s `ratchet run` and `ratchet plan --auto` invocations, harbor's `/loop` and `/blocked` paths, and any `RATCHET_HOME` or `RATCHET_METRICS` override. Find them by grep, not from memory. Change nothing.
     done: Given the estate, When `REWIRING.md` is complete, Then every entry names a file and line that currently exists, each has a one-line revert, and re-running the same greps surfaces no reference absent from the document.
