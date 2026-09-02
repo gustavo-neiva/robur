@@ -1,0 +1,12 @@
+# ratchet runtime
+.ratchet/
+.ratchet.conf
+*.log
+
+# robur test scratch
+tmp/
+
+# OS
+.DS_Store
+*.swp
+*~
