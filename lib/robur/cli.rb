@@ -3,6 +3,10 @@
 require "fileutils"
 require "robur/config"
 require "robur/plan"
+require "robur/tier"
+require "robur/model_chain"
+require "robur/turn"
+require "robur/classifier"
 
 module Robur
   # CLI surfaces ported so far: --help, unknown-flag, doctor. Differential
@@ -194,27 +198,34 @@ module Robur
 
       out.puts "doctor: #{dir}"
 
-      pr_ok.call("git repo") if File.directory?(File.join(dir, ".git"))
-
-      # common.sh force-assigns AGENT_CMD="pi", clobbering any env value.
-      if on_path?("pi")
-        pr_ok.call("agent command 'pi' on PATH")
-      else
-        pr_fail.call("agent command 'pi' not found (set AGENT_CMD / install it)")
-      end
-
-      # conf parses (PARSED, never sourced — see Robur::Config trust boundary)
+      # conf parsed up front (PARSED, never sourced — see Robur::Config trust
+      # boundary); the agent check below reads the conf AGENT_CMD. Reporting
+      # keeps the baseline line order: agent check, then conf-parse result.
       conf_path = File.join(dir, ".ratchet.conf")
       conf_values = {}
+      conf_errors = []
       if File.file?(conf_path)
-        conf_values, cerr = Robur::Config.parse_repo(File.read(conf_path))
-        if cerr.empty?
+        conf_values, conf_errors = Robur::Config.parse_repo(File.read(conf_path))
+      end
+
+      pr_ok.call("git repo") if File.directory?(File.join(dir, ".git"))
+      # conf AGENT_CMD overrides the built-in default (commands.sh:766 checks
+      # the effective $AGENT_CMD, which parse_repo_conf has already overridden).
+      agent = conf_values["AGENT_CMD"] || "pi"
+      if on_path?(agent)
+        pr_ok.call("agent command '#{agent}' on PATH")
+      else
+        pr_fail.call("agent command '#{agent}' not found (set AGENT_CMD / install it)")
+      end
+
+      if File.file?(conf_path)
+        if conf_errors.empty?
           pr_ok.call(".ratchet.conf parses (allowlisted keys)")
         else
           pr_fail.call(".ratchet.conf has errors:")
           # baseline: printf '%b\n' "$RATCHET_CONF_ERRORS" | sed 's/^/         /'
           # where the errors string starts with \n — hence the blank line.
-          out.puts ("\n" + cerr.join("\n")).gsub(/^/, "         ")
+          out.puts ("\n" + conf_errors.join("\n")).gsub(/^/, "         ")
         end
         case conf_values["RATCHET_PROTOCOL"] || "1"
         when "1" then pr_ok.call("RATCHET_PROTOCOL=1 supported")
@@ -326,7 +337,7 @@ module Robur
     # usage deltas, deduped by id/message.id/responseId, last wins.
     def turn_usage(path)
       last = {}
-      File.each_line(path) do |line|
+      File.foreach(path) do |line|
         ev = begin
           JSON.parse(line)
         rescue JSON::ParserError, ArgumentError
@@ -402,7 +413,7 @@ module Robur
       run_once_loop(dir)
     end
 
-    private
+    module_function
 
     # One turn of bin/ratchet's main loop in --once mode (bin/ratchet:520-866).
     def run_once_loop(dir)

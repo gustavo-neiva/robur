@@ -31,6 +31,12 @@ module Robur
       { open: count(:open), in_progress: count(:in_progress), done: count(:done) }
     end
 
+    def count(kind)
+      n = 0
+      each_task(kind) { n += 1 }
+      n
+    end
+
     def completed_list
       done_lines.map { |l| l.sub(/\A[[:space:]]*-?[[:space:]]*\[x\][[:space:]]*/, "").gsub("**", "") }
     end
@@ -150,12 +156,6 @@ module Robur
     end
 
     private
-
-    def count(kind)
-      n = 0
-      each_task(kind) { n += 1 }
-      n
-    end
 
     # Line number of the first task of `kind`, using tracker_next's rule:
     # open/in-progress lines under a done/checklist heading are skipped.
