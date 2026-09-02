@@ -291,7 +291,7 @@ port changed nothing.
     do: add `lib/robur/models_cmd.rb` (`list`/`add`/`remove`/`thinking`/`rank`, registry validation against the pi model cache, conf upsert, `--repo` targeting with a conf-hash re-stamp), and add the PR-cadence path to the loop — plan PR #0, milestone branch lifecycle, the bounded review turn, `open_milestone_pr`, and `wait_for_merge` with its four return states — plus `fanout` and `fanout-clean` using the single `Repo#worktrees` parser and the fail-toward-KEEP rule.
     done: Given the recorded `gh` stub responses from bash suites 29, 31, 32, 36 and 37, When each flow runs, Then the emitted log lines, the `milestone.cur` contents, the `fanout.state` contents and the exit codes match bash exactly, including that a worktree with a stash, an unpushed commit or a dirty tree is KEPT.
     files: lib/robur/models_cmd.rb, lib/robur/loop.rb, test/pr_flow_test.rb
-- [ ] T6.7 (trivial, serial) M6 self-QA
+- [x] T6.7 (trivial, serial) M6 self-QA
     do: run the full differential suite across every command and both gates.
     done: `ruby test/differential/run.rb --suite milestone-6` reports `0 diffs` across every subcommand — `run`, `once`, `init`, `new`, `plan`, `plan --auto`, `doctor`, `status`, `stats`, `models`, `fanout`, `fanout-clean` — on all fixture repos. PASS is the literal `0 diffs`; a scenario that cannot be compared must be listed as unsupported in the report, never silently skipped.
     files: test/differential/suites/milestone-6.rb, LEARNINGS.md
