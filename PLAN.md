@@ -275,7 +275,7 @@ port changed nothing.
     do: add `lib/robur/loop.rb` orchestrating the turn cycle: the all-done fast path, tier routing with model reinit only on tier change, the tier-exhausted fallback to the flat chain, the all-benched backoff ladder 900/3600/14400, the per-outcome dispatch, the `ALL_DONE`-with-open-tasks downgrade to step, the timeout salvage that commits a green killed turn, the human-gate salvage, and the `MAX_DONE_GATE_FAILS` stop. Setting a status inside a branch must actually take effect — the bash version lost a status assignment inside a `case` arm and exited with open tasks.
     done: Given the fixture repo and the fake-agent, When `robur run` executes to completion, Then all three tasks are ticked, three commits exist, `.ratchet/stop_reason` is `done`, and the exit code is 0; Given a stub forced red for `MAX_DONE_GATE_FAILS` consecutive done-turns, Then the loop stops with `stop_reason` `gate_red` and notifies.
     files: lib/robur/loop.rb, test/loop_test.rb
-- [ ] T6.3 (normal) state files
+- [x] T6.3 (normal) state files
     do: add `lib/robur/state.rb` owning every `.ratchet/` file with the frozen formats: `stop_reason` (one word), `loop-backoff` (`count<TAB>until_epoch`), `last_task.state` (`taskid<TAB>status`), `milestone.cur` (`name<TAB>base_sha<TAB>cycle<TAB>errors`), `conf.hash`, `last-log`, `fanout.state`. Reads tolerate a missing file; writes never raise.
     done: Given each state file as written by bash ratchet, When robur reads it, Then the parsed value is correct; Given robur writes each one, Then bash ratchet's own readers — `stop_reason`, `backed_off`, `cut -f1 last_task.state` — return the same values, asserted by executing them.
     files: lib/robur/state.rb, test/state_test.rb
