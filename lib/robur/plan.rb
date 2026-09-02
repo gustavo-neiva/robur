@@ -41,6 +41,18 @@ module Robur
       done_lines.map { |l| l.sub(/\A[[:space:]]*-?[[:space:]]*\[x\][[:space:]]*/, "").gsub("**", "") }
     end
 
+    # [x] tasks under the named `## ` milestone, `[x] text` form (the `[x]`
+    # itself kept — bash's tracker_milestone_completed_list only strips the
+    # leading dash, not the checkbox). Requires the literal `-` bash's awk
+    # pattern does; a bare `[x]` with no dash does not count.
+    def milestone_completed_list(mname)
+      sec = sections.find { |name, _| name == mname }
+      return [] unless sec
+
+      sec[1].select { |l| l =~ /^[[:space:]]*-[[:space:]]*\[x\]/ }
+            .map { |l| l.sub(/^[[:space:]]*-?[[:space:]]*/, "").gsub("**", "") }
+    end
+
     # Best-effort: the [x] line newly staged this turn, else the newest [x]
     # in the file (tracker_completed_subject).
     def completed_subject

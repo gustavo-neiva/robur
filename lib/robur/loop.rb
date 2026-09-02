@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "json"
 require "open3"
 require "robur/config"
 require "robur/plan"
@@ -9,6 +10,8 @@ require "robur/turn"
 require "robur/classifier"
 require "robur/commit_gate"
 require "robur/cli"
+require "robur/repo"
+require "robur/sys"
 
 module Robur
   # The unattended run loop (port of bin/ratchet main's while-true cycle).
@@ -289,6 +292,131 @@ module Robur
 
     def commit_turn(turn, model, conf, plan, dir)
       CLI.commit_turn(turn, model, conf, plan, dir)
+    end
+
+    # wait_for_merge BRANCH DIR CONF -> poll the PR until merged/closed/timeout
+    # (bin/ratchet:203). Returns 0=merged+ff'd, 1=closed, 2=manual mode
+    # (no gh/origin, or gh pr view failed), 3=timeout. Emits the frozen
+    # `merge-wait | pr=<branch> | state=<state>` line on state changes only.
+    # MERGE_POLL_SECS/MERGE_WAIT_TIMEOUT have no global default in common.sh
+    # either (bash resolves them inline with `${VAR:-N}` at this one call
+    # site) — mirrored here rather than invented as a Config default.
+    def wait_for_merge(branch, dir, conf, repo: Repo.new(dir), sys: Sys::Proc.new, sleep_it: Kernel.method(:sleep))
+      unless CLI.on_path?("gh")
+        notify_human "merge the PR: gh not found, manual mode"
+        return 2
+      end
+      unless repo.remote?("origin")
+        notify_human "merge the PR: no origin remote, manual mode"
+        return 2
+      end
+
+      default_branch = repo.default_branch
+      poll_secs = conf["MERGE_POLL_SECS"].to_s.empty? ? 300 : conf["MERGE_POLL_SECS"].to_i
+      timeout = conf["MERGE_WAIT_TIMEOUT"].to_s.empty? ? 259_200 : conf["MERGE_WAIT_TIMEOUT"].to_i
+      prev_state = ""
+      elapsed = 0
+      loop do
+        state = pr_state(sys, branch)
+        if state.nil?
+          notify_human "merge the PR: gh pr view failed"
+          return 2
+        end
+        if state != prev_state && !state.empty?
+          emit "merge-wait | pr=#{branch} | state=#{state}"
+          prev_state = state
+        end
+        case state
+        when "MERGED"
+          return 0 if conf["PARALLEL"] == "1"
+          return 1 unless repo.checkout(default_branch)
+          return 1 unless repo.pull_ff_only
+
+          return 0
+        when "CLOSED"
+          notify_human "PR #{branch} was closed without merging"
+          return 1
+        end
+
+        if elapsed >= timeout
+          notify_human "merge timeout (#{timeout}s elapsed) on PR #{branch}"
+          emit "merge-wait timeout: #{timeout}s elapsed, stopping cleanly."
+          return 3
+        end
+        sleep_it.call(poll_secs)
+        elapsed += poll_secs
+      end
+    end
+
+    # `gh pr view BRANCH --json state -q .state`, falling back to the plain
+    # `--json state` + JSON parse when the `-q` form fails (old gh) — nil when
+    # both fail.
+    def pr_state(sys, branch)
+      out, _err, status = sys.capture("gh", "pr", "view", branch, "--json", "state", "-q", ".state")
+      return out.strip if status&.success?
+
+      out, _err, status = sys.capture("gh", "pr", "view", branch, "--json", "state")
+      return nil unless status&.success?
+
+      JSON.parse(out)["state"].to_s
+    rescue JSON::ParserError
+      nil
+    end
+
+    # open_milestone_pr NAME BASE_SHA -> push milestone branch, open PR,
+    # wait_for_merge (bin/ratchet:261). Returns 0=PR opened+wait_for_merge's
+    # result, 1=push or `gh pr create` failed, 2=no gh/origin (manual PR).
+    def open_milestone_pr(mname, base_sha, dir, conf, plan, log_path,
+                          repo: Repo.new(dir), sys: Sys::Proc.new, sleep_it: Kernel.method(:sleep))
+      current_branch = repo.current_branch || "HEAD"
+      emit "pushing milestone branch #{current_branch} ..."
+      unless repo.push
+        emit "git push failed (see #{log_path}) — branch left local."
+        return 1
+      end
+      emit "pushed."
+      unless CLI.on_path?("gh") && repo.remote?("origin")
+        emit "no gh / no origin — leaving the pushed branch for manual PR."
+        return 2
+      end
+
+      body = plan.milestone_completed_list(mname).map { |l| "- #{l}" }.join("\n")
+      diffstat = repo.diffstat("#{base_sha}..HEAD")
+      changed_lines = shortstat_changed_lines(repo.shortstat("#{base_sha}..HEAD"))
+      verdict = last_matching_log_line(log_path, /review-pass|review-skip/)
+
+      if changed_lines > conf["PR_SOFT_MAX_LINES"].to_i
+        emit "\u26A0 large PR: #{changed_lines} lines (soft limit: #{conf["PR_SOFT_MAX_LINES"]})"
+        body = "\u26A0 large PR: #{changed_lines} changed lines\n\n#{body}"
+      end
+      body = "#{body}\n\n```\n#{diffstat}\n```"
+      body = "#{body}\n\n#{verdict}" if verdict
+
+      first_subject = plan.milestone_completed_list(mname).first.to_s.sub(/\A\[x\][[:space:]]*/, "").gsub("**", "")
+      emit "opening PR for milestone #{mname} ..."
+      _out, _err, status = sys.capture("gh", "pr", "create", "--title", "ratchet #{mname}: #{first_subject}",
+                                       "--body-file", "-", stdin_data: body)
+      unless status&.success?
+        emit "gh pr create failed (see #{log_path})."
+        return 1
+      end
+      emit "PR opened."
+      wait_for_merge(current_branch, dir, conf, repo: repo, sys: sys, sleep_it: sleep_it)
+    end
+
+    # git diff --shortstat -> total changed lines (insertions + deletions),
+    # replacing bash's positional `awk '{print $4+$6}'` with a pattern match
+    # that's correct whether one or both counts are present.
+    def shortstat_changed_lines(text)
+      ins = text[/(\d+) insertions?\(\+\)/, 1].to_i
+      del = text[/(\d+) deletions?\(-\)/, 1].to_i
+      ins + del
+    end
+
+    def last_matching_log_line(log_path, pattern)
+      return nil unless File.file?(log_path)
+
+      File.readlines(log_path, chomp: true).reverse_each.find { |l| l =~ pattern }
     end
   end
 end

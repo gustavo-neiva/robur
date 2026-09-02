@@ -71,6 +71,31 @@ module Robur
       status&.success? || false
     end
 
+    def checkout(branch)
+      _out, _err, status = git("checkout", branch)
+      status&.success? || false
+    end
+
+    def pull_ff_only
+      _out, _err, status = git("pull", "--ff-only")
+      status&.success? || false
+    end
+
+    def current_branch
+      out, _err, status = git("rev-parse", "--abbrev-ref", "HEAD")
+      status&.success? ? out.strip : nil
+    end
+
+    def remote?(name = "origin")
+      _out, _err, status = git("remote", "get-url", name)
+      status&.success? || false
+    end
+
+    def diffstat(range)
+      out, = git("diff", "--stat", range)
+      out
+    end
+
     # Parsed `git worktree list --porcelain` records; the primary worktree
     # is always first (git's own ordering).
     def worktrees

@@ -32,9 +32,10 @@ module Robur
     end
 
     class Proc
-      # returns [stdout, stderr, status]
-      def capture(*cmd)
-        Open3.capture3(*cmd)
+      # returns [stdout, stderr, status]; forwards Open3.capture3 options
+      # (chdir:, stdin_data:, ...) through unchanged.
+      def capture(*cmd, **opts)
+        Open3.capture3(*cmd, **opts)
       end
 
       # returns [stdout, stderr, status]; kills the process at the deadline.
