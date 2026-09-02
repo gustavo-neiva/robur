@@ -7,6 +7,7 @@ require "robur/tier"
 require "robur/model_chain"
 require "robur/turn"
 require "robur/classifier"
+require "robur/commit_gate"
 
 module Robur
   # CLI surfaces ported so far: --help, unknown-flag, doctor. Differential
@@ -348,12 +349,12 @@ module Robur
       end
     end
 
-    # commit_turn (commit-gate.sh:60): the real gate is M5; the COMMIT_EACH_TURN
-    # short-circuit is what the frozen contract requires today.
-    def commit_turn(_turn, _model, conf)
-      return false unless conf["COMMIT_EACH_TURN"] == "1"
-
-      false
+    # commit_turn (commit-gate.sh:60): delegates to CommitGate, which owns the
+    # stage/exclude/scan/verify/commit ordering; CLI supplies the loop.log
+    # emit sink so the gate's prose lands in the same rendered log.
+    def commit_turn(turn, model, conf, plan, dir)
+      Robur::CommitGate.new(dir, plan: plan, config: conf, emit: method(:emit), loop_log: @loop_log)
+                        .run(turn: turn, model: model)
     end
 
     # _turn_usage FILE -> "in\tout\tcost" (observability.sh:215): per-message
@@ -475,7 +476,7 @@ module Robur
       # All-done fast path (bin/ratchet:533): no open/in-progress but has [x].
       if !plan.open? && !plan.in_progress? && plan.count(:done).positive?
         emit "all #{conf["TRACKER_FILE"] || "PLAN.md"} tasks complete (#{plan.count(:done)} done) — no open work remains."
-        if commit_turn("final", last_model, conf)
+        if commit_turn("final", last_model, conf, plan, dir).block_reason.nil?
           emit "agent signaled #{conf["DONE_TOKEN"]} — all work complete."
         end
         stop_reason = "done"
@@ -564,7 +565,7 @@ module Robur
       # ALL_DONE with open tasks is mid-work, not done (bin/ratchet:663).
       klass = :step if klass == :done && (plan.open? || plan.in_progress?)
 
-      committed = commit_turn(turn, model, conf)
+      commit_result = commit_turn(turn, model, conf, plan, dir)
       case klass
       when :done
         emit "agent signaled #{conf["DONE_TOKEN"]} — all work complete."
@@ -574,6 +575,11 @@ module Robur
         emit "HUMAN NEEDED: #{plan.human_block_brief(taskid, next_task_str)}"
         return ["human_blocked", model]
       when :step
+        unless commit_result.block_reason.nil?
+          emit "step turn RED at commit gate — next turn will repair. Sleeping #{conf["SHORT_SLEEP"]}s."
+          emit "--once: stopping."
+          return ["", model]
+        end
         emit "step complete (#{conf["STEP_TOKEN"]}). Sleeping #{conf["SHORT_SLEEP"]}s."
         emit "--once: stopping after one step."
         return ["once", model]
@@ -594,7 +600,7 @@ module Robur
       when :timeout
         dirty = File.directory?(File.join(dir, ".git")) &&
                 !Open3.capture3("git", "-C", dir, "status", "--porcelain")[0].empty?
-        if dirty && committed
+        if dirty && commit_result.committed
           emit "turn killed (#{klass}) but tree was green — salvaged work as a commit; continuing."
           return ["once", model]
         end

@@ -24,12 +24,19 @@ module Robur
       [/eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/, "JWT in staged diff"],
     ].freeze
 
-    def initialize(dir, plan:, config:, repo: Repo.new(dir), proc: Sys::Proc.new)
+    # emit: optional CLI-owned logger (Observability's rendered-line home is
+    # loop.log, but commit-gate.sh's own lines aren't in Observability::RENDER
+    # — they're CLI prose, same as bash's inline `emit` calls). loop_log: where
+    # to tail a failed VERIFY_CMD's last 40 lines raw (bash: no timestamp).
+    def initialize(dir, plan:, config:, repo: Repo.new(dir), proc: Sys::Proc.new,
+                   emit: ->(_msg) {}, loop_log: nil)
       @dir = dir
       @plan = plan
       @config = config
       @repo = repo
       @proc = proc
+      @emit = emit
+      @loop_log = loop_log
     end
 
     # committed: true means one commit landed. block_reason set means the
@@ -46,30 +53,55 @@ module Robur
       @repo.reset(".ratchet.conf")
 
       reason = secret_scan
-      return Result.new(committed: false, block_reason: reason, verify_cmd_empty: false) if reason
+      if reason
+        @emit.call("  BLOCKED: secret scan — #{reason} — NOT committing.")
+        @emit.call("  (install gitleaks for richer coverage; this is the builtin pattern check.)")
+        return Result.new(committed: false, block_reason: reason, verify_cmd_empty: false)
+      end
 
       verify_cmd_empty = false
       if @config["COMMIT_VERIFY_GATE"] == "1"
         verify_cmd = @config["VERIFY_CMD"]
         if verify_cmd.nil? || verify_cmd.empty?
           verify_cmd_empty = true
+          @emit.call("  \e[31mWARNING: VERIFY_CMD is empty — committing with NO green gate " \
+                     "(no-gate is loud by design; set VERIFY_CMD in .ratchet.conf).\e[0m")
         else
-          _out, _err, status = @proc.capture(verify_cmd, chdir: @dir)
+          @emit.call("  commit gate: running '#{verify_cmd}' \u2026")
+          out, err, status = @proc.capture(verify_cmd, chdir: @dir)
           unless status&.success?
+            @emit.call("  commit gate RED — NOT committing; leaving work for next turn to repair.")
+            tail_into_log("#{out}#{err}")
             return Result.new(committed: false, block_reason: "commit gate RED", verify_cmd_empty: false)
           end
         end
       end
 
-      return clean_skip if @repo.staged_diff.empty?
+      if @repo.staged_diff.empty?
+        @emit.call("  nothing staged to commit (idempotent turn).")
+        return Result.new(committed: false, block_reason: nil, verify_cmd_empty: verify_cmd_empty)
+      end
 
       subject = @plan.completed_subject
       committed = @repo.commit("auto(ratchet): turn #{turn} #{model} \u2014 #{subject}",
                                 "Autonomous loop turn #{turn}. verify: green.")
+      if committed
+        @emit.call("  committed: #{subject}")
+      else
+        @emit.call("  git commit failed (see #{@loop_log}) — continuing.")
+      end
       Result.new(committed: committed, block_reason: nil, verify_cmd_empty: verify_cmd_empty)
     end
 
     private
+
+    # Raw append, no timestamp — matches bash's `tail -n 40 "$_vout" >>"$LOOP_LOG"`.
+    def tail_into_log(text)
+      return if @loop_log.nil?
+
+      lines = text.each_line.to_a.last(40)
+      File.write(@loop_log, lines.join, mode: "a") unless lines.empty?
+    end
 
     def exclude_globs
       (@config["COMMIT_EXCLUDE_GLOBS"] || "").split

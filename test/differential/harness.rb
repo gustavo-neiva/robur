@@ -26,6 +26,7 @@ module Robur
       [/\d{4}-\d{2}-\d{2}/, "<date>"],
       [/\d+\.\d+s\b/, "<elapsed>s"],
       [/\bin \d+s\b/, "in <elapsed>s"],
+      [/\btook=\d+s\b/, "took=<elapsed>s"], # loop.log's took=Ns is wall-clock and can tick over a 1s boundary
       [/\bpid[=: ]+\d+\b/i, "pid<PID>"],
       [/\b[A-Za-z0-9-]+-\d{6}\b/, "<slug>"], # project_slug: cksum of abs path differs per side
     ].freeze

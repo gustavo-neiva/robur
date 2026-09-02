@@ -260,7 +260,7 @@ port changed nothing.
     do: add `notify_human` — emit `HUMAN NEEDED:`, ring the bell on a TTY, run `NOTIFY_CMD` in the background with the message as `$1`, and never accept `NOTIFY_CMD` from the repo conf. Add `stats` computing the baseline metrics from `events.jsonl` rather than by re-parsing prose, with a fallback that reads a legacy `loop.log` so old logs still report.
     done: Given a `NOTIFY_CMD` stub, When `notify_human` runs, Then the stub receives the message as its first argument exactly once; Given the `logs/*.log` fixtures, When `stats` runs on them, Then the printed metrics match `ratchet stats` on the same files line for line.
     files: lib/robur/observability.rb, test/observability_test.rb
-- [ ] T5.6 (trivial, serial) M5 self-QA
+- [x] T5.6 (trivial, serial) M5 self-QA
     do: extend the differential suite to the gate and log surfaces and run both gates.
     done: `ruby test/differential/run.rb --suite milestone-5` reports `0 diffs`, where scenarios cover a green commit, a red gate, each secret-scan block, an idempotent turn, and a `.ratchet.conf` tamper attempt, comparing `loop.log`, the metrics row, and `git log --format='%s'`. PASS is the literal `0 diffs`, and the git-history comparison must include the commit subjects, not just the count.
     files: test/differential/suites/milestone-5.rb, LEARNINGS.md
