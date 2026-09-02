@@ -240,7 +240,7 @@ port changed nothing.
 
 ## M5 — Repo, commit gate, observability
 
-- [ ] T5.1 (normal) Repo — one default-branch detection, one worktree state machine
+- [x] T5.1 (normal) Repo — one default-branch detection, one worktree state machine
     do: add `lib/robur/repo.rb` wrapping git through `Sys::Proc`: `default_branch` (one implementation; bash has four copies of the `symbolic-ref` plus `main` fallback), `status_porcelain`, `staged_diff`, `staged_files`, `commit`, `checkout_b`, `push`, `shortstat`, and `worktrees` returning parsed porcelain records (path, head, branch, detached) — one implementation replacing the two copies of the porcelain state machine in `ratchet/lib/commands.sh`.
     done: Given a fixture repo with an `origin/HEAD` ref and one without, When `default_branch` runs, Then it returns the ref's branch and `main` respectively; Given a repo with two added worktrees, When `worktrees` runs, Then it returns three records with correct paths and branches, and the primary is first.
     files: lib/robur/repo.rb, test/repo_test.rb
