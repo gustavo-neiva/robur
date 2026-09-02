@@ -148,11 +148,11 @@ port changed nothing.
     do: add `test/test_helper.rb` requiring `minitest/autorun` and putting `lib/` on the load path, plus one `test/smoke_test.rb` asserting `Robur::VERSION`. Confirm the `VERIFY_CMD` one-liner discovers and runs it with no bundler and no Rakefile.
     done: Given the two files, When `ruby -Ilib -e 'Dir["test/**/*_test.rb"].each{|f| require File.expand_path(f)}'` runs, Then it reports 1 run, 1 assertion, 0 failures and exits 0.
     files: test/test_helper.rb, test/smoke_test.rb
-- [IN PROGRESS T1.4 (normal, serial) port the fixtures
+- [x] T1.4 (normal, serial) port the fixtures
     do: copy `ratchet/test/fixtures/` into `test/fixtures/` — `fake-agent`, `fixture-repo/` with its `PLAN.md`/`verify.sh`/`.gitignore`/`README.md`, `turn-usage/*.json`, and `logs/*.log`. Copy only; do not edit `ratchet/`. The `fake-agent` script must stay byte-identical so both binaries face the same stub, including its `RATCHET_LOOP`/`RATCHET_FANOUT` stderr echoes.
     done: Given the copy, When `diff -r ratchet/test/fixtures test/fixtures` runs, Then it reports no differences; When `fake-agent` is invoked in a copy of `fixture-repo`, Then it ticks the first `[ ]`, marks the next `[ ]`, and prints `STEP_COMPLETE`.
     files: test/fixtures/
-- [ ] T1.5 (hard, serial) the differential harness — core
+- [x] T1.5 (hard, serial) the differential harness — core
     do: add `test/differential/harness.rb` with a `Scenario` (name, argv, fixture setup, env) and a `Runner` that, for one scenario, builds two pristine copies of the fixture repo, points `RATCHET_HOME` at two separate temp dirs, sets `AGENT_CMD` to the fake-agent, runs `ratchet/bin/ratchet ARGV` in one and `exe/robur ARGV` in the other, and captures stdout, stderr, exit code, every file under `.ratchet/`, `metrics.tsv`, `loop.log`, and `git log --format='%s'`. Normalization is an explicit, narrow substitution list — timestamps, temp paths, elapsed seconds, PIDs, commit shas — and nothing else, because a wide normalizer hides the regressions this exists to catch.
     done: Given a scenario running `--help`, When the runner executes it, Then it returns a diff report object listing zero differences; When a deliberate extra space is injected into robur's usage text, Then the report lists exactly one difference and names `stdout`.
     files: test/differential/harness.rb
