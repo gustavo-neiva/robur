@@ -190,7 +190,7 @@ port changed nothing.
 
 ## M3 — The tracker grammar
 
-- [ ] T3.1 (hard, serial) Task — a correct tag and id parser
+- [x] T3.1 (hard, serial) Task — a correct tag and id parser
     do: add `lib/robur/task.rb` with `Task.parse(line, lineno)` returning status (`open`/`in_progress`/`done`), id, tags, and text. Support every id form: `T1.2`, `T5`, `A1`, `I3`, `N-slug`, and `?` for none. The tag parser must scan the FIRST parenthesised group only — `ratchet/lib/tracker.sh:145` uses `.*\((trivial|normal|hard)[,)]` whose leading `.*` is greedy, so a task whose own text contains a word like hard in parentheses re-tags the task. Recognise `serial` and `independent` as additional tags.
     done: Given `- [ ] T1.2 (normal, serial) rewrite the greedy matcher`, When parsed, Then id is `T1.2`, tags are `normal` and `serial`, status is open; Given a line tagged `(trivial)` whose title text later contains a parenthesised occurrence of the word hard, Then the tag is still `trivial` — this is the `:145` regression and it must be a named test.
     files: lib/robur/task.rb, test/task_test.rb
