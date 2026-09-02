@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# turn-agent — M4 differential stub: forces ONE specific turn outcome via
+# $FAKE_OUTCOME (step|done|human|exhausted|hard|timeout|transient) so the
+# differential suite can drive `once` through every classify_turn branch
+# without any model. Flags are ignored; cwd is the repo root.
+set -euo pipefail
+
+tick_first() { sed -i '' '0,/- \[ \]/s//- [x]/' PLAN.md 2>/dev/null || sed -i '0,/- \[ \]/s//- [x]/' PLAN.md; }
+tick_all()  { sed -i '' 's/- \[ \]/- [x]/g' PLAN.md 2>/dev/null || sed -i 's/- \[ \]/- [x]/g' PLAN.md; }
+
+case "${FAKE_OUTCOME:-step}" in
+  step)      tick_first; echo "${STEP_TOKEN:-STEP_COMPLETE}" ;;
+  done)      tick_all;   echo "${DONE_TOKEN:-ALL_DONE}" ;;
+  human)     echo "${HUMAN_TOKEN:-HUMAN_BLOCKED}" ;;
+  exhausted) echo "request failed: HTTP 429 rate limit exceeded" ;;
+  hard)      echo "request failed: HTTP 401 authentication_error" ;;
+  timeout)   sleep 300 ;;   # no output -> deadline kill
+  transient) echo "connection reset by peer" ;;
+esac

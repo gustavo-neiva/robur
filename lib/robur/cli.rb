@@ -309,9 +309,80 @@ module Robur
       die "status: loop.log parsing not ported yet (M6)"
     end
 
+    # term_only: stdout only, never the loop log (common.sh:124).
+    def term_only(msg)
+      puts "[#{Time.now.strftime('%Y-%m-%d %H:%M:%S')}] #{msg}"
+    end
+
+    # commit_turn (commit-gate.sh:60): the real gate is M5; the COMMIT_EACH_TURN
+    # short-circuit is what the frozen contract requires today.
+    def commit_turn(_turn, _model, conf)
+      return false unless conf["COMMIT_EACH_TURN"] == "1"
+
+      false
+    end
+
+    # _turn_usage FILE -> "in\tout\tcost" (observability.sh:215): per-message
+    # usage deltas, deduped by id/message.id/responseId, last wins.
+    def turn_usage(path)
+      last = {}
+      File.each_line(path) do |line|
+        ev = begin
+          JSON.parse(line)
+        rescue JSON::ParserError, ArgumentError
+          next
+        end
+        msg = ev["message"] || {}
+        u = ev["usage"] || msg["usage"]
+        next if u.nil?
+
+        key = ev["id"] || msg["id"] || msg["responseId"] || ev["responseId"] || line
+        cost = (u["cost"] || {})["total"] || 0.0
+        last[key] = [u["input"] || 0, u["output"] || 0, cost]
+      end
+      totals = last.values.inject([0, 0, 0.0]) { |a, v| [a[0] + v[0], a[1] + v[1], a[2] + v[2]] }
+      format("%d\t%d\t%.6f", *totals)
+    rescue Errno::ENOENT
+      "0\t0\t0"
+    end
+
+    # metrics_append (observability.sh:239): 12 frozen columns.
+    def metrics_append(repo_dir, event, turn, tier, model, klass, took, task, tin, tout, cost)
+      f = ENV["RATCHET_METRICS"] || File.join(ratchet_home, "metrics.tsv")
+      FileUtils.mkdir_p(File.dirname(f))
+      row = [Time.now.strftime("%F %T"), File.basename(repo_dir), event, turn, tier, model,
+             klass, took, task, tin, tout, cost].join("\t")
+      File.write(f, "#{row}\n", mode: "a")
+    rescue StandardError
+      nil
+    end
+
+    # avg_turn_secs (observability.sh:118): int mean of took=Ns lines in loop.log.
+    def avg_turn_secs(log)
+      return 0 unless File.file?(log)
+
+      vals = File.read(log).scan(/took=(\d+)s/).map { |m| m[0].to_i }
+      vals.empty? ? 0 : vals.sum / vals.size
+    end
+
+    def fmt_dur(secs)
+      return "#{secs}s" if secs < 60
+      return "#{secs / 60}m" if secs < 3600
+
+      "#{secs / 3600}h#{(secs % 3600) / 60}m"
+    end
+
+    def render_bar(pct, w = 12)
+      pct = 0 if pct.negative?
+      pct = 100 if pct > 100
+      fill = pct * w / 100
+      (1..w).map { |i| i <= fill ? "▓" : "░" }.join
+    end
+
     # bash `once` up to the preflight gate (ratchet/bin/ratchet once path):
-    # quiet doctor first, loud only on failure, abort before any turn. The
-    # turn loop itself arrives with M4+ (models, Turn, Classifier).
+    # quiet doctor first, loud only on failure, abort before any turn. Then
+    # ONE turn of the loop (banner, tier routing, watchdog run, classify,
+    # metrics, per-outcome dispatch) — the M4 slice of bin/ratchet's main loop.
     def cmd_once(dir)
       dir = File.expand_path(dir || Dir.pwd)
       log_dir = File.join(ratchet_home, "logs", project_slug(dir))
@@ -328,7 +399,178 @@ module Robur
         print buf.string
         exit 1
       end
-      die "once: the turn loop is not ported yet (M4+)"
+      run_once_loop(dir)
+    end
+
+    private
+
+    # One turn of bin/ratchet's main loop in --once mode (bin/ratchet:520-866).
+    def run_once_loop(dir)
+      conf = Robur::Config.load(dir).values
+      plan = Plan.new(File.join(dir, conf["TRACKER_FILE"] || "PLAN.md"))
+      models = Tier.chain_for("build", conf).to_s.split(",").reject(&:empty?)
+      die "no models configured (-m chain, MODELS in .ratchet.conf, or global conf)." if models.empty?
+      chain = ModelChain.new(models, conf, clock: Sys::Clock.new)
+      log_dir = File.dirname(@loop_log)
+      turn_out = File.join(log_dir, "last_turn.out")
+      run_start = mono
+      run_toks = { in: 0, out: 0, cost: 0.0 }
+
+      thinking_banner = conf["THINKING"].to_s.empty? ? "inherit" : conf["THINKING"]
+      emit "=" * 60
+      emit "ratchet START"
+      emit "  repo      : #{dir}"
+      emit "  session   : ratchet-#{project_slug(dir)} (resume=no)"
+      emit "  tracker   : #{conf["TRACKER_FILE"] || "PLAN.md"}"
+      emit "  models    : #{models.join(" ")}  (preference order, fallback chain)"
+      emit "  turn cap  : #{conf["TURN_TIMEOUT"]}s   cooldown: #{conf["COOLDOWN"]}s   both-wait: #{conf["BOTH_WAIT"]}s"
+      emit "  tokens    : step='#{conf["STEP_TOKEN"]}'  done='#{conf["DONE_TOKEN"]}'"
+      emit "  agent     : #{conf["AGENT_CMD"]}"
+      emit "  thinking  : #{thinking_banner}"
+      emit "  verify    : #{conf["VERIFY_CMD"].to_s.empty? ? "<EMPTY — loud warning, no gate>" : conf["VERIFY_CMD"]}"
+      emit "  commit    : per-turn=#{conf["COMMIT_EACH_TURN"] == "1" ? "yes" : "no"}  push-on-done=#{conf["PUSH_ON_DONE"] == "1" ? "yes" : "no"}  pr=#{conf["OPEN_PR"] == "1" ? "yes" : "no"}"
+      emit "  loop log  : #{@loop_log}"
+      emit "  stop      : Ctrl-C"
+      emit "=" * 60
+
+      stop_reason = ""
+      turn = 1
+      last_model = "none"
+
+      # All-done fast path (bin/ratchet:533): no open/in-progress but has [x].
+      if !plan.open? && !plan.in_progress? && plan.count(:done).positive?
+        emit "all #{conf["TRACKER_FILE"] || "PLAN.md"} tasks complete (#{plan.count(:done)} done) — no open work remains."
+        if commit_turn("final", last_model, conf)
+          emit "agent signaled #{conf["DONE_TOKEN"]} — all work complete."
+        end
+        stop_reason = "done"
+      else
+        stop_reason, last_model = run_single_turn(dir, conf, plan, chain, log_dir, turn_out,
+                                                  run_toks, run_start, turn)
+      end
+
+      emit "ratchet END after #{turn} turn(s)."
+      File.write(File.join(dir, ".ratchet", "stop_reason"), "#{stop_reason}\n")
+      state = File.file?(File.join(dir, ".ratchet", "last_task.state")) ? File.read(File.join(dir, ".ratchet", "last_task.state")) : ""
+      taskid = state[/\A[^\t]*/].to_s
+      metrics_append(dir, "run", "-", "-", last_model, stop_reason, elapsed_int(run_start), taskid,
+                     run_toks[:in], run_toks[:out], format("%.6f", run_toks[:cost]))
+    end
+
+    def mono = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+    def elapsed_int(from) = (mono - from).to_i
+
+    # Runs one turn and dispatches its outcome; returns [stop_reason, model].
+    def run_single_turn(dir, conf, plan, chain, log_dir, turn_out, run_toks, run_start, turn)
+      task = plan.next_task(:in_progress) || plan.next_task(:open)
+      tag = task&.tags&.first
+      tier = Tier.from_tag(tag)
+      thinking = Tier.thinking_for(tier, conf)
+      model = chain.models[chain.pick || 0]
+      next_task_str = task ? "#{task.id} (#{task.tags.join(", ")}) #{task.text}" : ""
+
+      done_n = plan.count(:done)
+      open_n = plan.count(:open) + plan.count(:in_progress)
+      emit "tasks: #{done_n} done / #{done_n + open_n} total | next: #{next_task_str.slice(0, 60)}"
+
+      minfo = plan.current_milestone
+      if minfo
+        pct = (done_n + open_n).positive? ? done_n * 100 / (done_n + open_n) : 0
+        term_only "Step #{done_n}/#{done_n + open_n}  [#{render_bar(pct)} #{pct}%]   #{minfo[:name]}  (#{minfo[:done]}/#{minfo[:total]})"
+      else
+        term_only "Step #{done_n}/#{done_n + open_n}  [#{render_bar(done_n * 100 / (done_n + open_n))} #{done_n * 100 / (done_n + open_n)}%]"
+      end
+      taskid = task ? task.id : "?"
+      tasktext = task ? task.text : "—"
+      term_only "  ▶ #{taskid}  #{tasktext}   #{tier} · #{model}"
+
+      emit "--- turn #{turn} | model=#{model} ---"
+      emit "turn #{turn} | tier=#{tier} | model=#{model} | thinking=#{thinking} | task=#{next_task_str}"
+
+      ENV["RATCHET_LOOP"] = "1"
+      turn_start = mono
+      cmd = [conf["AGENT_CMD"], "--model", model]
+      cmd += ["--thinking", thinking] unless thinking.to_s.empty?
+      cmd += ["--no-session", "-p", "turn"]
+      result = Turn.run(cmd: cmd, turn_file: turn_out,
+                        turn_timeout: conf["TURN_TIMEOUT"].to_i,
+                        stall_timeout: conf["STALL_TIMEOUT"].to_i,
+                        poll_interval: (ENV["POLL_INTERVAL"] || conf["POLL_INTERVAL"] || 3).to_i)
+      status = result.kill_reason ? 128 + (result.status.termsig || 0) : result.status.exitstatus
+      deadline = !result.kill_reason.nil?
+      klass = Classifier.classify(turn_out, step_token: conf["STEP_TOKEN"], done_token: conf["DONE_TOKEN"],
+                                           deadline: deadline, json: false, human_token: conf["HUMAN_TOKEN"])
+      took = elapsed_int(turn_start)
+      emit "turn #{turn} end | class=#{klass} | took=#{took}s | exitcode=#{status} | task=#{next_task_str.slice(0, 20)}"
+
+      tin, tout, cost = turn_usage(turn_out).split("\t")
+      metrics_append(dir, "turn", turn, tier, model, klass, took, taskid, tin, tout, cost)
+      run_toks[:in] += tin.to_i
+      run_toks[:out] += tout.to_i
+      run_toks[:cost] += cost.to_f
+
+      FileUtils.mkdir_p(File.join(dir, ".ratchet"))
+      File.write(File.join(dir, ".ratchet", "last_task.state"), "#{taskid}\t#{klass}\n")
+
+      avg = avg_turn_secs(@loop_log)
+      eta = avg.zero? ? "ETA unknown" : "~#{open_n} turns / ~#{fmt_dur(open_n * avg)} left"
+      term_only "  ⏱ turn #{turn} · #{fmt_dur(took)}   avg #{fmt_dur(avg)}   #{eta}"
+
+      # show_excerpt (observability.sh:41)
+      if !ENV.fetch("SUMMARY_LINES", "4").to_i.zero? && File.exist?(turn_out) && !File.zero?(turn_out)
+        emit "--- summary ---"
+        lines = File.read(turn_out).lines.reject { |l| l =~ /^[[:space:]]*$/ }
+        lines.last(ENV.fetch("SUMMARY_LINES", "4").to_i).each { |l| print l; @loop_log ? File.write(@loop_log, l, mode: "a") : nil }
+        emit "---"
+      end
+
+      # ALL_DONE with open tasks is mid-work, not done (bin/ratchet:663).
+      klass = :step if klass == :done && (plan.open? || plan.in_progress?)
+
+      committed = commit_turn(turn, model, conf)
+      case klass
+      when :done
+        emit "agent signaled #{conf["DONE_TOKEN"]} — all work complete."
+        return ["done", model]
+      when :human
+        emit "agent signaled #{conf["HUMAN_TOKEN"]} — needs a human decision; stopping this repo."
+        emit "HUMAN NEEDED: #{plan.human_block_brief(taskid, next_task_str)}"
+        return ["human_blocked", model]
+      when :step
+        emit "step complete (#{conf["STEP_TOKEN"]}). Sleeping #{conf["SHORT_SLEEP"]}s."
+        emit "--once: stopping after one step."
+        return ["once", model]
+      when :exhausted
+        if took < 15
+          emit "model #{model} EXHAUSTED (quota/rate-limit) in #{took}s — instant-quota, model was already dry. Benching #{conf["COOLDOWN"]}s; switching."
+        else
+          emit "model #{model} EXHAUSTED (quota/rate-limit). Benching #{conf["COOLDOWN"]}s; switching."
+        end
+        chain.bench!(0)
+        emit "--once: stopping."
+        return ["once", model]
+      when :hard
+        chain.strike!(0)
+        emit "model #{model} HARD ERROR (auth/not-found/bad-request). strike 1/#{conf["MAX_TRANSIENT"]}. See #{turn_out}"
+        emit "--once: stopping."
+        return ["once", model]
+      when :timeout
+        dirty = File.directory?(File.join(dir, ".git")) &&
+                !Open3.capture3("git", "-C", dir, "status", "--porcelain")[0].empty?
+        if dirty && committed
+          emit "turn killed (#{klass}) but tree was green — salvaged work as a commit; continuing."
+          return ["once", model]
+        end
+        emit "model #{model} TIMEOUT (#{result.kill_reason}, no token/error). strike 1/#{conf["MAX_TRANSIENT"]}; backing off #{conf["SHORT_SLEEP"]}s."
+        emit "--once: stopping."
+        return ["once", model]
+      else # :transient
+        chain.strike!(0)
+        emit "model #{model} transient failure. strike 1/#{conf["MAX_TRANSIENT"]}; backing off #{conf["SHORT_SLEEP"]}s."
+        emit "--once: stopping."
+        return ["once", model]
+      end
     end
   end
 end
