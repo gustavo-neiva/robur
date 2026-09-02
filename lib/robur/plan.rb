@@ -48,6 +48,77 @@ module Robur
           .slice(0, 100)
     end
 
+    # "name\tdone\ttotal" per `## ` section (tracker_milestones). Plain
+    # counting — no done/checklist heading skip, uppercase [X] not counted.
+    def milestones
+      sections.filter_map do |sec, lines|
+        next if sec.nil?
+
+        done = lines.count { |l| l =~ /^\s*-\s+\[x\]/ }
+        total = done + lines.count { |l| l =~ /^\s*-\s+\[( |IN PROGRESS)\]/ }
+        { name: sec, done: done, total: total } if total.positive?
+      end
+    end
+
+    # Section holding the first open/in-progress task (tracker_next applies
+    # the done/checklist heading skip when finding it; the section scan does
+    # not). index is the 1-based position of that task within its section.
+    def current_milestone
+      target = bash_skipped_line(:in_progress) || bash_skipped_line(:open)
+      return unless target
+
+      name = nil
+      idx = mdone = mtotal = 0
+      found = false
+      all_lines.each_with_index do |line, i|
+        if line =~ /^## /
+          break if found
+
+          name = line.sub(/^## /, "")
+          idx = mdone = mtotal = 0
+        end
+        case line
+        when /^\s*-\s+\[x\]/
+          mdone += 1
+          mtotal += 1
+          idx += 1 unless found
+        when /^\s*-\s+\[( |IN PROGRESS)\]/
+          mtotal += 1
+          idx += 1 unless found
+          found = true if i + 1 == target
+        end
+      end
+      return unless found
+
+      { name: name, index: idx, count: mtotal, done: mdone, total: mtotal }
+    end
+
+    def ready?
+      return false unless File.exist?(@path)
+
+      # Placeholder markers _(...)_, skipping backtick-quoted examples.
+      return false if all_lines.any? { |l| !l.include?("`") && l =~ /_\([^)]+\)_/ }
+
+      # All done (no open/in-progress tasks) = ready.
+      tasks = all_lines.grep(/^\s*-?\s*\[( |IN PROGRESS)\]/)
+      return true if tasks.empty?
+
+      tasks.any? { |l| l =~ /\((trivial|normal|hard)[,)]/ }
+    end
+
+    # Milestones whose FIRST open task is tagged (independent).
+    def independent_milestones
+      sections.filter_map do |sec, lines|
+        next if sec.nil?
+
+        first = lines.find { |l| l =~ /^\s*-\s+\[ \]/ }
+        next unless first&.match(/\(independent[,)]/)
+
+        slug = sec.gsub(/[^A-Za-z0-9_-]/, "-").gsub(/-+/, "-").gsub(/\A-+|-+\z/, "")
+        { name: sec, slug: slug }
+      end
+    end
+
     def task_block
       cur = next_task(:in_progress) || next_task(:open)
       return nil unless cur
@@ -69,6 +140,27 @@ module Robur
       n = 0
       each_task(kind) { n += 1 }
       n
+    end
+
+    # Line number of the first task of `kind`, using tracker_next's rule:
+    # open/in-progress lines under a done/checklist heading are skipped.
+    def bash_skipped_line(kind)
+      each_task(kind) { |t| return t.lineno }
+      nil
+    end
+
+    # Yields each `## ` section as [name_without_prefix, lines]. Sections are
+    # separated by `## ` headings; lines before the first one belong to nil.
+    def sections
+      result = [[nil, []]]
+      all_lines.each do |line|
+        if line =~ /^## /
+          result << [line.sub(/^## /, ""), []]
+        else
+          result.last[1] << line
+        end
+      end
+      result
     end
 
     # Yields tasks of `kind`, skipping open/in-progress lines under a
