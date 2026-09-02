@@ -1,0 +1,19 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Resolve symlink chain so exe/robur works from PATH, brew links, etc.
+self_path = File.expand_path(__FILE__)
+while File.symlink?(self_path)
+  self_path = File.expand_path(File.readlink(self_path), File.dirname(self_path))
+end
+lib = File.expand_path("../lib", self_path)
+$LOAD_PATH.unshift(lib) unless $LOAD_PATH.include?(lib)
+
+require "robur"
+
+puts "robur #{Robur::VERSION} — Ruby replacement for the ratchet loop"
+puts
+puts "usage: robur <command> [options]"
+puts
+puts "commands: (none yet — see PLAN.md)"
+exit 0
