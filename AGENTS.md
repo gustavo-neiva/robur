@@ -1,20 +1,24 @@
-# Agent context
+# robur
 
-## Loop vs interactive
+Ruby replacement for the bash ratchet loop (`../ratchet`, read-only sibling repo).
+Behaviour-compatible with the bash ratchet, not code-compatible: the frozen
+formats live in PLAN.md and must not change (tracker line grammar, `.ratchet.conf`
+keys, session/journal file formats, tokens).
 
-The headless `ratchet` loop briefs its own turns via the harness prompt — it
-never sees this file. If you're working in a human-led session (`RATCHET_LOOP`
-is unset), work normally: make as many edits as needed, run the tests, commit
-when ready. The human owns the git history.
+## Rules
+
+- **Stdlib only.** Ruby standard library. No gems, no Bundler, no Gemfile.
+- **No Sorbet.** No type annotations, no sig blocks.
+- **No loop mechanics here.** The loop protocol travels in the harness prompt;
+  this file is for human-led sessions only.
 
 ## What to read
 
-- **PLAN.md** (or your configured tracker): the task roadmap
-- **LEARNINGS.md**: mistakes, gotchas, and non-obvious behavior discovered so far
+- **PLAN.md**: task roadmap (tracker grammar is documented at the top).
+- **LEARNINGS.md**: gotchas discovered while working here.
 
-The loop keeps both current; read them before making changes.
+## Gotchas
 
-## Project-specific rules
-
-_(Add conventions, glossary, stack constraints, and any standing instructions
-below. This section is yours to edit.)_
+- Never put a `#` in any `.ratchet.conf` value — `parse_repo_conf` truncates at
+  the first `#`, so Ruby interpolation in `VERIFY_CMD` is silently cut in half
+  and RED-locks the loop. The gate uses `File.expand_path(f)` for this reason.

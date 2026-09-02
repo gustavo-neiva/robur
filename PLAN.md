@@ -140,7 +140,7 @@ port changed nothing.
     do: `git init` this directory; create `exe/`, `lib/robur/`, `test/`, `test/differential/`, `test/fixtures/`; add `.gitignore` covering `.ratchet/`, `tmp/`, `*.log`; add `lib/robur.rb` requiring nothing yet and defining `module Robur; VERSION = "0.0.1"; end`; add `exe/robur` as an executable stub that resolves its own symlink chain to find `lib/` and prints usage. Make one commit.
     done: Given a clean checkout, When `ruby -Ilib -e 'require "robur"; puts Robur::VERSION'` runs, Then it prints `0.0.1`; When `exe/robur` is symlinked onto PATH from another directory and invoked, Then it still finds `lib/` and prints usage.
     files: .gitignore, lib/robur.rb, exe/robur
-- [ ] T1.2 (trivial, serial) the repo contract files
+- [x] T1.2 (trivial, serial) the repo contract files
     do: `.ratchet.conf` and `.gitignore` were bootstrapped by hand — verify them, do not rewrite them. Add `AGENTS.md` describing what robur is, the stdlib-only rule, the no-Sorbet rule, and the frozen-format list — no loop mechanics, that travels in the harness prompt. Add `LEARNINGS.md` with the append-only header, seeded with this gotcha: `.ratchet.conf` values are truncated at the first `#` by `parse_repo_conf`, so a `VERIFY_CMD` containing Ruby string interpolation like a `#{...}` sequence is silently cut in half and RED-locks the loop. That is why the gate uses `File.expand_path(f)` and not interpolation. Never put a `#` in any `.ratchet.conf` value.
     done: Given the three files, When `ratchet doctor .` runs from the bash ratchet, Then it exits 0 and reports the conf parses, the tracker has open tasks, and the protocol is current; the `VERIFY_CMD` it echoes ends in `}'` and is not truncated.
     files: AGENTS.md, LEARNINGS.md
