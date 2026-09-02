@@ -138,4 +138,28 @@ class ConfigTest < Minitest::Test
     assert_includes errors.join("\n"), "not a KEY=value line: 'oops'"
     assert_includes errors.join("\n"), "unknown key 'BAD KEY'"
   end
+  def test_conf_hash_matches_shasum
+    Dir.mktmpdir do |d|
+      conf = File.join(d, ".ratchet.conf")
+      File.write(conf, "MODELS=zai/m1\n")
+      expected = `shasum -a 256 #{conf} | awk '{print $1}'`.strip
+      assert_equal expected, Robur::Config.conf_hash(conf)
+      assert_equal "none", Robur::Config.conf_hash(File.join(d, "missing"))
+    end
+  end
+
+  def test_conf_hash_round_trip_and_bash_format
+    Dir.mktmpdir do |d|
+      File.write(File.join(d, ".ratchet.conf"), "STEP_TOKEN=X\n")
+      Robur::Config.write_conf_hash(d)
+      stamp = File.join(d, ".ratchet", "conf.hash")
+      # same one-line format the bash ratchet writes
+      assert_equal `shasum -a 256 #{File.join(d, '.ratchet.conf')} | awk '{print $1}'`.strip,
+                   File.read(stamp).strip
+      assert_equal 1, File.read(stamp).lines.count
+      # a stamp written by bash ratchet reads back and matches → no tampering
+      File.write(stamp, `shasum -a 256 #{File.join(d, '.ratchet.conf')} | awk '{print $1}'`)
+      assert_equal Robur::Config.conf_hash(File.join(d, ".ratchet.conf")), Robur::Config.read_conf_hash(d)
+    end
+  end
 end

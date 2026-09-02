@@ -179,7 +179,7 @@ port changed nothing.
     do: add the neutral built-in defaults from `ratchet/lib/common.sh` as one frozen constant hash, and implement the precedence chain CLI flags > repo conf > global conf > defaults. `VERIFY_CMD` defaults empty so a missing gate stays a loud warning. Declare each default exactly once; there are no inline fallbacks at call sites.
     done: Given a value set in all four layers, When `Config.load` runs, Then the CLI value wins; Given it set in three, Then the repo conf wins, and so on down; Given `PR_SOFT_MAX_LINES` unset everywhere, Then it is 400 and that literal appears exactly once in `lib/`.
     files: lib/robur/config.rb, test/config_test.rb
-- [ ] T2.4 (normal) conf_hash and the doctor tamper pin
+- [x] T2.4 (normal) conf_hash and the doctor tamper pin
     do: add `Config#conf_hash` producing the same SHA-256 hex `ratchet/lib/contract.sh:conf_hash` produces, and read/write `.ratchet/conf.hash` in the same one-line format.
     done: Given `ratchet/.ratchet.conf`, When `Config#conf_hash` runs, Then it equals `shasum -a 256 .ratchet.conf | awk '{print $1}'`; Given a `.ratchet/conf.hash` written by bash ratchet, Then robur reads it and reports no tampering.
     files: lib/robur/config.rb, test/config_test.rb

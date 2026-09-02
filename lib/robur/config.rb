@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "digest"
+require "fileutils"
 require "open3"
 
 module Robur
@@ -101,6 +103,24 @@ module Robur
       return true if ALLOWLIST.include?(key)
       # COOLDOWN_<PROVIDER> per-provider overrides are allowed by prefix.
       key =~ /\ACOOLDOWN_[A-Z0-9]/
+    end
+
+# conf_hash port (ratchet/lib/contract.sh): SHA-256 hex of the file, or
+    # the literal 'none' when the file is missing. Doctor pins this against
+    # .ratchet/conf.hash so repo-contract tampering is detected.
+    def conf_hash(path)
+      return "none" unless File.file?(path)
+      Digest::SHA256.file(path).hexdigest
+    end
+
+    def read_conf_hash(repo_dir)
+      File.read(File.join(repo_dir, ".ratchet", "conf.hash")).strip
+    end
+
+    # One-line format, identical to `conf_hash "$repo/.ratchet.conf" > .ratchet/conf.hash`.
+    def write_conf_hash(repo_dir)
+      FileUtils.mkdir_p(File.join(repo_dir, ".ratchet"))
+      File.write(File.join(repo_dir, ".ratchet", "conf.hash"), "#{conf_hash(File.join(repo_dir, '.ratchet.conf'))}\n")
     end
 
     def numeric?(key)
