@@ -18,6 +18,15 @@ class DifferentialHarnessTest < Minitest::Test
     assert_empty report.differences, "expected zero diffs, got: #{report.differences}"
   end
 
+  def test_real_pair_runs_both_binaries_and_returns_a_report
+    skip "bash ratchet sibling not present" unless File.exist?(H::BASELINE_CMD)
+    report = H::Runner.new.run(help_scenario)
+    assert_kind_of H::DiffReport, report
+    # CLI parity lands in M6, so the real pair legitimately differs today;
+    # this pins only that the runner drives both real binaries end to end.
+    assert report.surfaces.key?("stdout")
+  end
+
   def test_injected_extra_space_lists_exactly_one_difference_named_stdout
     Dir.mktmpdir("robur-mutant") do |dir|
       # exe/robur resolves lib/ relative to itself, so the mutant needs the
