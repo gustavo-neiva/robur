@@ -233,7 +233,7 @@ port changed nothing.
     do: add `lib/robur/session_sanitize.rb` stripping prior thinking blocks so any provider can continue a session, matching `ratchet/lib/session-sanitize.sh` behaviour, including the no-op path when `SANITIZE_THINKING=0`.
     done: Given the recorded session fixtures from bash suite 6, When sanitized, Then the output is byte-identical to the bash result; Given `SANITIZE_THINKING=0`, Then the input is returned unchanged.
     files: lib/robur/session_sanitize.rb, test/session_sanitize_test.rb
-- [ ] T4.6 (trivial, serial) M4 self-QA
+- [x] T4.6 (trivial, serial) M4 self-QA
     do: extend the differential suite with turn-level scenarios and run both gates.
     done: `ruby test/differential/run.rb --suite milestone-4` reports `0 diffs`, where the scenarios run `once` against the fixture repo with a stub agent forced into each outcome — step, done, human, exhausted, hard, timeout, transient — and compare stdout, exit code, `.ratchet/last_task.state` and the metrics row. PASS is the literal `0 diffs`.
     files: test/differential/suites/milestone-4.rb, LEARNINGS.md

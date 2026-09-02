@@ -22,6 +22,13 @@ module Robur
         detected = nil
 
         loop do
+          # Liveness check first (mirrors bash's `while kill -0 $pid`): a
+          # process that already exited must never be reclassified as a
+          # deadline/stall kill just because the check lands on the same
+          # tick the cap is reached.
+          _, status = Process.waitpid2(pid, Process::WNOHANG)
+          return Result.new(status: status, kill_reason: nil, elapsed: clock.monotonic - start) if status
+
           now = clock.monotonic
           if now - start >= turn_timeout
             reason = "deadline-#{turn_timeout}s"
@@ -37,8 +44,6 @@ module Robur
             detected = now
             break
           end
-          _, status = Process.waitpid2(pid, Process::WNOHANG)
-          return Result.new(status: status, kill_reason: nil, elapsed: clock.monotonic - start) if status
 
           clock.sleep(poll_interval)
         end

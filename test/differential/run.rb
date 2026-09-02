@@ -9,8 +9,8 @@ require_relative "harness"
 
 SCENARIOS = []
 
-def scenario(name:, argv:, setup: nil, env: {})
-  SCENARIOS << Robur::Differential::Scenario.new(name: name, argv: argv, setup: setup, env: env)
+def scenario(name:, argv:, setup: nil, env: {}, only: nil)
+  SCENARIOS << Robur::Differential::Scenario.new(name: name, argv: argv, setup: setup, env: env, only: only)
 end
 
 i = ARGV.index("--suite")

@@ -90,11 +90,18 @@ module Robur
       ENV["RATCHET_HOME"] || File.join(ENV["HOME"], ".ratchet")
     end
 
-    # bash emit tees to $LOOP_LOG once main() wires the logs up (common.sh:108).
+    # bash emit tees to $LOOP_LOG once main() wires the logs up (common.sh:108);
+    # QUIET=1 makes it log-only (no stdout) once the log is wired.
     def emit(msg)
       line = "[#{Time.now.strftime('%Y-%m-%d %H:%M:%S')}] #{msg}"
-      puts line
-      File.write(@loop_log, "#{line}\n", mode: "a") if @loop_log
+      if !@loop_log
+        puts line
+      elsif @quiet
+        File.write(@loop_log, "#{line}\n", mode: "a")
+      else
+        puts line
+        File.write(@loop_log, "#{line}\n", mode: "a")
+      end
     end
 
     # bash `die` — emit + exit 1.
@@ -320,9 +327,25 @@ module Robur
       die "status: loop.log parsing not ported yet (M6)"
     end
 
-    # term_only: stdout only, never the loop log (common.sh:124).
+    # term_only: stdout only, never the loop log (common.sh:124); a no-op
+    # under QUIET=1.
     def term_only(msg)
+      return if @quiet
+
       puts "[#{Time.now.strftime('%Y-%m-%d %H:%M:%S')}] #{msg}"
+    end
+
+    # flow: raw passthrough (no timestamp prefix), same QUIET gating as emit —
+    # for multi-line agent excerpts (common.sh:115 flow).
+    def flow(text)
+      if !@loop_log
+        print text
+      elsif @quiet
+        File.write(@loop_log, text, mode: "a")
+      else
+        print text
+        File.write(@loop_log, text, mode: "a")
+      end
     end
 
     # commit_turn (commit-gate.sh:60): the real gate is M5; the COMMIT_EACH_TURN
@@ -400,6 +423,7 @@ module Robur
       FileUtils.mkdir_p(log_dir)
       FileUtils.mkdir_p(File.join(dir, ".ratchet"))
       File.write(File.join(dir, ".ratchet", "last-log"), "#{log_dir}\n")
+      @quiet = Robur::Config.load(dir).values["QUIET"] == "1" # main() parses conf before preflight
       @loop_log = File.join(log_dir, "loop.log") # bash main() wires LOOP_LOG before preflight
       emit "preflight (doctor) ..."
       require "stringio"
@@ -466,6 +490,7 @@ module Robur
       taskid = state[/\A[^\t]*/].to_s
       metrics_append(dir, "run", "-", "-", last_model, stop_reason, elapsed_int(run_start), taskid,
                      run_toks[:in], run_toks[:out], format("%.6f", run_toks[:cost]))
+      0 # exit code, not File.write's byte count (bash: metrics_append's own exit status, always 0)
     end
 
     def mono = Process.clock_gettime(Process::CLOCK_MONOTONIC)
@@ -532,7 +557,7 @@ module Robur
       if !ENV.fetch("SUMMARY_LINES", "4").to_i.zero? && File.exist?(turn_out) && !File.zero?(turn_out)
         emit "--- summary ---"
         lines = File.read(turn_out).lines.reject { |l| l =~ /^[[:space:]]*$/ }
-        lines.last(ENV.fetch("SUMMARY_LINES", "4").to_i).each { |l| print l; @loop_log ? File.write(@loop_log, l, mode: "a") : nil }
+        lines.last(ENV.fetch("SUMMARY_LINES", "4").to_i).each { |l| flow l }
         emit "---"
       end
 

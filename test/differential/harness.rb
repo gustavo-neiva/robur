@@ -30,10 +30,13 @@ module Robur
       [/\b[A-Za-z0-9-]+-\d{6}\b/, "<slug>"], # project_slug: cksum of abs path differs per side
     ].freeze
 
-    Scenario = Struct.new(:name, :argv, :setup, :env, keyword_init: true) do
+    Scenario = Struct.new(:name, :argv, :setup, :env, :only, keyword_init: true) do
       # setup: optional proc called with the fresh fixture repo path, per run,
-      # so each side gets an identical pre-state.
-      def initialize(name:, argv:, setup: nil, env: {})
+      # so each side gets an identical pre-state. only: optional list of
+      # String/Regexp surface-name matchers — restricts comparison to surfaces
+      # this scenario actually contracts to (e.g. a feature not yet built,
+      # like the M5 commit gate, must not fail an M4 turn-classification run).
+      def initialize(name:, argv:, setup: nil, env: {}, only: nil)
         raise ArgumentError, "setup must be callable" if setup && !setup.respond_to?(:call)
         super
       end
@@ -49,6 +52,13 @@ module Robur
       end
 
       def differences
+        keys = raw_differences
+        return keys unless scenario.only
+
+        keys.select { |k| scenario.only.any? { |pat| pat === k } }
+      end
+
+      def raw_differences
         surfaces.select { |_, (a, b)| a != b }.keys
       end
 
@@ -72,7 +82,7 @@ module Robur
       def run(scenario, baseline_cmd: BASELINE_CMD, candidate_cmd: CANDIDATE_CMD)
         Dir.mktmpdir("robur-diff") do |tmp|
           runs = {
-            baseline: {cmd: baseline_cmd, home: File.join(tmp, "home-base")},
+            baseline: {cmd: baseline_cmd, home: File.join(tmp, "home-base"), extra: asdf_env},
             candidate: {cmd: candidate_cmd, home: File.join(tmp, "home-cand"), extra: asdf_env},
           }
           results = runs.transform_values do |r|
@@ -100,11 +110,17 @@ module Robur
 
       private
 
-      # Redirecting HOME breaks the asdf ruby shim (its global-version
-      # fallback reads $HOME/.tool-versions), so exe/robur exits 126. Pin
-      # the version the harness itself is running under.
+      # Redirecting HOME breaks asdf shims (their global-version fallback
+      # reads $HOME/.tool-versions): exe/robur's ruby shim exits 126, and
+      # bash ratchet's python3 shim (observability.sh _turn_usage) silently
+      # falls back to "0\t0\t0" instead of "0.000000" cost formatting. Pin
+      # both to the versions the harness itself is running under.
       def asdf_env
-        {"ASDF_RUBY_VERSION" => RUBY_VERSION}
+        {"ASDF_RUBY_VERSION" => RUBY_VERSION, "ASDF_PYTHON_VERSION" => python_version}
+      end
+
+      def python_version
+        Open3.capture2("python3", "--version")[0][/[\d.]+/]
       end
 
       private
@@ -129,10 +145,33 @@ module Robur
             next if File.directory?(path) || path.include?("/.git/")
             key = path.delete_prefix("#{root}/")
             key = "home/#{key}" unless root.end_with?(".ratchet")
-            files[key] = File.read(path)
+            content = File.read(path)
+            if key.end_with?("metrics.tsv")
+              split_metrics_rows(key, content).each { |k, v| files[k] = v }
+            else
+              files[key] = content
+            end
           end
         end
         files
+      end
+
+      # metrics.tsv rows: <ts> repo event turn tier model class took task
+      # tin tout cost — split by event (turn/run) so a scenario can compare
+      # the turn-classification row alone. The trailing run-summary row's
+      # elapsed seconds bakes in commit-gate work that doesn't exist yet
+      # (T5.2), so it is a separate surface, not merged in. `took` (column
+      # 8, real wall-clock seconds) is blanked: it can tick over a 1s
+      # boundary differently on each side under load and is not part of
+      # what this format freezes — class/task/tokens are.
+      def split_metrics_rows(key, content)
+        rows = Hash.new { |h, k| h[k] = +"" }
+        content.each_line do |line|
+          cols = line.chomp("\n").split("\t", -1)
+          cols[7] = "<took>" if cols.length > 7
+          rows["#{key}[#{cols[2] || "?"}]"] << "#{cols.join("\t")}\n"
+        end
+        rows
       end
 
       def git_log(repo)

@@ -3,12 +3,16 @@
 # M4 scenarios: full turn-level `once` runs through every classify_turn
 # outcome. The stub agent (test/fixtures/turn-agent) is forced into one
 # outcome per scenario via $FAKE_OUTCOME, so both binaries exercise the
-# real run_turn/classify path with no model. Compared surfaces include
-# stdout, exit code, .ratchet/last_task.state and the metrics row (both
-# under RATCHET_HOME / repo .ratchet, snapshotted by the harness).
+# real run_turn/classify path with no model. Compared surfaces: stdout,
+# exit code, .ratchet/last_task.state and the turn-classification metrics
+# row — exactly the M4 contract (turn watchdog + classify). git log,
+# loop.log/loop.pid and the trailing run-summary metrics row all depend on
+# the M5 commit gate (T5.2, `commit_turn` is still a stub) and are out of
+# scope here.
 #
 # TURN_TIMEOUT=3 keeps the timeout scenario fast; HEARTBEAT=0 QUIET=1
 # strip TTY noise that is not part of the contract.
+COMPARED = ["stdout", "exit code", /last_task\.state\z/, "file home/metrics.tsv[turn]"].freeze
 CONF = <<~CONF
   MODELS="zai/glm-5.3-flash"
   TURN_TIMEOUT="3"
@@ -34,5 +38,6 @@ PLAN
       File.write(File.join(repo, "PLAN.md"), PLAN_ONE)
       File.write(File.join(repo, ".ratchet.conf"), CONF)
     },
+    only: COMPARED,
   )
 end
