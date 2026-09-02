@@ -1,0 +1,133 @@
+# frozen_string_literal: true
+
+require "open3"
+
+module Robur
+  # Config resolution: repo .ratchet.conf + global ~/.ratchet/conf.
+  #
+  # TRUST BOUNDARY (recorded here and in AGENTS.md):
+  # - The repo .ratchet.conf is NEVER evaluated — only parsed against the
+  #   allowlist. Reason: the loop later `eval`s VERIFY_CMD and an autonomous
+  #   agent can write repo files; if this file were sourced, anything landing
+  #   in the repo could execute arbitrary code outside any agent permission
+  #   model. Unknown keys are errors (doctor), never assigned.
+  # - The global ~/.ratchet/conf is trusted exactly as much as it is in the
+  #   bash ratchet today: it is human-owned, not agent-writable, and it is
+  #   bash-SOURCED. It contains shell expansion (`export PATH="$ASDF_DATA_DIR/shims:$PATH"`),
+  #   so robur consumes it by running bash once for a baseline (env + declared
+  #   variables) and once after sourcing the file, then taking the delta:
+  #   exported variables become the environment handed to spawned turns,
+  #   plain assignments become config values.
+  module Config
+    # The complete allowlist — frozen contract (ratchet/lib/contract.sh).
+    ALLOWLIST = %w[
+      MODELS TURN_TIMEOUT STALL_TIMEOUT SHORT_SLEEP MAX_TRANSIENT COOLDOWN BOTH_WAIT
+      STEP_TOKEN DONE_TOKEN AGENT_CMD COMMIT_EACH_TURN COMMIT_VERIFY_GATE VERIFY_CMD
+      PUSH_ON_DONE OPEN_PR APPROVE_UI COMMIT_EXCLUDE_GLOBS ALLOWED_PROVIDERS THINKING
+      RESUME_SESSION CACHE_RETENTION SANITIZE_THINKING QUIET TAIL_LINES HEARTBEAT
+      STREAM_AGENT TRACKER_FILE RATCHET_PROTOCOL PLAN_MODELS BUILD_MODELS LIGHT_MODELS
+      THINKING_PLAN THINKING_BUILD THINKING_LIGHT FANOUT REQUIRED_TOOLS REVIEW_MODELS
+      THINKING_REVIEW AUTOPLAN_MODELS THINKING_AUTOPLAN
+      MODEL_RANK MAX_REVIEW_CYCLES PR_CADENCE MERGE_POLL_SECS
+      MERGE_WAIT_TIMEOUT PR_SOFT_MAX_LINES PARALLEL FANOUT_MAX
+    ].freeze
+
+    NUMERIC_KEYS = %w[
+      TURN_TIMEOUT STALL_TIMEOUT SHORT_SLEEP MAX_TRANSIENT COOLDOWN BOTH_WAIT TAIL_LINES
+      HEARTBEAT COMMIT_EACH_TURN COMMIT_VERIFY_GATE PUSH_ON_DONE OPEN_PR APPROVE_UI
+      RESUME_SESSION SANITIZE_THINKING QUIET STREAM_AGENT RATCHET_PROTOCOL
+      MAX_REVIEW_CYCLES MERGE_POLL_SECS MERGE_WAIT_TIMEOUT PR_SOFT_MAX_LINES PARALLEL
+      FANOUT_MAX
+    ].freeze
+
+    module_function
+
+    def key_allowed?(key)
+      return true if ALLOWLIST.include?(key)
+      # COOLDOWN_<PROVIDER> per-provider overrides are allowed by prefix.
+      key =~ /\ACOOLDOWN_[A-Z0-9]/
+    end
+
+    def numeric?(key)
+      NUMERIC_KEYS.include?(key) || key =~ /\ACOOLDOWN_[A-Z0-9]/
+    end
+
+    # parse_repo_conf port: returns [values(hash of String=>String), errors(array)].
+    # Byte-compatible with the bash parser: truncate at the first '#', skip
+    # space-only lines, require an uppercase/underscore first char before '=',
+    # strip ONE layer of matching surrounding quotes, coerce numeric keys.
+    def parse_repo(text)
+      values = {}
+      errors = []
+      text.each_line(chomp: true).with_index(1) do |raw, lineno|
+        line = raw.include?("#") ? raw[0, raw.index("#")] : raw
+        next if line.delete(" ").empty?
+        if line =~ /\A([A-Z_][^=]*)=(.*)\z/m
+          key = Regexp.last_match(1)
+          val = Regexp.last_match(2)
+          unless key_allowed?(key)
+            errors << "  line #{lineno}: unknown key '#{key}' (not in allowlist)"
+            next
+          end
+          if val.length >= 2 && %w[" '].include?(val[0]) && val.end_with?(val[0])
+            val = val[1..-2]
+          end
+          val = val.gsub(/[^0-9]/, "").tap { |v| v.replace("0") if v.empty? } if numeric?(key)
+          values[key] = val
+        else
+          errors << "  line #{lineno}: not a KEY=value line: '#{line}'"
+        end
+      end
+      [values, errors]
+    end
+
+    # Snapshot of env (NUL-separated k=v) and all shell variables.
+    SNAPSHOT = 'env -0; printf "\0--V--\0"; for k in $(compgen -A variable); do printf "%s=%s\0" "$k" "${!k}"; done'
+
+    def snapshot
+      out, = Open3.capture3("bash", "-c", SNAPSHOT)
+      env, vars = out.split("\0--V--\0", 2).map { |seg| parse_pairs(seg) }
+      [env, vars]
+    end
+
+    def parse_pairs(blob)
+      blob.split("\0").reject(&:empty?).each_with_object({}) do |pair, h|
+        k, v = pair.split("=", 2)
+        h[k] = v
+      end
+    end
+
+    # Sources the global conf via bash and returns { values:, env:, errors: }.
+    def load_global(path)
+      # one bash process for both snapshots, so SHLVL-style per-process noise never shows up as a delta
+      script = %(#{SNAPSHOT}; printf "\\0--S--\\0"; . "$1"; printf "\\0--S--\\0"; #{SNAPSHOT})
+      out, err, _st = Open3.capture3("bash", "-c", script, "ratchet", path)
+      return { values: {}, env: {}, errors: [err.strip] } unless err.strip.empty?
+      before_env, before_vars, after_env, after_vars =
+        out.split("\0--S--\0").flat_map { |seg| seg.split("\0--V--\0", 2).map { |s| parse_pairs(s) } }
+      env = after_env.select { |k, v| before_env[k] != v }
+      values = after_vars.select { |k, v| before_vars[k] != v }
+      { values: values, env: env, errors: [] }
+    end
+
+    Result = Struct.new(:values, :env, :errors)
+
+    # Full load: global conf first (trusted), repo conf overrides (parsed).
+    def load(repo_dir)
+      values, env, errors = {}, {}, []
+      if File.file?(File.join(Dir.home, ".ratchet", "conf"))
+        g = load_global(File.join(Dir.home, ".ratchet", "conf"))
+        values.update(g[:values])
+        env.update(g[:env])
+        errors.concat(g[:errors])
+      end
+      repo = File.join(repo_dir, ".ratchet.conf")
+      if File.file?(repo)
+        rv, rerrors = parse_repo(File.read(repo))
+        values.update(rv)
+        errors.concat(rerrors)
+      end
+      Result.new(values, env, errors)
+    end
+  end
+end

@@ -172,7 +172,22 @@ module Robur
         pr_fail.call("agent command 'pi' not found (set AGENT_CMD / install it)")
       end
 
-      unless File.file?(File.join(dir, ".ratchet.conf"))
+      # conf parses (PARSED, never sourced — see Robur::Config trust boundary)
+      conf_path = File.join(dir, ".ratchet.conf")
+      conf_values = {}
+      if File.file?(conf_path)
+        conf_values, cerr = Robur::Config.parse_repo(File.read(conf_path))
+        if cerr.empty?
+          pr_ok.call(".ratchet.conf parses (allowlisted keys)")
+        else
+          pr_fail.call(".ratchet.conf has errors:")
+          puts cerr.join("\n").gsub(/^/, "         ")
+        end
+        case conf_values["RATCHET_PROTOCOL"] || "1"
+        when "1" then pr_ok.call("RATCHET_PROTOCOL=1 supported")
+        else pr_fail.call("RATCHET_PROTOCOL=#{conf_values["RATCHET_PROTOCOL"]} unsupported (want 1)")
+        end
+      else
         pr_fail.call("no .ratchet.conf (run: #{PROG} init #{dir})")
       end
 
@@ -196,10 +211,11 @@ module Robur
         pr_fail.call("no tracker found (PLAN.md/TODO.md/TASKS.md) — run: #{PROG} init #{dir}")
       end
 
-      if ENV["VERIFY_CMD"].to_s.empty?
+      verify_cmd = conf_values["VERIFY_CMD"] || ENV["VERIFY_CMD"]
+      if verify_cmd.to_s.empty?
         pr_fail.call("VERIFY_CMD is EMPTY — set it in .ratchet.conf (no-gate is loud by design)")
       else
-        pr_ok.call("VERIFY_CMD is set: '#{ENV["VERIFY_CMD"]}'")
+        pr_ok.call("VERIFY_CMD is set: '#{verify_cmd}'")
       end
 
       pr_ok.call("tokens: defined in conf (prompt delivery)")
