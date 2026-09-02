@@ -217,7 +217,7 @@ port changed nothing.
     do: add `lib/robur/model_chain.rb` holding the chain, the per-model transient strike counts and bench-until timestamps, with `pick`, `bench!`, `strike!`, `reset_all`, and the per-provider `COOLDOWN_<PROVIDER>` override resolved from the model's leading path segment. Take `Sys::Clock` by injection so cooldown expiry is testable without sleeping.
     done: Given a three-model chain, When the first is benched, Then `pick` returns the second; When all are benched, Then `pick` returns nil; When the injected clock advances past the cooldown, Then the first is picked again; Given `COOLDOWN_ZAI=3600` and a global `COOLDOWN=14400`, Then a `zai/...` model unbenches after 3600 simulated seconds.
     files: lib/robur/model_chain.rb, test/model_chain_test.rb
-- [ ] T4.2 (normal) tier selection
+- [x] T4.2 (normal) tier selection
     do: add `lib/robur/tier.rb` resolving a task tag to a tier (`trivial`→light, `hard`→build-hard, else build), the chain for a tier with the documented fallback order, the thinking level per tier, `AUTOPLAN` falling back to `PLAN` then flat, and the `--cheap` override that forces every tier to light. Include the `MODEL_RANK` auto-slice for unset tiers.
     done: Given each combination of set and unset tier keys from the bash suite-5, suite-21 and suite-22 cases, When the tier chain is resolved, Then it equals what `chain_for_tier` returns for the same conf, asserted against recorded bash output.
     files: lib/robur/tier.rb, test/tier_test.rb
