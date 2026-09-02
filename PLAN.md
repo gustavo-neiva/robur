@@ -267,7 +267,7 @@ port changed nothing.
 
 ## M6 — The CLI and the loop
 
-- [ ] T6.1 (normal) Cli — argument parsing and exit codes
+- [x] T6.1 (normal) Cli — argument parsing and exit codes
     do: add `lib/robur/cli.rb` using `OptionParser` for the full flag surface, plus the two-phase parse the bash entrypoint needs: a tolerant pre-scan that finds only the subcommand and repo dir so the repo conf can load before the authoritative parse. Preserve every exit code: 0 for a clean stop, 1 for preflight failure and PR-flow errors, 2 for the manual-merge and push-failure paths, and `die` for an unknown option.
     done: Given each documented flag and subcommand, When parsed, Then the resolved config matches the bash result; Given an unknown option, Then it exits non-zero with the same message shape; Given `--help`, Then stdout is byte-identical to `ratchet --help` after the program-name substitution.
     files: lib/robur/cli.rb, test/cli_test.rb
