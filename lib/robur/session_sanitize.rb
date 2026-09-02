@@ -25,7 +25,7 @@ module Robur
         obj = parse(line)
         if sanitize_line?(obj) && (kept = strip_thinking(obj, ->(n) { stripped += n }))
           rewrote += 1
-          out_lines << JSON.generate(obj)
+          out_lines << python_json(obj)
         else
           out_lines << line
         end
@@ -56,6 +56,16 @@ module Robur
         obj.is_a?(Hash) && obj["type"] == "message" &&
           obj["message"].is_a?(Hash) && obj["message"]["role"] == "assistant" &&
           obj["message"]["content"].is_a?(Array)
+      end
+
+      # python json.dumps default separators (', ' / ': ') — the bash original
+      # serializes with python, so rewritten lines must match byte for byte.
+      def python_json(obj)
+        case obj
+        when Hash then "{#{obj.map { |k, v| "#{python_json(k)}: #{python_json(v)}" }.join(", ")}}"
+        when Array then "[#{obj.map { |v| python_json(v) }.join(", ")}]"
+        else JSON.generate(obj)
+        end
       end
 
       def strip_thinking(obj, count)

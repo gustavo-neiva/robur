@@ -16,12 +16,12 @@ class SessionSanitizeTest < Minitest::Test
     '{"type":"message","message":{"role":"assistant","content":[{"type":"thinking","thinking":"only","thinkingSignature":"reasoning_content"}]}}'
   ].join("\n") << "\n"
 
-  # Byte-identical to the bash result (recorded from ratchet session-sanitize).
+  # Byte-identical to the bash result (python json.dumps separators ', ' / ': ').
   SUITE6_EXPECTED = [
     '{"type":"session","version":3,"id":"x"}',
     '{"type":"message","message":{"role":"user","content":[{"type":"text","text":"hi"}]}}',
-    '{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"ok"},{"type":"toolCall","id":"c1","name":"read","arguments":{"path":"/x"}}]}}',
-    '{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":""}]}}'
+    '{"type": "message", "message": {"role": "assistant", "content": [{"type": "text", "text": "ok"}, {"type": "toolCall", "id": "c1", "name": "read", "arguments": {"path": "/x"}}]}}',
+    '{"type": "message", "message": {"role": "assistant", "content": [{"type": "text", "text": ""}]}}'
   ].join("\n") << "\n"
 
   def sanitize(input, **opts)

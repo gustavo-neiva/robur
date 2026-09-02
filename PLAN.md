@@ -229,7 +229,7 @@ port changed nothing.
     do: add `lib/robur/classifier.rb` returning `done | human | step | exhausted | hard | timeout | transient` in that precedence order. It parses the pi event stream with a single `JSON.parse` per line — bash parses this stream three ways in three files, by regex, by `jq`, and by an embedded Python heredoc. Token matches count only in assistant `text_end` events; error scans must exclude assistant `text`/`thinking` events, or a task that merely discusses a rate limit false-fires as exhausted.
     done: Given the `turn-usage` fixtures and recorded provider error bodies, When each is classified, Then the verdict matches bash `classify_turn` for every case in suite 1; Given an output whose assistant prose contains the phrase for a quota error, Then the class is not exhausted; Given a non-JSON plain-text output, Then classification falls back to literal token matching.
     files: lib/robur/classifier.rb, test/classifier_test.rb
-- [ ] T4.5 (normal) session sanitize
+- [x] T4.5 (normal) session sanitize
     do: add `lib/robur/session_sanitize.rb` stripping prior thinking blocks so any provider can continue a session, matching `ratchet/lib/session-sanitize.sh` behaviour, including the no-op path when `SANITIZE_THINKING=0`.
     done: Given the recorded session fixtures from bash suite 6, When sanitized, Then the output is byte-identical to the bash result; Given `SANITIZE_THINKING=0`, Then the input is returned unchanged.
     files: lib/robur/session_sanitize.rb, test/session_sanitize_test.rb
