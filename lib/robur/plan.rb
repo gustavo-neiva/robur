@@ -129,6 +129,21 @@ module Robur
       block.join("\n")
     end
 
+    # Telegram DM body for a human-gate stop (human_block_brief): title line,
+    # the task's block bounded at 900 bytes, unblock instruction, /blocked
+    # pointer. Byte-truncated to match bash `head -c 900`.
+    def human_block_brief(id, title)
+      block = block_for(id)
+      block = block.byteslice(0, 900) if block&.empty? == false
+      format("%s: loop BLOCKED on a human decision — task: %s\n\n%s\n\n" \
+             "Unblock: do the work, mark it [x] in %s — the next run resumes " \
+             "on its own.\nFull context: /blocked in the Harbor Telegram bot.",
+             File.basename(File.dirname(@path) || "repo"),
+             title.nil? || title.empty? ? id : title,
+             block.nil? || block.empty? ? "<task block not found in tracker>" : block,
+             @path)
+    end
+
     # The `<!-- class: MACHINE -->` marker on the tracker's first line.
     def class_marker
       all_lines[0]&.match(/<!--\s*class:\s*(\w+)\s*-->/)&.send(:[], 1)
@@ -186,6 +201,20 @@ module Robur
 
     def all_lines
       @all_lines ||= File.exist?(@path) ? File.readlines(@path, chomp: true) : []
+    end
+
+    # Lines from the `- [...] id` task line through just before the next task
+    # or heading — nil when the file is missing, id is "?", or no match.
+    def block_for(id)
+      return nil if id == "?" || !File.exist?(@path)
+
+      start = /\A\s*- \[[^\]]+\] #{Regexp.escape(id)}( |$)/
+      i = all_lines.index { |l| l =~ start }
+      return nil unless i
+
+      all_lines[i..].take_while.with_index do |l, j|
+        j.zero? || (l !~ /\A\s*- \[/ && l !~ HEADING)
+      end.join("\n")
     end
 
     def staged_done_line

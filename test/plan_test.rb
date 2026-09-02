@@ -144,4 +144,41 @@ class PlanTest < Minitest::Test
       assert_milestone_parity(path)
     end
   end
+
+  def test_human_block_brief_parity_with_bash
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "PLAN.md")
+      File.write(path, <<~PLAN)
+        <!-- class: MACHINE -->
+        # Plan
+        ## M1
+        - [ ] T1 (hard) blocked thing
+          do: the work with details
+          constraints: stay safe
+        - [ ] T2 (normal) other
+        PLAN
+      brief = Robur::Plan.new(path).human_block_brief("T1", "t-title")
+      assert_equal bash_fn("human_block_brief T1 t-title", path).chomp, brief
+      # fallback when the block is not found (unknown id)
+      missing = Robur::Plan.new(path).human_block_brief("ZZ", nil)
+      assert_equal bash_fn("human_block_brief ZZ ''", path).chomp, missing
+      assert_includes missing, "<task block not found in tracker>"
+      # id "?" also falls back
+      assert_equal bash_fn("human_block_brief '?' ''", path).chomp,
+                   Robur::Plan.new(path).human_block_brief("?", nil)
+    end
+  end
+
+  def test_human_block_brief_bounded_at_900_bytes
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "PLAN.md")
+      filler = "x" * 80
+      File.write(path, "# Plan\n- [ ] T1 (hard) blocked\n" +
+                       Array.new(50) { "  #{filler}" }.join("\n") + "\n")
+      brief = Robur::Plan.new(path).human_block_brief("T1", "t")
+      block = brief.split("\n\n")[1]
+      assert block.bytesize <= 900
+      assert_equal 900, block.bytesize
+    end
+  end
 end

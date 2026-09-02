@@ -202,7 +202,7 @@ port changed nothing.
     do: add `milestones` (name, done, total per `## ` section), `current_milestone` (name, index, count, done, total for the section holding the first open task), `ready?` (no `_(...)_` placeholders outside backticks, at least one tagged open task, and an all-done tracker counts as ready), and `independent_milestones`.
     done: Given `ratchet/PLAN.md` and `ratchet/templates/PLAN.seed.md`, When each method runs, Then the outputs equal the bash `tracker_milestones`, `tracker_current_milestone`, `plan_is_ready` and `fanout_independent_milestones` results for the same files, asserted by executing both.
     files: lib/robur/plan.rb, test/plan_test.rb
-- [ ] T3.4 (normal) human_block_brief
+- [x] T3.4 (normal) human_block_brief
     do: add `Plan#human_block_brief(id, title)` producing the Telegram DM body byte-identically to `ratchet/lib/tracker.sh:human_block_brief` — the title line, the 900-char task block, the unblock instruction naming the tracker path, and the `/blocked` pointer.
     done: Given the fixture repo and a known task id, When the brief is produced by both implementations, Then the two strings are identical including the 900-char bound and the fallback text when the block is not found.
     files: lib/robur/plan.rb, test/plan_test.rb
