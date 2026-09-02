@@ -40,6 +40,61 @@ module Robur
       FANOUT_MAX
     ].freeze
 
+    # Neutral built-in defaults, ported from ratchet/lib/common.sh. Each default
+    # is declared exactly ONCE here; no call site carries an inline fallback.
+    # VERIFY_CMD defaults EMPTY so a missing gate is a loud warning, never a
+    # silent skip. Runtime slots the bash arg parser fills (REPO_DIR, LOOP_LOG,
+    # COMMAND…) are not config and live elsewhere.
+    DEFAULTS = {
+      "MODELS" => "",
+      "TURN_TIMEOUT" => "1800",
+      "STALL_TIMEOUT" => "120",
+      "SHORT_SLEEP" => "2",
+      "POLL_INTERVAL" => "3",
+      "MAX_TRANSIENT" => "3",
+      "MAX_DONE_GATE_FAILS" => "3",
+      "PR_SOFT_MAX_LINES" => "400",
+      "COOLDOWN" => "14400",
+      "BOTH_WAIT" => "14400",
+      "STEP_TOKEN" => "STEP_COMPLETE",
+      "DONE_TOKEN" => "ALL_DONE",
+      "HUMAN_TOKEN" => "HUMAN_BLOCKED",
+      "AGENT_CMD" => "pi",
+      "COMMIT_EACH_TURN" => "1",
+      "COMMIT_VERIFY_GATE" => "1",
+      "VERIFY_CMD" => "",
+      "PUSH_ON_DONE" => "0",
+      "OPEN_PR" => "0",
+      "APPROVE_UI" => "0",
+      "COMMIT_EXCLUDE_GLOBS" => "",
+      "ALLOWED_PROVIDERS" => "",
+      "THINKING" => "",
+      "MODEL_RANK" => "",
+      "PLAN_MODELS" => "",
+      "BUILD_MODELS" => "",
+      "LIGHT_MODELS" => "",
+      "THINKING_PLAN" => "",
+      "THINKING_BUILD" => "",
+      "THINKING_LIGHT" => "",
+      "REVIEW_MODELS" => "",
+      "THINKING_REVIEW" => "",
+      "AUTOPLAN_MODELS" => "",
+      "THINKING_AUTOPLAN" => "",
+      "AUTO_PLAN" => "0",
+      "FANOUT" => "",
+      "PARALLEL" => "0",
+      "FANOUT_MAX" => "4",
+      "RESUME_SESSION" => "0",
+      "CACHE_RETENTION" => "long",
+      "SANITIZE_THINKING" => "1",
+      "QUIET" => "0",
+      "CHEAP_MODE" => "0",
+      "TAIL_LINES" => "12",
+      "SUMMARY_LINES" => "4",
+      "HEARTBEAT" => "15",
+      "STREAM_AGENT" => "0"
+    }.freeze
+
     module_function
 
     def key_allowed?(key)
@@ -112,9 +167,10 @@ module Robur
 
     Result = Struct.new(:values, :env, :errors)
 
-    # Full load: global conf first (trusted), repo conf overrides (parsed).
-    def load(repo_dir)
-      values, env, errors = {}, {}, []
+    # Full resolution: CLI flags > repo conf (parsed) > global conf (sourced,
+    # trusted) > defaults. `cli` is a hash of already-validated flag values.
+    def load(repo_dir, cli = {})
+      values, env, errors = DEFAULTS.dup, {}, []
       if File.file?(File.join(Dir.home, ".ratchet", "conf"))
         g = load_global(File.join(Dir.home, ".ratchet", "conf"))
         values.update(g[:values])
@@ -127,6 +183,7 @@ module Robur
         values.update(rv)
         errors.concat(rerrors)
       end
+      values.update(cli)
       Result.new(values, env, errors)
     end
   end

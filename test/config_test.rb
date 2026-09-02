@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "fileutils"
 require "open3"
 require "tmpdir"
 require_relative "test_helper"
@@ -57,6 +58,53 @@ class ConfigTest < Minitest::Test
     # known plain assignments become config values
     assert_equal "off", result[:values]["THINKING_LIGHT"]
     assert_includes result[:values]["MODELS"], "zai/glm"
+  end
+
+  private
+
+  def with_home(home)
+    FileUtils.mkdir_p(File.join(home, ".ratchet"))
+    old = ENV["HOME"]
+    ENV["HOME"] = home
+    yield
+  ensure
+    ENV["HOME"] = old
+  end
+
+  def test_precedence_cli_over_repo_over_global_over_defaults
+    Dir.mktmpdir do |d|
+      with_home(File.join(d, "home")) do
+        File.write(File.join(ENV["HOME"], ".ratchet", "conf"), "PR_SOFT_MAX_LINES=300\nSTEP_TOKEN=GLOBAL\n")
+        File.write(File.join(d, ".ratchet.conf"), "PR_SOFT_MAX_LINES=200\n")
+
+        # all four layers set → CLI wins
+        r = Robur::Config.load(d, "PR_SOFT_MAX_LINES" => "100")
+        assert_equal "100", r.values["PR_SOFT_MAX_LINES"]
+        # three layers → repo conf wins
+        r = Robur::Config.load(d)
+        assert_equal "200", r.values["PR_SOFT_MAX_LINES"]
+        # two layers → global conf wins
+        FileUtils.rm(File.join(d, ".ratchet.conf"))
+        r = Robur::Config.load(d)
+        assert_equal "300", r.values["PR_SOFT_MAX_LINES"]
+        assert_equal "GLOBAL", r.values["STEP_TOKEN"]
+        # one layer → defaults; VERIFY_CMD defaults empty (loud warning)
+        FileUtils.rm(File.join(ENV["HOME"], ".ratchet", "conf"))
+        r = Robur::Config.load(d)
+        assert_equal "400", r.values["PR_SOFT_MAX_LINES"]
+        assert_equal "", r.values["VERIFY_CMD"]
+        assert_equal "STEP_COMPLETE", r.values["STEP_TOKEN"]
+        assert_equal "1800", r.values["TURN_TIMEOUT"]
+      end
+    end
+  end
+
+  def test_defaults_declared_once
+    # PR_SOFT_MAX_LINES default literal appears exactly once in lib/
+    count = Dir[File.expand_path("../lib/**/*.rb", __dir__)].sum do |f|
+      File.read(f).scan(/\b400\b/).count
+    end
+    assert_equal 1, count
   end
 
   def test_non_allowlisted_key_rejected_and_never_assigned
