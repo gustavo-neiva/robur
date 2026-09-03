@@ -58,28 +58,38 @@ module Robur
       "review" => "THINKING_REVIEW", "autoplan" => "THINKING_AUTOPLAN",
     }.freeze
 
+    BUMP = { "off" => "minimal", "minimal" => "low", "low" => "medium",
+             "medium" => "high", "high" => "high", "xhigh" => "high" }.freeze
+
+    # Audit C4 (2026-09-03): production logs showed thinking=high handed to
+    # zai/glm-5.3-flash — cheap fast-tier models ignore or choke on
+    # heavyweight thinking. Clamp them to THINKING_LIGHT (default off)
+    # UNLESS the tier's THINKING_* key names a level explicitly.
+    CLAMP_MODEL_RE = /(flash|turbo|highspeed|air)/
+
     # Effective thinking level for a tier. Unset tier thinking → THINKING.
     # build-hard bumps one notch above THINKING (capped at high) unless
-    # THINKING_BUILD is explicitly set.
-    def self.thinking_for(tier, config)
+    # THINKING_BUILD is explicitly set. model: applies the C4 clamp.
+    def self.thinking_for(tier, config, model: nil)
+      tier_key = THINKING_KEYS[chain_tier(tier)]
+      explicit = !tier_key.nil? && !config[tier_key].to_s.empty?
       level =
         if tier == "build-hard"
-          explicit = config["THINKING_BUILD"]
-          if explicit && !explicit.empty?
-            explicit
+          explicit_build = config["THINKING_BUILD"]
+          if explicit_build && !explicit_build.empty?
+            explicit_build
           else
             bump(config["THINKING"])
           end
         else
-          key = THINKING_KEYS[tier]
-          val = pick(config[key], key == "THINKING_AUTOPLAN" ? config["THINKING_PLAN"] : nil)
+          val = pick(config[tier_key], tier_key == "THINKING_AUTOPLAN" ? config["THINKING_PLAN"] : nil)
           val && !val.empty? ? val : config["THINKING"]
         end
+      if !explicit && !level.to_s.empty? && model.to_s.match?(CLAMP_MODEL_RE)
+        level = pick(config["THINKING_LIGHT"], "off")
+      end
       level || ""
     end
-
-    BUMP = { "off" => "minimal", "minimal" => "low", "low" => "medium",
-             "medium" => "high", "high" => "high", "xhigh" => "high" }.freeze
 
     # First non-empty value (bash ${A:-B}: empty counts as unset).
     def self.pick(*vals)

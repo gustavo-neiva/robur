@@ -80,8 +80,34 @@ class PlanTest < Minitest::Test
   def test_missing_file_is_empty
     plan = Robur::Plan.new("/nonexistent/PLAN.md")
     refute plan.open?
+    assert_nil plan.next_task
     assert_equal({ open: 0, in_progress: 0, done: 0 }, plan.counts)
     assert_nil plan.class_marker
+  end
+
+  def test_all_lines_cache_repeated_reads_consistent
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "PLAN.md")
+      File.write(path, "# Plan\n- [ ] T1 (normal) one\n")
+      plan = Robur::Plan.new(path)
+      assert_equal plan.task_block, plan.task_block
+      assert_equal plan.counts, plan.counts
+    end
+  end
+
+  def test_all_lines_cache_picks_up_rewritten_file
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "PLAN.md")
+      File.write(path, "# Plan\n- [ ] T1 (normal) original task\n")
+      plan = Robur::Plan.new(path)
+      assert_equal "T1", plan.next_task.id
+
+      File.write(path, "# Plan\n- [ ] T2 (normal) rewritten task with a longer body\n")
+      # Force a distinct mtime stamp even on coarse-granularity filesystems.
+      File.utime(Time.now + 2, Time.now + 2, path)
+      assert_equal "T2", plan.next_task.id
+      assert_equal({ open: 1, in_progress: 0, done: 0 }, plan.counts)
+    end
   end
 
   # Parity: run the bash original and compare outputs on the same file.

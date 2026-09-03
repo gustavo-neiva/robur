@@ -44,3 +44,42 @@ Run both after any change:
 - Never put a `#` in any `.ratchet.conf` value — `parse_repo_conf` truncates at
   the first `#`, so Ruby interpolation in `VERIFY_CMD` is silently cut in half
   and RED-locks the loop. The gate uses `File.expand_path(f)` for this reason.
+
+## Deliberate divergences from bash (audit 2026-09-03 — all codified in `test/differential/`)
+
+Do NOT "fix" these back to parity; each is load-bearing and paid for:
+
+- **Gate ordering (E2a)**: staged-empty is checked BEFORE secret scan + verify
+  (bash runs VERIFY_CMD even on no-op turns; this repo's is a 36.5s suite and
+  66% of production turns stage nothing). Codified via `drop_lines:` on the
+  affected scenarios with comments.
+- **`tin` definition**: metrics.tsv `tin` = input + cacheRead + cacheWrite
+  (total prompt-side tokens). Bash's number was 50-100× low; cache fields
+  didn't exist when `_turn_usage` was written.
+- **`:empty` class**: exit-0-no-output → bench immediately, no strike (1,574
+  production turns of that shape hid inside `:transient`).
+- **Real prompt (P0)**: `Prompt.for_turn` composes base + task block (≤40
+  lines) + last_turn.note + RED verify tail. The literal `"turn"` prompt was
+  the bug. Loop agents: the task block is quoted IN the prompt — don't
+  re-read the whole PLAN.md to find the current task.
+- **ModelHealth**: ONE registry keyed by model id across all chains (the
+  chain-keyed state gave the same model two strike counters — the production
+  infinite-spin). Includes hard-disable: 20 attempts, 0 wins → skipped
+  forever, survives reset.
+- **ProgressGuard**: 3/6/10/15 no-progress turns (no commit + no tracker
+  mtime change) → bench model / inject context / block task / stop.
+  `:block_task` rewrites the task `[x] … — BLOCKED by progress guard` (no
+  BLOCKED status exists in the frozen grammar).
+- **Thinking clamp (C4)**: models matching `/(flash|turbo|highspeed|air)/`
+  get THINKING_LIGHT (default `off`) unless the tier's THINKING_* key is
+  explicit.
+- **Token-seen early kill**: `Turn.run` ends the turn once a step/done token
+  appears (bash run-turn.sh:81), after a 0.2s reap-grace so the common case
+  keeps a clean exit status.
+- **events.jsonl**: robur-only structured telemetry (`Observability` is the
+  log writer); excluded from differential snapshots by name.
+- **MODEL_RANK**: stale vs configured chains — tier chains + flat MODELS
+  cover selection; `Tier.suggest_slice` can't fire usefully until a
+  cost/rank layer exists. Don't build the models.dev join.
+- **Milestone advance** needs the external supervisor (atlas money-loop.sh)
+  to restart `run` after a milestone PR merges — correct by design.

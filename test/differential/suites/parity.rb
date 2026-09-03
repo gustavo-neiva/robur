@@ -51,4 +51,9 @@ parity_setup = lambda { |repo|
   File.write(File.join(repo, ".ratchet.conf"), parity_conf)
 }
 
-scenario(name: "long-run-empty-tracker-to-all-done", argv: ["run", "."], setup: parity_setup)
+# Deliberate divergence (audit E2a, 2026-09-03): robur checks staged-empty
+# BEFORE the verify gate, so the FINAL all-done commit (nothing staged)
+# skips "commit gate: running ..." which bash still runs — 36.5s of
+# VERIFY_CMD on a no-op turn; 66% of production turns stage nothing.
+scenario(name: "long-run-empty-tracker-to-all-done", argv: ["run", "."], setup: parity_setup,
+          drop_lines: [/commit gate: running/])

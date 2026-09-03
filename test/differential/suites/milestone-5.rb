@@ -99,6 +99,12 @@ scenario(
            "-c", "commit.gpgsign=false", "commit", "-q", "-m", "seed", out: File::NULL, err: File::NULL)
   },
   only: M5_COMPARED,
+  # Deliberate divergence (audit E2a, 2026-09-03): robur checks staged-empty
+  # BEFORE the verify gate — bash runs VERIFY_CMD even on a no-op turn (this
+  # repo's VERIFY_CMD is the full 208-test suite, 36.5s, and 66% of production
+  # turns stage nothing). Only the baseline's extra "commit gate: running"
+  # line differs; every other loop.log line still compares byte-for-byte.
+  drop_lines: [/commit gate: running/],
 )
 
 # 5) .ratchet.conf tamper attempt: a secret-shaped value sits in an

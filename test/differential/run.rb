@@ -10,8 +10,9 @@ require_relative "harness"
 SCENARIOS = []
 UNSUPPORTED = []
 
-def scenario(name:, argv:, setup: nil, env: {}, only: nil)
-  SCENARIOS << Robur::Differential::Scenario.new(name: name, argv: argv, setup: setup, env: env, only: only)
+def scenario(name:, argv:, setup: nil, env: {}, only: nil, drop_lines: nil)
+  SCENARIOS << Robur::Differential::Scenario.new(name: name, argv: argv, setup: setup, env: env,
+                                                 only: only, drop_lines: drop_lines)
 end
 
 # unsupported: a command/scenario the differential harness structurally

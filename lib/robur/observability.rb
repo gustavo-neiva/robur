@@ -31,7 +31,40 @@ module Robur
          "Sleeping #{f[:backoff]}s, then reset + retry."]
       },
       stop: ->(f) { ["ratchet END after #{f[:turns]} turn(s)."] },
+      run_end: ->(f) { ["ratchet END after #{f[:turns]} turn(s)."] },
       human: ->(f) { ["HUMAN NEEDED: #{f[:msg]}"] },
+      # run_start reproduces Loop.run's startup banner verbatim (loop.rb:61-75).
+      # session is the full "name (resume=x)" string; commit/push/pr render
+      # yes/no the way loop.rb renders conf "1"/other.
+      run_start: lambda { |f|
+        yn = ->(v) { (v == "1" || v == true) ? "yes" : "no" }
+        ["=" * 60,
+         "ratchet START",
+         "  repo      : #{f[:repo]}",
+         "  session   : #{f[:session]}",
+         "  tracker   : #{f[:tracker]}",
+         "  models    : #{f[:models].join(" ")}  (preference order, fallback chain)",
+         "  turn cap  : #{f[:turn_timeout]}s   cooldown: #{f[:cooldown]}s   both-wait: #{f[:both_wait]}s",
+         "  tokens    : step='#{f[:step_token]}'  done='#{f[:done_token]}'",
+         "  agent     : #{f[:agent_cmd]}",
+         "  thinking  : #{f[:thinking].to_s.empty? ? "inherit" : f[:thinking]}",
+         "  verify    : #{f[:verify_cmd].to_s.empty? ? "<EMPTY — loud warning, no gate>" : f[:verify_cmd]}",
+         "  commit    : per-turn=#{yn.call(f[:commit_each_turn])}  " \
+         "push-on-done=#{yn.call(f[:push_on_done])}  pr=#{yn.call(f[:open_pr])}",
+         "  loop log  : #{f[:log_dir]}/loop.log",
+         "  stop      : Ctrl-C",
+         "=" * 60]
+      },
+      model_selected: ->(f) { ["  model #{f[:model]} selected (#{f[:reason]})"] },
+      model_benched: ->(f) { ["  model #{f[:model]} benched for #{f[:seconds]}s (#{f[:reason]})"] },
+      gate_result: ->(f) { ["  gate: #{f[:status]} (#{f[:reason]})"] },
+      progress_stall: ->(f) { ["  progress stalled #{f[:stalls]}x — #{f[:action]}"] },
+      task_blocked: ->(f) { ["  task #{f[:task]} blocked after #{f[:stalls]} stall(s)"] },
+      tokens: lambda { |f|
+        ["  tokens: in=#{f[:input].to_i + f[:cache_read].to_i + f[:cache_write].to_i} " \
+         "out=#{f[:output]} cache_r=#{f[:cache_read]} msgs=#{f[:messages]} " \
+         "cost=$#{format('%.6f', f[:cost])}"]
+      },
     }.freeze
 
     DEFAULT_CHEAP_MODEL = "<first-model>"
@@ -50,6 +83,15 @@ module Robur
       ts = @clock.now.strftime("%Y-%m-%d %H:%M:%S")
       append(@loop_log, lines.map { |l| "[#{ts}] #{l}" }.join("\n") + "\n")
       append(@events_log, JSON.generate({ kind: kind.to_s, ts: ts }.merge(fields)) + "\n")
+      Event.new(kind: kind, ts: ts, fields: fields)
+    end
+
+    # emit_event — telemetry with no frozen human line (tokens, model picks):
+    # ONE JSON record to events.jsonl ONLY, never loop.log. Records carry
+    # "v": 1 so a future field rename can be detected downstream.
+    def emit_event(kind, **fields)
+      ts = @clock.now.strftime("%Y-%m-%d %H:%M:%S")
+      append(@events_log, JSON.generate({ kind: kind.to_s, ts: ts, v: 1 }.merge(fields)) + "\n")
       Event.new(kind: kind, ts: ts, fields: fields)
     end
 
@@ -93,10 +135,23 @@ module Robur
 
     # _turn_usage FILE -> "in\tout\tcost" (observability.sh:215): per-message
     # usage is a DELTA, never cumulative, so sum (not max) is the only correct
-    # aggregate. Dedupe by id/message.id/message.responseId/responseId — zai
-    # streams carry no id and repeat the same usage 3-6x per message; last
-    # occurrence wins so an early zero-usage event never wins over the real one.
+    # aggregate. The `in` column is input + cacheRead + cacheWrite (total
+    # prompt-side tokens moved) — deliberate divergence from bash _turn_usage:
+    # real usage events carry cacheRead ~1300x input, so bash's number was
+    # 50-100x low; the cache fields didn't exist when it was written.
     def self.turn_usage(path)
+      return "0\t0\t0" unless File.file?(path)
+
+      d = turn_usage_detail(path)
+      format("%d\t%d\t%.6f", d[:input] + d[:cache_read] + d[:cache_write], d[:output], d[:cost])
+    end
+
+    # turn_usage_detail PATH -> {input, output, cache_read, cache_write,
+    # reasoning, cost, messages}: the same places turn_usage reads, summed
+    # over deduped per-message usage events. messages is the deduped event
+    # count — the runaway-turn signal (one real turn logged ~1,100
+    # round-trips). Missing file -> all zeros, never raises.
+    def self.turn_usage_detail(path)
       last = {}
       File.foreach(path) do |line|
         ev = begin
@@ -108,14 +163,23 @@ module Robur
         u = ev["usage"] || msg["usage"]
         next if u.nil?
 
+        # Dedupe by id/message.id/message.responseId/responseId — zai streams
+        # carry no id and repeat the same usage 3-6x per message; last wins so
+        # an early zero-usage event never wins over the real one (this is the
+        # collapse that makes the all-zero event flood count once).
+        # ponytail: dedupe falls back to the raw line, so byte-identical
+        # DISTINCT messages collapse too; upgrade path = a real per-message id
+        # from the agent.
         key = ev["id"] || msg["id"] || msg["responseId"] || ev["responseId"] || line
-        cost = (u["cost"] || {})["total"] || 0.0
-        last[key] = [u["input"] || 0, u["output"] || 0, cost]
+        last[key] = [u["input"] || 0, u["output"] || 0, u["cacheRead"] || 0, u["cacheWrite"] || 0,
+                     u["reasoning"] || 0, (u["cost"] || {})["total"] || 0.0]
       end
-      totals = last.values.inject([0, 0, 0.0]) { |a, v| [a[0] + v[0], a[1] + v[1], a[2] + v[2]] }
-      format("%d\t%d\t%.6f", *totals)
+      sums = [0, 0, 0, 0, 0, 0.0]
+      last.each_value { |v| v.each_with_index { |x, i| sums[i] += x } }
+      { input: sums[0], output: sums[1], cache_read: sums[2], cache_write: sums[3],
+        reasoning: sums[4], cost: sums[5], messages: last.size }
     rescue Errno::ENOENT
-      "0\t0\t0"
+      { input: 0, output: 0, cache_read: 0, cache_write: 0, reasoning: 0, cost: 0.0, messages: 0 }
     end
 
     # avg_turn_secs LOGFILE -> mean turn duration in seconds from took= lines
@@ -158,6 +222,7 @@ module Robur
 
     def self.blank_stats
       { turns: 0, cheap: 0, steps: 0, dones: 0, hard: 0, transient: 0, timeout: 0, exhausted: 0,
+        empty: 0,
         dl_kills: 0, wasted: 0.0, tier_counts: Hash.new(0), model_counts: Hash.new(0), durations: [],
         review_pass: 0, review_fail: 0, milestone_complete: 0 }
     end
@@ -191,6 +256,7 @@ module Robur
           when "transient" then m[:transient] += 1
           when "timeout" then m[:timeout] += 1
           when "exhausted" then m[:exhausted] += 1
+          when "empty" then m[:empty] += 1
           end
         when "bench"
           bench_ts = ts
@@ -275,7 +341,7 @@ module Robur
       lines << "  on cheap (#{cheap_model}): #{m[:cheap]} (#{format('%.0f', cp)}%)"
       lines << "successes (step+done) : #{succ}  (steps=#{m[:steps]} done=#{m[:dones]})"
       lines << "failures              : hard=#{m[:hard]} transient=#{m[:transient]} " \
-               "timeout=#{m[:timeout]} exhausted=#{m[:exhausted]}"
+               "timeout=#{m[:timeout]} exhausted=#{m[:exhausted]} empty=#{m[:empty]}"
       lines << "step-success rate     : #{format('%.0f', sr)}%"
       lines << "deadline kills        : #{m[:dl_kills]}"
       lines << "wasted wall-hours     : #{format('%.2f', wh)}h  (#{format('%.2f', wp)}h per 100 turns)"

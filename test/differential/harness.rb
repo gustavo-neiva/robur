@@ -32,14 +32,18 @@ module Robur
       [/\A\d+\n\z/, "<pid>\n"], # loop.pid: the real process pid, always a different number per side
     ].freeze
 
-    Scenario = Struct.new(:name, :argv, :setup, :env, :only, keyword_init: true) do
+    Scenario = Struct.new(:name, :argv, :setup, :env, :only, :drop_lines, keyword_init: true) do
       # setup: optional proc called with the fresh fixture repo path, per run,
       # so each side gets an identical pre-state. only: optional list of
       # String/Regexp surface-name matchers — restricts comparison to surfaces
       # this scenario actually contracts to (e.g. a feature not yet built,
       # like the M5 commit gate, must not fail an M4 turn-classification run).
-      def initialize(name:, argv:, setup: nil, env: {}, only: nil)
+      # drop_lines: optional list of Regexp LINE matchers dropped from FILE
+      # surfaces before comparison — for codified deliberate divergences
+      # only; every use must carry a comment naming the divergence and why.
+      def initialize(name:, argv:, setup: nil, env: {}, only: nil, drop_lines: nil)
         raise ArgumentError, "setup must be callable" if setup && !setup.respond_to?(:call)
+        raise ArgumentError, "drop_lines must be Regexps" if drop_lines && !drop_lines.all? { |r| r.is_a?(Regexp) }
         super
       end
     end
@@ -146,6 +150,11 @@ module Robur
           Dir.glob("#{root}/**/*", File::FNM_DOTMATCH).sort.each do |path|
             next if File.directory?(path) || path.include?("/.git/")
             key = path.delete_prefix("#{root}/")
+            # events.jsonl is robur-only structured telemetry (audit C2, 2026-
+            # 09-03: Observability is the loop's log writer and emits events
+            # bash has no equivalent for) — not a parity surface, excluded by
+            # name rather than weakening any line-level comparison.
+            next if key.end_with?("events.jsonl")
             key = "home/#{key}" unless root.end_with?(".ratchet")
             content = File.read(path)
             if key.end_with?("metrics.tsv")
@@ -196,8 +205,14 @@ module Robur
           r[:files].each { |orig, content| groups[self.class.normalize(orig, temp_root: r[:tmp], home: r[:home])][side] = content }
         end
         groups.sort.each do |k, pair|
-          surfaces["file #{k}"] = [norm(pair[:baseline].to_s, base[:tmp], base[:home]),
-                                   norm(pair[:candidate].to_s, cand[:tmp], cand[:home])]
+          a = norm(pair[:baseline].to_s, base[:tmp], base[:home])
+          b = norm(pair[:candidate].to_s, cand[:tmp], cand[:home])
+          if scenario.drop_lines
+            drop = ->(t) { t.lines.reject { |l| scenario.drop_lines.any? { |re| re === l } }.join }
+            a = drop.call(a)
+            b = drop.call(b)
+          end
+          surfaces["file #{k}"] = [a, b]
         end
         # metrics.tsv and loop.log live under RATCHET_HOME, already in files
         DiffReport.new(scenario, surfaces)

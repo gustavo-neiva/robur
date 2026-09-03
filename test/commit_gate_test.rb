@@ -131,6 +131,76 @@ module Robur
       refute_includes out, ".ratchet.conf"
     end
 
+    # Recording proc for the VERIFY_CMD seam: records each command run,
+    # returns a green capture by default.
+    def spy_proc(runs, out: "", ok: true)
+      status = Object.new
+      status.define_singleton_method(:success?) { ok }
+      spy = Object.new
+      spy.define_singleton_method(:capture) { |*cmd, **| runs << cmd.first; [out, "", status] }
+      spy
+    end
+
+    def test_verify_not_run_when_nothing_staged
+      dir = git_repo
+      runs = []
+      gate = CommitGate.new(dir, plan: FakePlan.new("S"), config: config, proc: spy_proc(runs))
+      result = gate.run(turn: 1, model: "m")
+      refute result.committed
+      assert_nil result.block_reason
+      assert_empty runs
+    end
+
+    def test_verify_runs_when_something_staged
+      dir = git_repo
+      File.write(File.join(dir, "new.txt"), "hello\n")
+      runs = []
+      gate = CommitGate.new(dir, plan: FakePlan.new("S"), config: config, proc: spy_proc(runs))
+      assert gate.run(turn: 1, model: "m").committed
+      assert_equal ["true"], runs
+    end
+
+    def test_zero_task_staged_tracker_blocks
+      dir = git_repo
+      File.write(File.join(dir, "PLAN.md"), "# Plan\n[IN PROGRESS] T1 (normal) bracket dropped\n")
+      zero = FakePlan.new("S")
+      zero.define_singleton_method(:counts) { { open: 0, in_progress: 0, done: 0 } }
+      lines = []
+      result = CommitGate.new(dir, plan: zero, config: config, emit: ->(m) { lines << m }).run(turn: 1, model: "m")
+      refute result.committed
+      assert_equal "tracker parsed to zero tasks", result.block_reason
+      assert lines.any? { |l| l.include?("BLOCKED: tracker parsed to zero tasks") }
+      out, = Open3.capture3("git", "-C", dir, "diff", "--cached", "--name-only")
+      assert_equal "PLAN.md\n", out
+    end
+
+    def test_staged_tracker_with_tasks_does_not_block
+      dir = git_repo
+      File.write(File.join(dir, "PLAN.md"), "# Plan\n- [ ] T1 (normal) work\n")
+      live = FakePlan.new("S")
+      live.define_singleton_method(:counts) { { open: 1, in_progress: 0, done: 0 } }
+      assert CommitGate.new(dir, plan: live, config: config).run(turn: 1, model: "m").committed
+    end
+
+    def test_unrelated_staged_file_never_triggers_tracker_check
+      dir = git_repo
+      File.write(File.join(dir, "new.txt"), "hello\n")
+      zero = FakePlan.new("S")
+      zero.define_singleton_method(:counts) { { open: 0, in_progress: 0, done: 0 } }
+      assert CommitGate.new(dir, plan: zero, config: config).run(turn: 1, model: "m").committed
+    end
+
+    def test_last_verify_out_gets_full_output_when_loop_log_set
+      dir = git_repo
+      File.write(File.join(dir, "new.txt"), "hello\n")
+      runs = []
+      gate = CommitGate.new(dir, plan: FakePlan.new("S"), config: config,
+                            proc: spy_proc(runs, out: "verify says ok\n"),
+                            loop_log: File.join(dir, "loop.log"))
+      assert gate.run(turn: 1, model: "m").committed
+      assert_equal "verify says ok\n", File.read(File.join(dir, "last_verify.out"))
+    end
+
     private
 
     def assert_blocked(filename, content, reason)

@@ -6,7 +6,9 @@ require "robur/config"
 require "robur/loop"
 require "robur/plan"
 require "robur/tier"
-require "robur/model_chain"
+require "robur/prompt"
+require "robur/model_health"
+require "robur/progress_guard"
 require "robur/turn"
 require "robur/classifier"
 require "robur/commit_gate"
@@ -581,28 +583,10 @@ module Robur
                         .run(turn: turn, model: model)
     end
 
-    # _turn_usage FILE -> "in\tout\tcost" (observability.sh:215): per-message
-    # usage deltas, deduped by id/message.id/responseId, last wins.
+    # _turn_usage is DRY now: the loop reads Observability.turn_usage_detail
+    # (cache-token fields) and keeps only this frozen TSV shape for metrics.tsv.
     def turn_usage(path)
-      last = {}
-      File.foreach(path) do |line|
-        ev = begin
-          JSON.parse(line)
-        rescue JSON::ParserError, ArgumentError
-          next
-        end
-        msg = ev["message"] || {}
-        u = ev["usage"] || msg["usage"]
-        next if u.nil?
-
-        key = ev["id"] || msg["id"] || msg["responseId"] || ev["responseId"] || line
-        cost = (u["cost"] || {})["total"] || 0.0
-        last[key] = [u["input"] || 0, u["output"] || 0, cost]
-      end
-      totals = last.values.inject([0, 0, 0.0]) { |a, v| [a[0] + v[0], a[1] + v[1], a[2] + v[2]] }
-      format("%d\t%d\t%.6f", *totals)
-    rescue Errno::ENOENT
-      "0\t0\t0"
+      Observability.turn_usage(path)
     end
 
     # metrics_append (observability.sh:239): 12 frozen columns.
@@ -717,28 +701,22 @@ module Robur
       plan = Plan.new(File.join(dir, conf["TRACKER_FILE"] || "PLAN.md"))
       models = Tier.chain_for("build", conf).to_s.split(",").reject(&:empty?)
       die "no models configured (-m chain, MODELS in .ratchet.conf, or global conf)." if models.empty?
-      chain = ModelChain.new(models, conf, clock: Sys::Clock.new)
+      health = ModelHealth.new(conf)
       log_dir = File.dirname(@loop_log)
+      obs = Observability.new(log_dir)
       turn_out = File.join(log_dir, "last_turn.out")
       run_start = mono
       run_toks = { in: 0, out: 0, cost: 0.0 }
 
       thinking_banner = conf["THINKING"].to_s.empty? ? "inherit" : conf["THINKING"]
-      emit "=" * 60
-      emit "ratchet START"
-      emit "  repo      : #{dir}"
-      emit "  session   : ratchet-#{project_slug(dir)} (resume=no)"
-      emit "  tracker   : #{conf["TRACKER_FILE"] || "PLAN.md"}"
-      emit "  models    : #{models.join(" ")}  (preference order, fallback chain)"
-      emit "  turn cap  : #{conf["TURN_TIMEOUT"]}s   cooldown: #{conf["COOLDOWN"]}s   both-wait: #{conf["BOTH_WAIT"]}s"
-      emit "  tokens    : step='#{conf["STEP_TOKEN"]}'  done='#{conf["DONE_TOKEN"]}'"
-      emit "  agent     : #{conf["AGENT_CMD"]}"
-      emit "  thinking  : #{thinking_banner}"
-      emit "  verify    : #{conf["VERIFY_CMD"].to_s.empty? ? "<EMPTY — loud warning, no gate>" : conf["VERIFY_CMD"]}"
-      emit "  commit    : per-turn=#{conf["COMMIT_EACH_TURN"] == "1" ? "yes" : "no"}  push-on-done=#{conf["PUSH_ON_DONE"] == "1" ? "yes" : "no"}  pr=#{conf["OPEN_PR"] == "1" ? "yes" : "no"}"
-      emit "  loop log  : #{@loop_log}"
-      emit "  stop      : Ctrl-C"
-      emit "=" * 60
+      obs.emit(:run_start, repo: dir, session: "ratchet-#{project_slug(dir)} (resume=no)",
+               tracker: conf["TRACKER_FILE"] || "PLAN.md", models: models,
+               turn_timeout: conf["TURN_TIMEOUT"], cooldown: conf["COOLDOWN"],
+               both_wait: conf["BOTH_WAIT"], step_token: conf["STEP_TOKEN"],
+               done_token: conf["DONE_TOKEN"], agent_cmd: conf["AGENT_CMD"],
+               thinking: thinking_banner, verify_cmd: conf["VERIFY_CMD"],
+               commit_each_turn: conf["COMMIT_EACH_TURN"], push_on_done: conf["PUSH_ON_DONE"],
+               open_pr: conf["OPEN_PR"], log_dir: log_dir)
 
       # write PID file (bin/ratchet:511) so `ratchet status` can check liveness.
       File.write(File.join(log_dir, "loop.pid"), "#{Process.pid}\n")
@@ -755,11 +733,11 @@ module Robur
         end
         stop_reason = "done"
       else
-        stop_reason, last_model = run_single_turn(dir, conf, plan, chain, log_dir, turn_out,
-                                                  run_toks, run_start, turn)
+        stop_reason, last_model = run_single_turn(dir, conf, plan, models, log_dir, turn_out,
+                                                  run_toks, run_start, turn, obs)
       end
 
-      emit "ratchet END after #{turn} turn(s)."
+      obs.emit(:run_end, turns: turn)
       File.write(File.join(dir, ".ratchet", "stop_reason"), "#{stop_reason}\n")
       state = File.file?(File.join(dir, ".ratchet", "last_task.state")) ? File.read(File.join(dir, ".ratchet", "last_task.state")) : ""
       taskid = state[/\A[^\t]*/].to_s
@@ -773,12 +751,13 @@ module Robur
     def elapsed_int(from) = (mono - from).to_i
 
     # Runs one turn and dispatches its outcome; returns [stop_reason, model].
-    def run_single_turn(dir, conf, plan, chain, log_dir, turn_out, run_toks, run_start, turn)
+    def run_single_turn(dir, conf, plan, models, log_dir, turn_out, run_toks, run_start, turn, obs)
       task = plan.next_task(:in_progress) || plan.next_task(:open)
       tag = task&.tags&.first
       tier = Tier.from_tag(tag)
-      thinking = Tier.thinking_for(tier, conf)
-      model = chain.models[chain.pick || 0]
+      health = ModelHealth.new(conf)
+      model = health.pick(models) || models.first
+      thinking = Tier.thinking_for(tier, conf, model: model)
       next_task_str = task ? "#{task.id} (#{task.tags.join(", ")}) #{task.text}" : ""
 
       done_n = plan.count(:done)
@@ -796,30 +775,38 @@ module Robur
       tasktext = task ? task.text : "—"
       term_only "  ▶ #{taskid}  #{tasktext}   #{tier} · #{model}"
 
-      emit "--- turn #{turn} | model=#{model} ---"
-      emit "turn #{turn} | tier=#{tier} | model=#{model} | thinking=#{thinking} | task=#{next_task_str}"
+      obs.emit(:turn_start, turn: turn, model: model, tier: tier, thinking: thinking, task: next_task_str)
 
       ENV["RATCHET_LOOP"] = "1"
       turn_start = mono
       cmd = [conf["AGENT_CMD"], "--model", model]
       cmd += ["--thinking", thinking] unless thinking.to_s.empty?
-      cmd += ["--no-session", "-p", "turn"]
+      # P0 fix: REAL prompt, not the literal string "turn" (see Loop.run).
+      prompt = conf["PROMPT_OVERRIDE"].to_s.empty? ? Robur::Prompt.for_turn(conf: conf, plan: plan, log_dir: log_dir) : conf["PROMPT_OVERRIDE"]
+      cmd += ["--no-session", "-p", prompt]
       result = Turn.run(cmd: cmd, turn_file: turn_out, chdir: dir,
                         turn_timeout: conf["TURN_TIMEOUT"].to_i,
                         stall_timeout: conf["STALL_TIMEOUT"].to_i,
-                        poll_interval: (ENV["POLL_INTERVAL"] || conf["POLL_INTERVAL"] || 3).to_i)
+                        poll_interval: (ENV["POLL_INTERVAL"] || conf["POLL_INTERVAL"] || 3).to_i,
+                        early_tokens: [conf["STEP_TOKEN"], conf["DONE_TOKEN"]])
       status = result.kill_reason ? 128 + (result.status.termsig || 0) : result.status.exitstatus
-      deadline = !result.kill_reason.nil?
+      deadline = !result.kill_reason.nil? && result.kill_reason != "token-seen"
       klass = Classifier.classify(turn_out, step_token: conf["STEP_TOKEN"], done_token: conf["DONE_TOKEN"],
                                            deadline: deadline, json: false, human_token: conf["HUMAN_TOKEN"])
       took = elapsed_int(turn_start)
-      emit "turn #{turn} end | class=#{klass} | took=#{took}s | exitcode=#{status} | task=#{next_task_str.slice(0, 20)}"
+      obs.emit(:turn_end, turn: turn, class: klass, took: took, exitcode: status, task: next_task_str.slice(0, 20))
 
-      tin, tout, cost = turn_usage(turn_out).split("\t")
+      detail = Observability.turn_usage_detail(turn_out)
+      tin = detail[:input] + detail[:cache_read] + detail[:cache_write]
+      tout = detail[:output]
+      cost = format("%.6f", detail[:cost])
       metrics_append(dir, "turn", turn, tier, model, klass, took, taskid, tin, tout, cost)
-      run_toks[:in] += tin.to_i
-      run_toks[:out] += tout.to_i
-      run_toks[:cost] += cost.to_f
+      run_toks[:in] += tin
+      run_toks[:out] += tout
+      run_toks[:cost] += detail[:cost]
+      obs.emit_event(:tokens, input: detail[:input], output: detail[:output],
+                        cache_read: detail[:cache_read], cache_write: detail[:cache_write],
+                        cost: detail[:cost], messages: detail[:messages])
 
       FileUtils.mkdir_p(File.join(dir, ".ratchet"))
       File.write(File.join(dir, ".ratchet", "last_task.state"), "#{taskid}\t#{klass}\n")
@@ -863,11 +850,11 @@ module Robur
         else
           emit "model #{model} EXHAUSTED (quota/rate-limit). Benching #{conf["COOLDOWN"]}s; switching."
         end
-        chain.bench!(0)
+        health.bench!(model)
         emit "--once: stopping."
         return ["once", model]
       when :hard
-        chain.strike!(0)
+        health.strike!(model)
         emit "model #{model} HARD ERROR (auth/not-found/bad-request). strike 1/#{conf["MAX_TRANSIENT"]}. See #{turn_out}"
         emit "--once: stopping."
         return ["once", model]
@@ -881,8 +868,13 @@ module Robur
         emit "model #{model} TIMEOUT (#{result.kill_reason}, no token/error). strike 1/#{conf["MAX_TRANSIENT"]}; backing off #{conf["SHORT_SLEEP"]}s."
         emit "--once: stopping."
         return ["once", model]
+      when :empty
+        health.bench!(model)
+        emit "model #{model} EMPTY OUTPUT (exit 0, nothing said) — benching #{conf["COOLDOWN"]}s, no strike."
+        emit "--once: stopping."
+        return ["once", model]
       else # :transient
-        chain.strike!(0)
+        health.strike!(model)
         emit "model #{model} transient failure. strike 1/#{conf["MAX_TRANSIENT"]}; backing off #{conf["SHORT_SLEEP"]}s."
         emit "--once: stopping."
         return ["once", model]

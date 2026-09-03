@@ -57,9 +57,10 @@ module Robur
 
     def test_json_human_token
       assert_equal "human", classify(%({"type":"text_end","text":"#{HUMAN}"}), json: true)
-      # Token in the echoed user prompt does NOT count.
+      # Token in the echoed user prompt does NOT count (text_end keeps the
+      # stream non-empty; a text_end-less stream is now :empty).
       str = %({"type":"message","message":{"content":[{"type":"text","text":"#{HUMAN} is the token"}]}}\n) +
-            %({"type":"text_delta","delta":"working on it"})
+            %({"type":"text_end","text":"working on it"})
       assert_equal "transient", classify(str, json: true)
     end
 
@@ -69,6 +70,32 @@ module Robur
 
     def test_non_json_plain_text_falls_back_to_literal_matching
       assert_equal "step", classify("all finished here\n#{STEP}", json: true)
+    end
+
+    def test_empty_text_mode
+      ["", "\n\n \n"].each do |str|
+        assert_equal "empty", classify(str), str.inspect
+        assert_equal "empty", classify(str, json: true), str.inspect
+      end
+    end
+
+    def test_empty_missing_file
+      assert_equal "empty", Classifier.classify(File.join(Dir.mktmpdir, "nope.out"),
+                                                step_token: STEP, done_token: DONE,
+                                                deadline: false).to_s
+    end
+
+    def test_empty_json_no_assistant_text
+      str = %({"type":"text_delta","delta":"working"}\n) +
+            %({"type":"text_delta","delta":" more"}\n) +
+            %({"type":"error","error":{"type":"api_error"}})
+      assert_equal "empty", classify(str, json: true)
+    end
+
+    def test_empty_does_not_shadow_earlier_returns
+      assert_equal "transient", classify(%({"type":"text_end","text":"still working on it"}), json: true)
+      assert_equal "exhausted", classify("429 rate limit")
+      assert_equal "timeout", classify("", deadline: true)
     end
   end
 end

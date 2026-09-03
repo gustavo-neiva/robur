@@ -5,7 +5,10 @@ require "open3"
 require "robur/config"
 require "robur/plan"
 require "robur/tier"
-require "robur/model_chain"
+require "robur/prompt"
+require "robur/model_health"
+require "robur/progress_guard"
+require "robur/observability"
 require "robur/turn"
 require "robur/classifier"
 require "robur/commit_gate"
@@ -46,11 +49,14 @@ module Robur
       last_model = "none"
       done_gate_fails = 0
       all_benched_count = 0
-      current_tier_chain = ""
       stop_reason = ""
-      # per-model transient strikes live on ONE chain keyed by chain string;
-      # a tier switch to an equal chain keeps them (bash reinit-on-change).
-      chains = {}
+      # Audit fix #1 (2026-09-03): ONE health registry keyed by MODEL id —
+      # the old chain-keyed state gave a model in both a tier chain and flat
+      # MODELS two independent strike counters (the production infinite-spin).
+      health = ModelHealth.new(conf, max_transient: conf["MAX_TRANSIENT"].to_i)
+      # Audit fix #2: no-progress detector over tracker mtime + commits.
+      guard = ProgressGuard.new(File.join(dir, conf["TRACKER_FILE"] || "PLAN.md"))
+      obs = Observability.new(log_dir)
 
       emit = ->(m) { CLI.emit(m) }
 
@@ -58,21 +64,14 @@ module Robur
       resume = conf["RESUME_SESSION"] == "1" ? "yes" : "no"
       thinking_banner = conf["THINKING"].to_s.empty? ? "inherit" : conf["THINKING"]
 
-      emit "=" * 60
-      emit "ratchet START"
-      emit "  repo      : #{dir}"
-      emit "  session   : #{session_id} (resume=#{resume})"
-      emit "  tracker   : #{conf["TRACKER_FILE"] || "PLAN.md"}"
-      emit "  models    : #{flat.join(" ")}  (preference order, fallback chain)"
-      emit "  turn cap  : #{conf["TURN_TIMEOUT"]}s   cooldown: #{conf["COOLDOWN"]}s   both-wait: #{conf["BOTH_WAIT"]}s"
-      emit "  tokens    : step='#{conf["STEP_TOKEN"]}'  done='#{conf["DONE_TOKEN"]}'"
-      emit "  agent     : #{conf["AGENT_CMD"]}"
-      emit "  thinking  : #{thinking_banner}"
-      emit "  verify    : #{conf["VERIFY_CMD"].to_s.empty? ? "<EMPTY — loud warning, no gate>" : conf["VERIFY_CMD"]}"
-      emit "  commit    : per-turn=#{conf["COMMIT_EACH_TURN"] == "1" ? "yes" : "no"}  push-on-done=#{conf["PUSH_ON_DONE"] == "1" ? "yes" : "no"}  pr=#{conf["OPEN_PR"] == "1" ? "yes" : "no"}"
-      emit "  loop log  : #{log_dir}/loop.log"
-      emit "  stop      : Ctrl-C"
-      emit "=" * 60
+      obs.emit(:run_start, repo: dir, session: "#{session_id} (resume=#{resume})",
+               tracker: conf["TRACKER_FILE"] || "PLAN.md", models: flat,
+               turn_timeout: conf["TURN_TIMEOUT"], cooldown: conf["COOLDOWN"],
+               both_wait: conf["BOTH_WAIT"], step_token: conf["STEP_TOKEN"],
+               done_token: conf["DONE_TOKEN"], agent_cmd: conf["AGENT_CMD"],
+               thinking: thinking_banner, verify_cmd: conf["VERIFY_CMD"],
+               commit_each_turn: conf["COMMIT_EACH_TURN"], push_on_done: conf["PUSH_ON_DONE"],
+               open_pr: conf["OPEN_PR"], log_dir: log_dir)
 
       exit_code = auto_plan_pr0(dir, conf, plan, turn_out, File.join(log_dir, "loop.log"), sleep_it: sleep_it)
       return exit_code if exit_code
@@ -97,45 +96,33 @@ module Robur
           break
         end
 
-        # Tier routing: reinit the chain ONLY when the tier's chain changes
-        # (preserves bench/strike state within a tier).
+        # Tier routing (audit fix #1): pick through the ONE health registry,
+        # so bench/strike state follows the MODEL across tier and flat chains.
         tag = plan.next_task(:in_progress)&.tags&.first || plan.next_task(:open)&.tags&.first
         tier = Tier.from_tag(tag, cheap: conf["CHEAP_MODE"] == "1")
         tier_chain = Tier.chain_for(tier, conf).to_s
         tier_chain = flat.join(",") if tier_chain.empty?
-        if tier_chain != current_tier_chain
-          chains[tier_chain] ||= ModelChain.new(tier_chain.split(",").reject(&:empty?), conf,
-                                                clock: Sys::Clock.new,
-                                                max_transient: conf["MAX_TRANSIENT"].to_i)
-          current_tier_chain = tier_chain
+        models = tier_chain.split(",").reject(&:empty?)
+        model = health.pick(models)
+        if model.nil? && tier_chain != flat.join(",")
+          emit "tier (#{tier}) chain exhausted — falling back to MODELS for this turn."
+          model = health.pick(flat)
         end
-        chain = chains.fetch(current_tier_chain)
-        idx = chain.pick
-        if idx.nil?
-          # Tier chain exhausted: fall back to the flat MODELS chain for one turn.
-          if current_tier_chain != flat.join(",")
-            emit "tier (#{tier}) chain exhausted — falling back to MODELS for this turn."
-            current_tier_chain = flat.join(",")
-            chains[current_tier_chain] ||= ModelChain.new(flat, conf, clock: Sys::Clock.new,
-                                                                   max_transient: conf["MAX_TRANSIENT"].to_i)
-            chain = chains.fetch(current_tier_chain)
-            idx = chain.pick
-          end
-          if idx.nil?
-            # ALL models benched: ladder backoff, reset, retry.
-            all_benched_count += 1
-            backoff = BACKOFF_LADDER[all_benched_count - 1] || BACKOFF_LADDER.last
-            emit "ALL models benched (exhausted), attempt #{all_benched_count}. Sleeping #{backoff}s, then reset + retry."
-            sleep_it.call(backoff)
-            chains.each_value(&:reset_all)
-            current_tier_chain = ""
-            next
-          end
+        if model.nil?
+          # ALL models benched: ladder backoff, reset, retry. reset_all keeps
+          # attempts/wins, so hard-disabled models STAY disabled — the point.
+          all_benched_count += 1
+          backoff = BACKOFF_LADDER[all_benched_count - 1] || BACKOFF_LADDER.last
+          emit "ALL models benched (exhausted), attempt #{all_benched_count}. Sleeping #{backoff}s, then reset + retry."
+          sleep_it.call(backoff)
+          health.reset_all
+          next
         end
 
-        model = chain.models[idx]
         last_model = model
-        thinking = Tier.thinking_for(tier, conf)
+        thinking = Tier.thinking_for(tier, conf, model: model)
+        obs.emit_event(:model_selected, model: model, tier: tier, chain: tier_chain,
+                                           reason: "pos #{models.index(model) || flat.index(model)} of #{tier_chain}")
 
         task = plan.next_task(:in_progress) || plan.next_task(:open)
         next_task_str = task ? "#{task.id} (#{task.tags.join(", ")}) #{task.text}" : ""
@@ -143,30 +130,43 @@ module Robur
         open_n = plan.count(:open) + plan.count(:in_progress)
         emit "tasks: #{done_n} done / #{done_n + open_n} total | next: #{next_task_str.slice(0, 60)}"
 
-        emit "--- turn #{turn} | model=#{model} ---"
-        emit "turn #{turn} | tier=#{tier} | model=#{model} | thinking=#{thinking} | task=#{next_task_str}"
+        obs.emit(:turn_start, turn: turn, model: model, tier: tier, thinking: thinking, task: next_task_str)
 
         ENV["RATCHET_LOOP"] = "1"
         turn_start = CLI.mono
         cmd = [conf["AGENT_CMD"], "--model", model]
         cmd += ["--thinking", thinking] unless thinking.to_s.empty?
-        cmd += ["--no-session", "-p", "turn"]
+        # P0 fix (audit 2026-09-03): build the REAL per-turn prompt (base +
+        # task block + last-turn note + RED verify tail) — the loop used to
+        # send the literal string "turn". PROMPT_OVERRIDE (-p) still wins.
+        prompt = conf["PROMPT_OVERRIDE"].to_s.empty? ? Prompt.for_turn(conf: conf, plan: plan, log_dir: log_dir) : conf["PROMPT_OVERRIDE"]
+        cmd += ["--no-session", "-p", prompt]
         result = Turn.run(cmd: cmd, turn_file: turn_out, chdir: dir,
                           turn_timeout: conf["TURN_TIMEOUT"].to_i,
                           stall_timeout: conf["STALL_TIMEOUT"].to_i,
-                          poll_interval: (ENV["POLL_INTERVAL"] || conf["POLL_INTERVAL"] || 3).to_i)
+                          poll_interval: (ENV["POLL_INTERVAL"] || conf["POLL_INTERVAL"] || 3).to_i,
+                          early_tokens: [conf["STEP_TOKEN"], conf["DONE_TOKEN"]])
         status = result.kill_reason ? 128 + (result.status.termsig || 0) : result.status.exitstatus
-        deadline = !result.kill_reason.nil?
+        deadline = !result.kill_reason.nil? && result.kill_reason != "token-seen"
         klass = Classifier.classify(turn_out, step_token: conf["STEP_TOKEN"], done_token: conf["DONE_TOKEN"],
                                              deadline: deadline, json: false, human_token: conf["HUMAN_TOKEN"])
         took = CLI.elapsed_int(turn_start)
-        emit "turn #{turn} end | class=#{klass} | took=#{took}s | exitcode=#{status} | task=#{next_task_str.slice(0, 20)}"
+        obs.emit(:turn_end, turn: turn, class: klass, took: took, exitcode: status, task: next_task_str.slice(0, 20))
 
-        tin, tout, cost = CLI.turn_usage(turn_out).split("\t")
+        # tin is cache-inclusive (audit fix #4): input + cache_read +
+        # cache_write — bash's number was 50-100x low; the cache fields
+        # didn't exist when _turn_usage was written.
+        detail = Observability.turn_usage_detail(turn_out)
+        tin = detail[:input] + detail[:cache_read] + detail[:cache_write]
+        tout = detail[:output]
+        cost = format("%.6f", detail[:cost])
         CLI.metrics_append(dir, "turn", turn, tier, model, klass, took, task ? task.id : "?", tin, tout, cost)
-        run_toks[:in] += tin.to_i
-        run_toks[:out] += tout.to_i
-        run_toks[:cost] += cost.to_f
+        run_toks[:in] += tin
+        run_toks[:out] += tout
+        run_toks[:cost] += detail[:cost]
+        obs.emit_event(:tokens, input: detail[:input], output: detail[:output],
+                          cache_read: detail[:cache_read], cache_write: detail[:cache_write],
+                          cost: detail[:cost], messages: detail[:messages])
 
         FileUtils.mkdir_p(File.join(dir, ".ratchet"))
         File.write(File.join(dir, ".ratchet", "last_task.state"), "#{task ? task.id : "?"}\t#{klass}\n")
@@ -188,6 +188,41 @@ module Robur
         end
 
         commit_result = commit_turn(turn, model, conf, plan, dir)
+        obs.emit_event(:gate_result,
+                       status: commit_result.committed ? "green" : commit_result.block_reason ? "red" : "skipped",
+                       reason: commit_result.block_reason || (commit_result.committed ? "committed" : "no-op"))
+        health.record!(model, klass)
+
+        # No-progress detector (audit fix #2): every path records here, before
+        # the classification arms below break/next.
+        note_written = false
+        case guard.record(committed: commit_result.committed)
+        when :bench
+          health.bench!(model)
+          obs.emit_event(:model_benched, model: model, seconds: conf["COOLDOWN"].to_i,
+                                          reason: "progress stalled #{guard.stalls} turns")
+          emit "no progress for #{guard.stalls} turns — benching #{model}; switching model."
+        when :inject_context
+          obs.emit_event(:progress_stall, stalls: guard.stalls, action: "context injected into next prompt")
+          stall_msg = "No progress in #{guard.stalls} turns: the tracker did not change and nothing committed. " \
+                      "Re-read the current task in #{conf["TRACKER_FILE"] || "PLAN.md"}, change your approach, " \
+                      "and write the changes to files. If the task is truly blocked, print #{conf["HUMAN_TOKEN"]} " \
+                      "instead of repeating the same step."
+          write_note(log_dir, commit_result.committed, stall_msg)
+          note_written = true
+          emit "no progress for #{guard.stalls} turns — context injected into the next turn's prompt."
+        when :block_task
+          obs.emit_event(:task_blocked, task: task ? task.id : "?", stalls: guard.stalls)
+          block_current_task(dir, conf, task, guard.stalls)
+          emit "task #{task ? task.id : "?"} BLOCKED after #{guard.stalls} no-progress turns — advancing to the next task."
+        when :stop
+          obs.emit_event(:progress_stall, stalls: guard.stalls, action: "loop stopped")
+          emit "no progress for #{guard.stalls} turns — STOPPING (progress_stalled)."
+          notify_human "#{File.basename(dir)}: no progress for #{guard.stalls} turns on task #{task ? task.id : "?"} — loop stopped for human review."
+          stop_reason = "progress_stalled"
+          break
+        end
+
         dirty = File.directory?(File.join(dir, ".git")) &&
                 !Open3.capture3("git", "-C", dir, "status", "--porcelain")[0].empty?
 
@@ -234,7 +269,8 @@ module Robur
         when :exhausted
           why = took < 15 ? " — instant-quota, model was already dry" : ""
           emit "model #{model} EXHAUSTED (quota/rate-limit#{why}). Benching #{conf["COOLDOWN"]}s; switching."
-          chain.bench!(idx)
+          obs.emit_event(:model_benched, model: model, seconds: conf["COOLDOWN"].to_i, reason: "exhausted")
+          health.bench!(model)
           if once
             stop_reason = "once"
             emit "--once: stopping."
@@ -242,7 +278,7 @@ module Robur
           end
           sleep_it.call(conf["SHORT_SLEEP"].to_i)
         when :hard
-          benched = chain.strike!(idx)
+          benched = health.strike!(model)
           emit "model #{model} HARD ERROR (auth/not-found/bad-request). See #{turn_out}"
           emit "benching #{model} after #{conf["MAX_TRANSIENT"]} hard errors — likely a config issue." if benched
           if once
@@ -262,7 +298,7 @@ module Robur
             sleep_it.call(conf["SHORT_SLEEP"].to_i)
             next
           end
-          benched = chain.strike!(idx)
+          benched = health.strike!(model)
           emit "model #{model} TIMEOUT (#{result.kill_reason}, no token/error). strike; backing off #{conf["SHORT_SLEEP"]}s."
           emit "benching #{model} after #{conf["MAX_TRANSIENT"]} timeouts." if benched
           if once
@@ -271,8 +307,20 @@ module Robur
             break
           end
           sleep_it.call(conf["SHORT_SLEEP"].to_i)
+        when :empty
+          # Exit-0-no-output (audit fix #3): NOT a strike — bench immediately.
+          # 1,574 production turns like this hid inside :transient, retried forever.
+          health.bench!(model)
+          obs.emit_event(:model_benched, model: model, seconds: conf["COOLDOWN"].to_i, reason: "empty output")
+          emit "model #{model} EMPTY OUTPUT (exit 0, nothing said) — benching #{conf["COOLDOWN"]}s, no strike."
+          if once
+            stop_reason = "once"
+            emit "--once: stopping."
+            break
+          end
+          sleep_it.call(conf["SHORT_SLEEP"].to_i)
         else # :transient
-          benched = chain.strike!(idx)
+          benched = health.strike!(model)
           emit "model #{model} transient failure. strike; backing off #{conf["SHORT_SLEEP"]}s."
           emit "benching #{model} after #{conf["MAX_TRANSIENT"]} transient failures." if benched
           if once
@@ -296,22 +344,51 @@ module Robur
           end
         end
 
-        # last-turn note for the next turn's prompt
-        if commit_result.committed
-          changed = Open3.capture3("git", "-C", dir, "diff", "HEAD~1", "--name-only")[0]
-                       .lines.first(5).map(&:strip).join(",")
-          write_note(log_dir, commit_result.committed, "Last turn changed: #{changed}")
-        else
-          write_note(log_dir, commit_result.committed, "Last turn: gate RED, left staged.")
+        # last-turn note for the next turn's prompt (skipped when the
+        # progress guard already wrote the stall context this turn)
+        unless note_written
+          if commit_result.committed
+            changed = Open3.capture3("git", "-C", dir, "diff", "HEAD~1", "--name-only")[0]
+                         .lines.first(5).map(&:strip).join(",")
+            write_note(log_dir, commit_result.committed, "Last turn changed: #{changed}")
+          else
+            write_note(log_dir, commit_result.committed, "Last turn: gate RED, left staged.")
+          end
         end
       end
 
-      emit "ratchet END after #{turn} turn(s)."
+      obs.emit(:run_end, turns: turn)
       File.write(File.join(dir, ".ratchet", "stop_reason"), "#{stop_reason}\n")
       state = File.file?(File.join(dir, ".ratchet", "last_task.state")) ? File.read(File.join(dir, ".ratchet", "last_task.state")) : ""
       CLI.metrics_append(dir, "run", "-", "-", last_model, stop_reason, CLI.elapsed_int(run_start),
                          state[/\A[^\t]*/].to_s, run_toks[:in], run_toks[:out], format("%.6f", run_toks[:cost]))
       stop_reason == "gate_red" || stop_reason == "human_blocked" ? 1 : 0
+    end
+
+    # Progress-guard :block_task — mark the tracker's current task BLOCKED
+    # and commit, so the loop advances past it instead of spinning (audit
+    # fix #2; the frozen grammar has no BLOCKED status, so the checkbox flips
+    # to [x] — the only advance mechanism — and "BLOCKED" rides in the task
+    # text, preserved for the human). ponytail: skips silently when the
+    # agent rewrote the tracker this turn and the task's lineno no longer
+    # matches — the guard's :stop at stop_at still bounds that case.
+    def block_current_task(dir, conf, task, stalls, repo: Repo.new(dir))
+      return if task.nil?
+
+      tracker = conf["TRACKER_FILE"] || "PLAN.md"
+      path = File.join(dir, tracker)
+      return unless File.file?(path)
+
+      lines = File.readlines(path)
+      ln = lines[task.lineno - 1]
+      return unless ln&.include?(task.id) && (m = ln.match(/\A(\s*-\s*\[)[^\]]+(\])/))
+
+      lines[task.lineno - 1] = "#{m[1]}x#{m[2]}#{m.post_match.chomp} — BLOCKED by progress guard (#{stalls} no-progress turns)\n"
+      File.write(path, lines.join)
+      return unless File.directory?(File.join(dir, ".git"))
+
+      repo.add(tracker)
+      repo.commit("loop(ratchet): task #{task.id} BLOCKED \u2014 no progress in #{stalls} turns") unless repo.staged_files.empty?
     end
 
     # write_turn_note (bin/ratchet:179): the gate-status FIRST line is
@@ -506,14 +583,18 @@ module Robur
                "**Milestone**: #{mname} (review cycle #{cycle + 1})\n" \
                "**Tracker**: #{conf["TRACKER_FILE"] || "PLAN.md"}\n"
 
+      # bash run-turn.sh:60 exports this for every turn — review included.
+      ENV["RATCHET_LOOP"] = "1"
+
       cmd = [conf["AGENT_CMD"], "--model", review_model]
       cmd += ["--thinking", thinking] unless thinking.to_s.empty?
       cmd += ["--no-session", "-p", prompt]
       result = Turn.run(cmd: cmd, turn_file: turn_out, chdir: dir,
                         turn_timeout: conf["TURN_TIMEOUT"].to_i,
                         stall_timeout: conf["STALL_TIMEOUT"].to_i,
-                        poll_interval: (ENV["POLL_INTERVAL"] || conf["POLL_INTERVAL"] || 3).to_i)
-      deadline = !result.kill_reason.nil?
+                        poll_interval: (ENV["POLL_INTERVAL"] || conf["POLL_INTERVAL"] || 3).to_i,
+                        early_tokens: ["REVIEW_PASS", "REVIEW_FAIL"])
+      deadline = !result.kill_reason.nil? && result.kill_reason != "token-seen"
       klass = Classifier.classify(turn_out, step_token: "REVIEW_PASS", done_token: "REVIEW_FAIL",
                                            deadline: deadline, json: false, human_token: conf["HUMAN_TOKEN"])
       case klass

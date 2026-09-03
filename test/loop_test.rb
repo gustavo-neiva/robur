@@ -112,13 +112,13 @@ class LoopTest < Minitest::Test
 
   def test_all_benched_backoff_ladder
     conf = { "COOLDOWN" => "100", "MAX_TRANSIENT" => "3", "SHORT_SLEEP" => "0" }
-    chain = Robur::ModelChain.new(%w[a b], conf, clock: Robur::Sys::Clock.new)
-    chain.bench!(0)
-    chain.bench!(1)
-    assert_nil chain.pick
+    health = Robur::ModelHealth.new(conf)
+    health.bench!("a")
+    health.bench!("b")
+    assert_nil health.pick(%w[a b])
     assert_equal [900, 3600, 14_400], Robur::Loop::BACKOFF_LADDER
-    chain.reset_all
-    assert_equal 0, chain.pick
+    health.reset_all
+    assert_equal "a", health.pick(%w[a b])
   end
 
   private

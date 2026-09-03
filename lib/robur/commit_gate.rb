@@ -7,8 +7,10 @@ module Robur
   # The loop owns the commit, so a turn can never land red even if the agent
   # forgets to commit (port of ratchet/lib/commit-gate.sh). Ordering is load
   # bearing: stage everything so the gate scans the actual proposed commit,
-  # THEN un-stage runtime junk and .ratchet.conf, THEN secret-scan, THEN the
-  # hard VERIFY_CMD gate, THEN the idempotent-turn skip, THEN one commit.
+  # THEN un-stage runtime junk and .ratchet.conf, THEN the idempotent-turn
+  # skip (moved AHEAD of the gates — deliberate divergence, see #run), THEN
+  # the tracker zero-task sanity check, THEN secret-scan, THEN the hard
+  # VERIFY_CMD gate, THEN one commit.
   class CommitGate
     Result = Struct.new(:committed, :block_reason, :verify_cmd_empty, keyword_init: true)
 
@@ -52,6 +54,35 @@ module Robur
       exclude_globs.each { |g| @repo.reset(g) }
       @repo.reset(".ratchet.conf")
 
+      # Nothing staged ⇒ nothing to scan or verify, so check BEFORE the secret
+      # scan and the VERIFY_CMD gate. DELIBERATE divergence from bash
+      # ../ratchet/lib/commit-gate.sh, which runs the verify gate before the
+      # idempotent check: this repo's VERIFY_CMD is the full 208-test suite
+      # (measured 36.5s) and 66% of turns stage nothing — bash re-verifies an
+      # unchanged tree for most of the run. Skipping cannot change the outcome
+      # of a turn that DOES stage (those still run every gate below). Do not
+      # "restore parity" here. Verify never runs on this path, so
+      # verify_cmd_empty stays false.
+      if @repo.staged_diff.empty?
+        @emit.call("  nothing staged to commit (idempotent turn).")
+        return Result.new(committed: false, block_reason: nil, verify_cmd_empty: false)
+      end
+
+      # Tracker sanity: a STAGED tracker that parses to zero tasks looks
+      # corrupt — a real "[IN PROGRESS" bracket-drop once made a task
+      # invisible forever. Checked against the working tree (add_all just made
+      # staged == working tree). Deliberate choice: skipped when @plan lacks
+      # #counts (the existing tests' bare subject-only Struct) so legacy
+      # callers are unaffected.
+      tracker = @config["TRACKER_FILE"] || "PLAN.md"
+      if @plan.respond_to?(:counts) && @repo.staged_files.include?(tracker)
+        counts = @plan.counts
+        if counts[:open] + counts[:in_progress] + counts[:done] == 0
+          @emit.call("  BLOCKED: tracker parsed to zero tasks — refusing commit (staged tracker looks corrupt).")
+          return Result.new(committed: false, block_reason: "tracker parsed to zero tasks", verify_cmd_empty: false)
+        end
+      end
+
       reason = secret_scan
       if reason
         @emit.call("  BLOCKED: secret scan — #{reason} — NOT committing.")
@@ -69,17 +100,20 @@ module Robur
         else
           @emit.call("  commit gate: running '#{verify_cmd}' \u2026")
           out, err, status = @proc.capture(verify_cmd, chdir: @dir)
+          captured = "#{out}#{err}"
+          # bash parity (commit-gate.sh:98): the FULL verify output goes to
+          # last_verify.out beside loop.log, on pass AND fail — a chatty
+          # VERIFY_CMD would otherwise flood loop.log; only the last 40 lines
+          # are tailed in on RED (below).
+          unless @loop_log.nil?
+            File.write(File.join(File.dirname(@loop_log), "last_verify.out"), captured)
+          end
           unless status&.success?
             @emit.call("  commit gate RED — NOT committing; leaving work for next turn to repair.")
-            tail_into_log("#{out}#{err}")
+            tail_into_log(captured)
             return Result.new(committed: false, block_reason: "commit gate RED", verify_cmd_empty: false)
           end
         end
-      end
-
-      if @repo.staged_diff.empty?
-        @emit.call("  nothing staged to commit (idempotent turn).")
-        return Result.new(committed: false, block_reason: nil, verify_cmd_empty: verify_cmd_empty)
       end
 
       subject = @plan.completed_subject

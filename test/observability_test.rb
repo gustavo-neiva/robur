@@ -85,17 +85,170 @@ module Robur
       `bash -c 'source #{BASH_OBSERVABILITY.shellescape}; _turn_usage #{path.shellescape}' 2>/dev/null`.chomp
     end
 
-    def test_turn_usage_matches_bash_turn_usage_on_the_fixtures
+    # Parity with one deliberate divergence: out/cost still match bash
+    # _turn_usage exactly; the `in` column now includes cacheRead+cacheWrite
+    # (bash's number was 50-100x low — the fields didn't exist when it was
+    # written), so ruby_in = bash_in + cache totals.
+    def test_turn_usage_out_and_cost_match_bash_and_in_includes_cache
       Dir.mktmpdir do |dir|
         path = File.join(dir, "turn.jsonl")
         lines = %w[m1_think.json m1_end.json m2_tc.json m2_end.json m3_end.json start_zero.json]
                 .map { |f| File.read(File.join(FIXTURES, f)).chomp }
         File.write(path, lines.join("\n") + "\n")
 
-        assert_equal bash_turn_usage(path), Observability.turn_usage(path)
+        bash_in, bash_out, bash_cost = bash_turn_usage(path).split("\t")
+        detail = Observability.turn_usage_detail(path)
+        ruby_in, ruby_out, ruby_cost = Observability.turn_usage(path).split("\t")
+
+        assert_equal bash_out, ruby_out
+        assert_equal bash_cost, ruby_cost
+        assert_equal 3, detail[:messages]
+        assert_equal bash_in.to_i + detail[:cache_read] + detail[:cache_write], ruby_in.to_i
         # Regression lock: with 3 distinct nonzero messages, sum > any single one.
-        input, = Observability.turn_usage(path).split("\t").map(&:to_i)
-        assert_operator input, :>, 637
+        assert_operator ruby_in.to_i, :>, 637
+      end
+    end
+
+    # Production usage fixture (2026-09, live session): cacheRead is ~1300x
+    # input — the field every prior metric dropped on the floor.
+    PROD_USAGE = {
+      "input" => 321, "output" => 398, "cacheRead" => 423_488, "cacheWrite" => 0,
+      "reasoning" => 307, "totalTokens" => 424_207, "cost" => { "total" => 0.006475895 }
+    }.freeze
+
+    def write_usage_events(path, usage_events)
+      File.write(path, usage_events.map { |u| JSON.generate(u) }.join("\n") + "\n")
+    end
+
+    def usage_event(id, usage)
+      { "id" => id, "message" => { "usage" => usage } }
+    end
+
+    def test_turn_usage_detail_sums_all_counters_on_the_production_fixture
+      Dir.mktmpdir do |dir|
+        path = File.join(dir, "turn.jsonl")
+        write_usage_events(path, [usage_event("m1", PROD_USAGE)])
+
+        d = Observability.turn_usage_detail(path)
+        assert_equal 321, d[:input]
+        assert_equal 398, d[:output]
+        assert_equal 423_488, d[:cache_read]
+        assert_equal 0, d[:cache_write]
+        assert_equal 307, d[:reasoning]
+        assert_in_delta 0.006475895, d[:cost], 1e-9
+        assert_equal 1, d[:messages]
+        # the metrics.tsv `in` column = total prompt-side tokens moved
+        assert_equal "423809\t398\t0.006476", Observability.turn_usage(path)
+      end
+    end
+
+    def test_turn_usage_detail_sums_deltas_not_max_on_non_monotonic_outputs
+      Dir.mktmpdir do |dir|
+        path = File.join(dir, "turn.jsonl")
+        write_usage_events(path, [103, 193, 111].each_with_index.map do |out, i|
+          usage_event("m#{i}", { "input" => 10, "output" => out, "cacheRead" => 100,
+                                 "cacheWrite" => 1, "cost" => { "total" => 0.0 } })
+        end)
+
+        d = Observability.turn_usage_detail(path)
+        assert_equal 3, d[:messages]
+        assert_equal 407, d[:output] # 103+193+111: per-message deltas summed, never max
+        assert_equal 30, d[:input]
+        assert_equal 303, d[:cache_read] + d[:cache_write]
+      end
+    end
+
+    def test_turn_usage_detail_collapses_an_all_zero_duplicate_flood_to_one_event
+      Dir.mktmpdir do |dir|
+        path = File.join(dir, "turn.jsonl")
+        zero = usage_event("same", { "input" => 0, "output" => 0, "cacheRead" => 0,
+                                     "cacheWrite" => 0, "cost" => { "total" => 0.0 } })
+        write_usage_events(path, [zero] * 6)
+
+        d = Observability.turn_usage_detail(path)
+        assert_equal 1, d[:messages]
+        assert_equal 0, d[:input]
+        assert_equal "0\t0\t0.000000", Observability.turn_usage(path)
+      end
+    end
+
+    def test_turn_usage_detail_on_absent_file_is_all_zeros_without_raising
+      d = Observability.turn_usage_detail("/nonexistent/turn.jsonl")
+      assert_equal({ input: 0, output: 0, cache_read: 0, cache_write: 0,
+                     reasoning: 0, cost: 0.0, messages: 0 }, d)
+      assert_equal "0\t0\t0", Observability.turn_usage("/nonexistent/turn.jsonl")
+    end
+
+    def test_emit_event_writes_events_jsonl_only_with_v1
+      Dir.mktmpdir do |dir|
+        obs(dir).emit_event(:tokens, input: 321, output: 398, cache_read: 423_488,
+                            cache_write: 0, cost: 0.006475895, messages: 1)
+
+        refute File.exist?(File.join(dir, "loop.log"))
+        rec = JSON.parse(File.read(File.join(dir, "events.jsonl")))
+        assert_equal "tokens", rec["kind"]
+        assert_equal 1, rec["v"]
+        assert_equal "2026-01-02 03:04:05", rec["ts"]
+        assert_equal 423_488, rec["cache_read"]
+      end
+    end
+
+    def test_run_start_render_reproduces_the_loop_banner_verbatim
+      lines = Observability::RENDER.fetch(:run_start).call(
+        repo: "/repo/ta_justo", session: "ratchet-ta-justo (resume=yes)", resume: "yes",
+        tracker: "PLAN.md", models: %w[m1 m2], turn_timeout: 3600, cooldown: 14_400,
+        both_wait: 900, step_token: "STEP_COMPLETE", done_token: "ALL_DONE",
+        agent_cmd: "pi agent", thinking: "", verify_cmd: "", commit_each_turn: "1",
+        push_on_done: "0", open_pr: "1", log_dir: "/repo/ta_justo/.ratchet/logs/x"
+      )
+      expected = [
+        "=" * 60,
+        "ratchet START",
+        "  repo      : /repo/ta_justo",
+        "  session   : ratchet-ta-justo (resume=yes)",
+        "  tracker   : PLAN.md",
+        "  models    : m1 m2  (preference order, fallback chain)",
+        "  turn cap  : 3600s   cooldown: 14400s   both-wait: 900s",
+        "  tokens    : step='STEP_COMPLETE'  done='ALL_DONE'",
+        "  agent     : pi agent",
+        "  thinking  : inherit",
+        "  verify    : <EMPTY — loud warning, no gate>",
+        "  commit    : per-turn=yes  push-on-done=no  pr=yes",
+        "  loop log  : /repo/ta_justo/.ratchet/logs/x/loop.log",
+        "  stop      : Ctrl-C",
+        "=" * 60
+      ]
+      assert_equal expected, lines
+    end
+
+    def test_new_render_kinds_render_their_human_lines
+      r = Observability::RENDER
+      assert_equal ["  model acme/a selected (tier up)"],
+                   r.fetch(:model_selected).call(model: "acme/a", tier: "light",
+                                                 chain: "acme/a acme/b", reason: "tier up")
+      assert_equal ["  model acme/a benched for 900s (rate limit)"],
+                   r.fetch(:model_benched).call(model: "acme/a", seconds: 900, reason: "rate limit")
+      assert_equal ["  gate: red (verify failed)"],
+                   r.fetch(:gate_result).call(status: "red", reason: "verify failed")
+      assert_equal ["  progress stalled 3x — reset"],
+                   r.fetch(:progress_stall).call(stalls: 3, action: "reset")
+      assert_equal ["  task T1.2 blocked after 5 stall(s)"],
+                   r.fetch(:task_blocked).call(task: "T1.2", stalls: 5)
+      assert_equal ["  tokens: in=423809 out=398 cache_r=423488 msgs=1 cost=$0.006476"],
+                   r.fetch(:tokens).call(input: 321, output: 398, cache_read: 423_488,
+                                         cache_write: 0, cost: 0.006475895, messages: 1)
+      assert_equal ["ratchet END after 7 turn(s)."], r.fetch(:run_end).call(turns: 7)
+      assert_equal r.fetch(:stop).call(turns: 7), r.fetch(:run_end).call(turns: 7)
+    end
+
+    def test_stats_counts_the_empty_outcome_class
+      Dir.mktmpdir do |dir|
+        o = obs(dir)
+        o.emit(:turn_start, turn: 1, model: "acme/a", tier: "build", thinking: "off", task: "T1")
+        o.emit(:turn_end, turn: 1, class: "empty", took: 10, exitcode: 0, task: "T1")
+
+        out = Observability.stats(dir, cheap_model: "acme/a")
+        assert_includes out, "failures              : hard=0 transient=0 timeout=0 exhausted=0 empty=1"
       end
     end
 
@@ -147,14 +300,16 @@ module Robur
         notify_cmd = "printf '%s\\n' \"$1\" >> #{marker.shellescape}"
         obs(dir).notify_human("merge the PR", notify_cmd: notify_cmd)
 
+        # Poll on CONTENT, not existence: the async printf creates the file
+        # before flushing, so reading at first existence can race to "".
+        content = ""
         50.times do
-          break if File.exist?(marker)
+          content = File.exist?(marker) ? File.read(marker) : ""
+          break if content.include?("merge the PR")
 
           sleep 0.01
         end
-
-        assert File.exist?(marker), "NOTIFY_CMD never fired"
-        assert_includes File.read(marker), "merge the PR"
+        assert_includes content, "merge the PR"
       end
     end
 
@@ -193,7 +348,11 @@ module Robur
       Dir.glob(File.join(LOG_FIXTURES, "*.log")).each do |fixture|
         Dir.mktmpdir do |dir|
           FileUtils.cp(fixture, File.join(dir, "loop.log"))
-          assert_equal bash_stats(fixture, cheap_model), Observability.stats(dir, cheap_model: cheap_model),
+          # legacy logs cannot contain the `empty` class, so it renders as 0 —
+          # patch it into the bash expectation rather than dropping parity.
+          expected = bash_stats(fixture, cheap_model)
+                          .sub(/^failures(\s+): (.+)$/) { "failures#{$1}: #{$2} empty=0" }
+          assert_equal expected, Observability.stats(dir, cheap_model: cheap_model),
                        "mismatch for #{File.basename(fixture)}"
         end
       end

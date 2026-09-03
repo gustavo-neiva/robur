@@ -39,7 +39,12 @@ m6_setup = lambda do |extra = ""|
 end
 
 # `run`: the full loop to ALL_DONE against a 2-task tracker.
-scenario(name: "run-to-done", argv: ["run", "."], setup: m6_setup.call)
+# drop_lines: deliberate divergence (audit E2a, 2026-09-03) — robur checks
+# staged-empty BEFORE the verify gate, so the FINAL all-done commit (nothing
+# staged) skips "commit gate: running ..." which bash still runs; 36.5s of
+# VERIFY_CMD per no-op turn on 66% of production turns is why.
+scenario(name: "run-to-done", argv: ["run", "."], setup: m6_setup.call,
+          drop_lines: [/commit gate: running/])
 
 # `once`: one turn, ticks T1.1.
 scenario(name: "once-one-turn", argv: ["once", "."], setup: m6_setup.call)

@@ -301,10 +301,11 @@ port changed nothing.
 Software first. Every rewiring task below is deferred to the end on purpose: the
 port must be provably identical before any live reference moves.
 
-- [ ] T7.1 (hard, serial) the parity gate
+- [x] T7.1 (hard, serial) the parity gate
     do: add `test/differential/suites/parity.rb` composing every milestone suite into one run, plus a long-run scenario driving the fixture repo from empty tracker to `ALL_DONE` across many turns with the fake-agent. `ruby test/differential/run.rb --suite parity` is the single command that proves feature parity.
     done: Given all fixture repos, When `ruby test/differential/run.rb --suite parity` runs, Then it reports `0 diffs` across every scenario in every milestone suite and exits 0; When any single milestone suite is failing, Then the parity run fails and names it.
     files: test/differential/suites/parity.rb
+    note: green 2026-09-03 (0 diffs / 49 scenarios, 1 unsupported) after the audit-implementation session; the audit's deliberate divergences are codified in-suite (`drop_lines:` with named reasons) and excluded by name (`events.jsonl`) — see AGENTS.md "Deliberate divergences".
 - [ ] T7.2 (trivial, serial) publish the parity evidence
     do: run the parity gate and paste its verbatim output, the date, and the robur git sha into the Track B evidence block of `atlas/MIGRATION-CUTOVER.md`. Do not perform any rewiring and do not tick any checklist box — that document is human-owned.
     done: Given a green parity run, When this task completes, Then `atlas/MIGRATION-CUTOVER.md` contains the verbatim output under `## Track B — parity evidence` with a date and a sha, and every checklist box in that document is still unticked.

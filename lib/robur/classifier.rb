@@ -5,7 +5,7 @@ require "json"
 module Robur
   # Turn-outcome detection (port of ratchet/lib/classify.sh's classify_turn).
   # Classifies by CONTENT, not exit code: done > human > step > exhausted >
-  # hard > timeout > transient. In json mode (pi --mode json) token matches
+  # hard > timeout > empty > transient. In json mode (pi --mode json) token matches
   # count only in assistant text_end events and error scans exclude assistant
   # text/thinking events, else prose *discussing* a rate limit false-fires.
   module Classifier
@@ -39,7 +39,8 @@ module Robur
 
     ASSISTANT_PROSE = /\A(?:text|thinking)_(?:delta|end)\z/
 
-    # Returns one of :done, :human, :step, :exhausted, :hard, :timeout, :transient.
+    # Returns one of :done, :human, :step, :exhausted, :hard, :timeout,
+    # :empty, :transient.
     def self.classify(path, step_token:, done_token:, deadline:, json: false,
                       human_token: nil)
       lines = File.exist?(path) ? File.read(path).lines : []
@@ -62,8 +63,18 @@ module Robur
       return :exhausted if src.match?(EXHAUSTED_RE)
       return :hard      if src.match?(HARD_RE)
       return :timeout   if deadline
+      return :empty     if empty_turn?(lines, events)
 
       :transient
+    end
+
+    # Exit 0 with no assistant output at all (prod root cause: 1,574 strikes
+    # retrying nothing). Text mode -> every line blank (missing/zero-length
+    # file included); json mode -> no assistant_text? event.
+    def self.empty_turn?(lines, events)
+      return events.none? { |_, ev| assistant_text?(ev) } if events
+
+      lines.all? { |l| l.strip.empty? }
     end
 
     def self.parse_lines(lines)

@@ -212,9 +212,21 @@ module Robur
     end
 
     def all_lines
-      # No memo: the run loop holds one Plan across turns while the agent edits
-      # the file — bash re-reads per tracker call and so must we.
-      File.exist?(@path) ? File.readlines(@path, chomp: true) : []
+      # Cache keyed on [mtime, size], re-statted on EVERY call: the run loop
+      # holds one Plan across turns while the agent edits the file — a naive
+      # memo once served turn-1's lines forever. bash re-reads per tracker
+      # call; the stamp check gives that observable behaviour with one read
+      # per change instead of one per call.
+      # ponytail: a same-tick same-size rewrite keeps the stale cache; upgrade
+      # path = content digest instead of mtime+size.
+      return [] unless File.exist?(@path)
+
+      stamp = [File.mtime(@path), File.size(@path)]
+      if @cache_stamp != stamp
+        @cache_stamp = stamp
+        @cache_lines = File.readlines(@path, chomp: true)
+      end
+      @cache_lines
     end
 
     # Lines from the `- [...] id` task line through just before the next task

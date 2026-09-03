@@ -12,5 +12,9 @@ $LOAD_PATH.unshift(lib) unless $LOAD_PATH.include?(lib)
 require "robur"
 require "robur/cli"
 require "robur/config"
+require "robur/prompt"
+require "robur/model_health"
+require "robur/progress_guard"
+require "robur/observability"
 
 exit(Robur::CLI.run(ARGV) || 0)

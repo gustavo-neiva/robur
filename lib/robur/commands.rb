@@ -403,6 +403,9 @@ module Robur
       cmd += ["--thinking", thinking] unless thinking.to_s.empty?
       cmd += ["--no-session", "-p", prompt]
 
+      # bash run-turn.sh:60 exports this for EVERY turn (build/plan/review
+      # alike) — the agent's protocol reads it to know it is loop-driven.
+      ENV["RATCHET_LOOP"] = "1"
       start = Process.clock_gettime(Process::CLOCK_MONOTONIC)
       result = Turn.run(cmd: cmd, turn_file: turn_out, chdir: dir,
                         turn_timeout: conf["TURN_TIMEOUT"].to_i,
