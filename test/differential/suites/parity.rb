@@ -5,7 +5,10 @@
 # (all-open) tracker all the way to ALL_DONE across many turns and multiple
 # milestones with the fake-agent. `ruby test/differential/run.rb --suite
 # parity` is the single command that proves feature parity end to end.
-Dir.glob(File.join(__dir__, "milestone-*.rb")).sort.each { |f| load f }
+# With --suite parity, run.rb loads only this file, so pull in M1-M6 here.
+# In all-suites mode they are already loaded — skip to avoid running each
+# milestone scenario twice.
+Dir.glob(File.join(__dir__, "milestone-*.rb")).sort.each { |f| load f if SCENARIOS.empty? }
 
 PARITY_AGENT = File.expand_path("../../fixtures/fake-agent", __dir__)
 
