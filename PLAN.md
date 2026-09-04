@@ -306,10 +306,11 @@ port must be provably identical before any live reference moves.
     done: Given all fixture repos, When `ruby test/differential/run.rb --suite parity` runs, Then it reports `0 diffs` across every scenario in every milestone suite and exits 0; When any single milestone suite is failing, Then the parity run fails and names it.
     files: test/differential/suites/parity.rb
     note: green 2026-09-03 (0 diffs / 49 scenarios, 1 unsupported) after the audit-implementation session; the audit's deliberate divergences are codified in-suite (`drop_lines:` with named reasons) and excluded by name (`events.jsonl`) — see AGENTS.md "Deliberate divergences".
-- [ ] T7.2 (trivial, serial) publish the parity evidence
+- [x] T7.2 (trivial, serial) publish the parity evidence
     do: run the parity gate and paste its verbatim output, the date, and the robur git sha into the Track B evidence block of `atlas/MIGRATION-CUTOVER.md`. Do not perform any rewiring and do not tick any checklist box — that document is human-owned.
     done: Given a green parity run, When this task completes, Then `atlas/MIGRATION-CUTOVER.md` contains the verbatim output under `## Track B — parity evidence` with a date and a sha, and every checklist box in that document is still unticked.
     files: ../atlas/MIGRATION-CUTOVER.md
+    note: done 2026-09-03 (atlas c1a78d8). Verbatim parity output at robur f605f55 under `## Track B — parity evidence`, with date, sha and branch. All 45 checklist boxes verified still unticked; nothing else in that document touched.
 - [x] T7.3 (normal, serial) the rewiring inventory
     do: produce `REWIRING.md` in this repo: every live reference to the bash ratchet that cutover must move, each with its file, line, current value, target value, and the exact revert. Cover at minimum the `ratchet` symlink on PATH, `atlas/cycles.conf` repo paths, `~/.ratchet/conf` `NOTIFY_CMD`, the launchd plist, `atlas/bin/money-loop.sh`'s `ratchet run` and `ratchet plan --auto` invocations, harbor's `/loop` and `/blocked` paths, and any `RATCHET_HOME` or `RATCHET_METRICS` override. Find them by grep, not from memory. Change nothing.
     done: Given the estate, When `REWIRING.md` is complete, Then every entry names a file and line that currently exists, each has a one-line revert, and re-running the same greps surfaces no reference absent from the document.
