@@ -3,12 +3,12 @@
 require "test_helper"
 require "robur/loop"
 require "robur/state"
+require "robur/paths"
 require "tmpdir"
 
 module Robur
-  # wait_for_merge / open_milestone_pr (bin/ratchet:203,261) — mirrors bash
-  # selftest suite 29's seven wait_for_merge scenarios: MERGED, CLOSED,
-  # timeout, no-gh, no-origin, PARALLEL=1, PARALLEL=0.
+  # wait_for_merge / open_milestone_pr across the seven scenarios that matter:
+  # MERGED, CLOSED, timeout, no-gh, no-origin, PARALLEL=1, PARALLEL=0.
   class PrFlowTest < Minitest::Test
     Status = Struct.new(:success?)
 
@@ -322,7 +322,7 @@ module Robur
       plan = Plan.new(File.join(dir, "PLAN.md"))
       Loop.milestone_branch_lifecycle(dir, { "PR_CADENCE" => "milestone" }, plan, repo: Repo.new(dir))
 
-      assert_equal "ratchet/m-milestone-1-first-one", Repo.new(dir).current_branch
+      assert_equal Paths.milestone_branch("milestone-1-first-one"), Repo.new(dir).current_branch
       name, base_sha, cycle, errors = State.read_milestone_cur(dir)
       assert_equal "Milestone 1 — first one", name
       refute_empty base_sha
@@ -370,7 +370,7 @@ module Robur
       plan = Plan.new(File.join(dir, "PLAN.md"))
       Loop.milestone_branch_lifecycle(dir, { "PR_CADENCE" => "milestone" }, plan, repo: Repo.new(dir))
 
-      assert_equal "ratchet/m-milestone-2-second", Repo.new(dir).current_branch
+      assert_equal Paths.milestone_branch("milestone-2-second"), Repo.new(dir).current_branch
       name, = State.read_milestone_cur(dir)
       assert_equal "Milestone 2 — second", name
     ensure
@@ -388,7 +388,7 @@ module Robur
       Loop.milestone_branch_lifecycle(dir, {}, plan, repo: Repo.new(dir))
 
       assert_equal before_branch, Repo.new(dir).current_branch
-      refute File.file?(File.join(dir, ".ratchet", "milestone.cur"))
+      refute File.file?(Paths.state_file(dir, "milestone.cur"))
     ensure
       FileUtils.remove_entry(dir) if dir
     end
@@ -506,7 +506,7 @@ module Robur
       assert_equal "abcd1234", base_sha
       assert_equal 1, cycle
       assert_equal 0, errors
-      assert_equal ["review(ratchet): fix tasks from review cycle 1"], repo.commit_calls
+      assert_equal ["review(robur): fix tasks from review cycle 1"], repo.commit_calls
       assert(log_lines.any? { |l| l.include?("review-fail | m=M1 | cycle=1") })
     ensure
       FileUtils.remove_entry(dir) if dir
@@ -590,7 +590,7 @@ module Robur
       assert_raises(SystemExit) do
         Loop.auto_plan_pr0(dir, { "PR_CADENCE" => "milestone" }, plan, File.join(dir, "turn.out"), @loop_log, repo: repo)
       end
-      assert(log_lines.any? { |l| l.include?("FATAL: failed to create ratchet/plan branch") })
+      assert(log_lines.any? { |l| l.include?("FATAL: failed to create #{Paths.plan_branch} branch") })
     ensure
       FileUtils.remove_entry(dir) if dir
     end
@@ -660,7 +660,7 @@ module Robur
                                   repo: repo, sys: sys, sleep_it: ->(_s) {})
 
       assert_nil result
-      assert_equal [["ratchet/plan", "main"]], repo.checkout_b_calls
+      assert_equal [[Paths.plan_branch, "main"]], repo.checkout_b_calls
       assert(log_lines.any? { |l| l.include?("auto-plan: PR #0 merged, continuing into build loop") })
     ensure
       FileUtils.remove_entry(dir) if dir
@@ -727,13 +727,15 @@ module Robur
                            wait_any: -> { raise "should not need to wait: FANOUT_MAX not reached" },
                            wait_pid: ->(_pid) { nil })
       assert_equal 0, result
-      # fanout_independent_milestones's slug is NOT lowercased (unlike the
-      # milestone-branch-lifecycle slug) -- ported byte-for-byte from bash.
-      assert_equal [["../ratchet-wt-Milestone-A", "ratchet/m-Milestone-A", "origin/main"],
-                    ["../ratchet-wt-Milestone-B", "ratchet/m-Milestone-B", "origin/main"]], repo.worktree_add_calls
-      assert_equal ["../ratchet-wt-Milestone-A", "../ratchet-wt-Milestone-B"], launched
-      assert_equal [["../ratchet-wt-Milestone-A", "ratchet/m-Milestone-A"],
-                    ["../ratchet-wt-Milestone-B", "ratchet/m-Milestone-B"]], State.read_fanout(dir)
+      # fanout_independent_milestones's slug is NOT lowercased, unlike the
+      # milestone-branch-lifecycle slug.
+      assert_equal [[Paths.worktree_path("Milestone-A"), Paths.milestone_branch("Milestone-A"), "origin/main"],
+                    [Paths.worktree_path("Milestone-B"), Paths.milestone_branch("Milestone-B"), "origin/main"]],
+                   repo.worktree_add_calls
+      assert_equal [Paths.worktree_path("Milestone-A"), Paths.worktree_path("Milestone-B")], launched
+      assert_equal [[Paths.worktree_path("Milestone-A"), Paths.milestone_branch("Milestone-A")],
+                    [Paths.worktree_path("Milestone-B"), Paths.milestone_branch("Milestone-B")]],
+                   State.read_fanout(dir)
       assert(log_lines.any? { |l| l.include?("found 2 independent milestone(s)") })
       assert(log_lines.any? { |l| l.include?("all worktrees created") })
       assert(log_lines.any? { |l| l.include?("all loops complete") })

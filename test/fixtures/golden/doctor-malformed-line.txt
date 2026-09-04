@@ -1,0 +1,28 @@
+exit: 1
+--- stdout ---
+doctor: <TMP>/repo
+  ok   git repo
+  ok   agent command '<ROOT>/test/fixtures/fake-agent' on PATH
+  FAIL .robur.conf has errors:
+         
+           line 7: not a KEY=value line: 'this is not a conf line'
+  ok   RATCHET_PROTOCOL=1 supported
+  ok   protocol delivery: harness-prompt (loop briefs its own turns)
+  ok   tracker 'PLAN.md' has an open task
+  ok   VERIFY_CMD is set: 'true'
+  ok   tokens: defined in conf (prompt delivery)
+  ok   gitleaks: <present or absent on this host>
+  ok   pi registry cache missing/stale — model validation skipped (refresh: robur models list)
+  ok   rank source: none (unranked no-join: 0)
+---
+tier routing:
+  PLAN  : → MODELS (flat) (thinking=)
+  AUTOPL: → PLAN (thinking=)
+  BUILD : → MODELS (flat) (thinking=)
+  LIGHT : → MODELS (flat) (thinking=)
+---
+doctor: 1 problem(s). Fix before running the loop.
+--- stderr ---
+[<timestamp>] WARNING: ./.robur.conf has issues (run 'robur doctor'):
+
+  line 7: not a KEY=value line: 'this is not a conf line'

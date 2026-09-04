@@ -1,0 +1,4 @@
+exit: 1
+--- stdout ---
+status: no loop.log found at <TMP>/home/logs/repo-<cksum>/loop.log (nothing run here yet?)
+--- stderr ---

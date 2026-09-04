@@ -1,0 +1,14 @@
+exit: 0
+--- stdout ---
+turns started         : 2
+  on cheap (stub/stub-1): 2 (100%)
+successes (step+done) : 2  (steps=2 done=0)
+failures              : hard=0 transient=0 timeout=0 exhausted=0 empty=0
+step-success rate     : 100%
+deadline kills        : 0
+wasted wall-hours     : 0.00h  (0.00h per 100 turns)
+turns by tier         : light=2
+turns by model        : stub/stub-1=2
+turn duration         : avg=<n>s max=<n>s
+source                : events.jsonl
+--- stderr ---

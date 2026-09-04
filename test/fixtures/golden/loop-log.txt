@@ -1,0 +1,41 @@
+[<timestamp>] ============================================================
+[<timestamp>] robur START
+[<timestamp>]   repo      : <TMP>/repo
+[<timestamp>]   session   : robur-repo-<cksum> (resume=no)
+[<timestamp>]   tracker   : PLAN.md
+[<timestamp>]   models    : stub/stub-1  (preference order, fallback chain)
+[<timestamp>]   turn cap  : 30s   cooldown: 14400s   both-wait: 14400s
+[<timestamp>]   tokens    : step='STEP_COMPLETE'  done='ALL_DONE'
+[<timestamp>]   agent     : <ROOT>/test/fixtures/fake-agent
+[<timestamp>]   thinking  : inherit
+[<timestamp>]   verify    : true
+[<timestamp>]   commit    : per-turn=yes  push-on-done=no  pr=no
+[<timestamp>]   loop log  : <TMP>/home/logs/repo-<cksum>/loop.log
+[<timestamp>]   stop      : Ctrl-C
+[<timestamp>] ============================================================
+[<timestamp>] tasks: 0 done / 2 total | next: T1.1 (trivial) first task
+[<timestamp>] --- turn 1 | model=stub/stub-1 ---
+[<timestamp>] turn 1 | tier=light | model=stub/stub-1 | thinking= | task=T1.1 (trivial) first task
+[<timestamp>] turn 1 end | class=step | took=<n>s | exitcode=0 | task=T1.1 (trivial) first
+[<timestamp>] --- summary ---
+RATCHET_LOOP=1
+STEP_COMPLETE
+[<timestamp>] ---
+[<timestamp>]   commit gate: running 'true' …
+[<timestamp>]   committed: T1.1 (trivial) first task
+[<timestamp>] step complete (STEP_COMPLETE). Sleeping 2s.
+[<timestamp>] tasks: 1 done / 2 total | next: T1.2 (trivial) second task
+[<timestamp>] --- turn 2 | model=stub/stub-1 ---
+[<timestamp>] turn 2 | tier=light | model=stub/stub-1 | thinking= | task=T1.2 (trivial) second task
+[<timestamp>] turn 2 end | class=step | took=<n>s | exitcode=0 | task=T1.2 (trivial) secon
+[<timestamp>] --- summary ---
+RATCHET_LOOP=1
+STEP_COMPLETE
+[<timestamp>] ---
+[<timestamp>]   commit gate: running 'true' …
+[<timestamp>]   committed: T1.2 (trivial) second task
+[<timestamp>] step complete (STEP_COMPLETE). Sleeping 2s.
+[<timestamp>] all PLAN.md tasks complete (2 done) — no open work remains.
+[<timestamp>]   nothing staged to commit (idempotent turn).
+[<timestamp>] agent signaled ALL_DONE — all work complete.
+[<timestamp>] robur END after 3 turn(s).

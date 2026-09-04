@@ -1,0 +1,70 @@
+exit: 0
+--- stdout ---
+Usage: robur <command> [REPO_DIR] [OPTIONS]
+
+robur — an unattended-but-safe agent loop. Runs a headless coding agent
+(pi, or any -p-style CLI) ONE turn at a time against a repo, surviving provider
+rate limits, gating every commit on a green test suite, and routing shared-state
+actions (push, PR/MR) through a human. A RED tree is never committed.
+
+Commands:
+  run    [REPO]   Run the loop unattended until the agent prints ALL_DONE. (default)
+  once   [REPO]   Run exactly one turn, then exit (testing/debugging).
+  init   [REPO]   Stamp AGENTS.md protocol + .robur.conf + seed PLAN.md (existing repo).
+  new    "<idea>" Scaffold a repo, draft PLAN.md, then STOP for human plan review.
+  plan   [REPO]   ONE plan-drafting turn on the PLAN tier, then STOP for human review (never auto-runs).
+                  --auto: unattended (AUTOPLAN tier, no review-stop) — for the nightly/interval scheduler.
+  doctor [REPO]   Preflight: conf parses, tracker has open tasks, keys live, protocol current.
+  selftest         Verify detection + loop logic against fixtures (NO agent calls). Exits 0/1.
+  stats   [REPO]  Parse this repo's loop.log and print the baseline metrics, then exit.
+  watch   [REPO]  Pretty-print the live session JSONL the agent writes (run in a 2nd terminal).
+  models          Model config UX: list | add <provider/id> | remove <provider/id> |
+                  thinking <level>. Flags: --tier models|plan|build|light (default:
+                  models), --pos first|last|N, --repo (edit .robur.conf instead of
+                  the global conf), --force (skip pi-registry validation). Ids are
+                  validated against 'pi --list-models' (24h cache; doctor warns too).
+
+Options:
+  -d, --dir DIR          Repo directory (default: $PWD). A bare positional works too.
+  -p, --prompt TEXT      Prompt sent each turn (default: built-in generic do-one-step prompt).
+  -m, --models LIST      Comma-separated fallback chain, provider/id form.
+      --agent-cmd CMD    Headless agent command (default: pi; e.g. claude, /path/to/agent).
+  -s, --session NAME     Session id suffix (default: robur-<project-slug>).
+      --thinking LEVEL   Reasoning level each turn: off|minimal|low|medium|high|xhigh.
+      --turn-timeout N   Max seconds for one turn (default: 1800).
+      --cooldown N       Seconds to skip a benched model (default: 14400).
+      --step-token T     Per-step completion token (default: STEP_COMPLETE).
+      --done-token T     All-done token (default: ALL_DONE).
+
+  Commit-per-turn (the loop owns the commit, gated on green):
+      --commit / --no-commit   Commit after each green turn (default: on).
+      --verify-cmd CMD         Green gate re-run before each commit. A RED tree never commits.
+                               Empty (default) = LOUD warning, gate skipped, never silent.
+      --no-verify-gate         Skip the pre-commit re-verify (commit on the agent's word).
+      --push                   Push ONCE after ALL_DONE only (default: off; human owns push).
+      --pr                     After ALL_DONE: push branch + open PR/MR (gh/glab); human merges.
+      --approve                Open a local diff-review UI before push/PR (opt-in, v1/unproven).
+
+  Token economy (quota):
+      --resume / --no-resume   Ephemeral turns are the DEFAULT (tracker = memory, ~90% cheaper).
+      --cache-retention R      Prompt-cache TTL: long|short|none (default: long).
+      --no-sanitize            Don't strip prior thinking blocks (disable only to debug replay).
+
+  Feedback / observability:
+      --tail N / --heartbeat N / --stream / --quiet
+
+  Model selection:
+      --cheap                  Force ALL tiers to the LIGHT chain (LIGHT_MODELS, else MODELS).
+      --auto                   (plan) Unattended plan turn: AUTOPLAN_MODELS chain, no review-stop.
+                               For schedulers. A caught-up repo gets a KTLO plan instead of silence.
+                               The one-word overnight-on-the-cheap-model switch. Use -m for
+                               an explicit chain override.
+
+  -v, --verbose          Verbose logging.   -h, --help  Show this help.
+
+Where to look while it runs:
+  loop log   $ROBUR_HOME/logs/<slug>/loop.log        (tail -f to watch)
+  agent out  $ROBUR_HOME/logs/<slug>/last_turn.out    (what the agent said/did)
+
+Config:  repo .robur.conf (PARSED, never sourced)  >  <TMP>/home/conf (sourced)  >  defaults.
+--- stderr ---

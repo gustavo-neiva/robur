@@ -2,6 +2,7 @@
 
 require_relative "test_helper"
 require "robur/commit_gate"
+require "robur/paths"
 require "tmpdir"
 require "open3"
 
@@ -37,7 +38,7 @@ module Robur
       result = gate(dir).run(turn: 3, model: "acme/model")
       assert result.committed
       out, = Open3.capture3("git", "-C", dir, "log", "--format=%s", "-1")
-      assert_equal "auto(ratchet): turn 3 acme/model \u2014 SUBJECT\n", out
+      assert_equal "auto(#{Paths::COMMIT_SCOPE}): turn 3 acme/model \u2014 SUBJECT\n", out
     end
 
     def test_red_verify_cmd_blocks_and_leaves_work_staged
@@ -73,20 +74,20 @@ module Robur
       assert_nil result.block_reason
     end
 
-    # ratchet:allow-secret — these are synthetic fixture shapes for the scanner
+    # robur:allow-secret — these are synthetic fixture shapes for the scanner
     # under test, not real credentials; the outer commit gate's own scan would
     # otherwise block committing this test file.
     def test_blocks_private_key
-      assert_blocked("id_rsa", "-----BEGIN RSA PRIVATE KEY-----\nabc\n-----END RSA PRIVATE KEY-----\n", # ratchet:allow-secret
+      assert_blocked("id_rsa", "-----BEGIN RSA PRIVATE KEY-----\nabc\n-----END RSA PRIVATE KEY-----\n", # robur:allow-secret
                       "private key material in staged diff")
     end
 
     def test_blocks_aws_access_key_id
-      assert_blocked("conf.txt", "AWS_KEY=AKIAABCDEFGHIJKLMNOP\n", "AWS access key id in staged diff") # ratchet:allow-secret
+      assert_blocked("conf.txt", "AWS_KEY=AKIAABCDEFGHIJKLMNOP\n", "AWS access key id in staged diff") # robur:allow-secret
     end
 
     def test_blocks_sk_style_api_key
-      assert_blocked("conf.txt", "OPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwx\n", # ratchet:allow-secret
+      assert_blocked("conf.txt", "OPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwx\n", # robur:allow-secret
                       "API key (sk-/sk-ant-) in staged diff")
     end
 
@@ -94,7 +95,7 @@ module Robur
       header = "eyJhbGciOiJIUzI1NiJ9"
       payload = "eyJzdWIiOiIxMjM0NTY3ODkwIn0"
       sig = "SflKxwRJSMeKKF2QT4fwpMeJf36POk6y"
-      assert_blocked("conf.txt", "Authorization: Bearer #{header}.#{payload}.#{sig}\n", "JWT in staged diff") # ratchet:allow-secret
+      assert_blocked("conf.txt", "Authorization: Bearer #{header}.#{payload}.#{sig}\n", "JWT in staged diff") # robur:allow-secret
     end
 
     def test_blocks_dot_env_addition
@@ -107,7 +108,20 @@ module Robur
 
     def test_allow_secret_marker_exempts_a_line
       dir = git_repo
-      File.write(File.join(dir, "conf.txt"), "OPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwx # ratchet:allow-secret\n")
+      File.write(File.join(dir, "conf.txt"),
+                 "OPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwx # #{CommitGate::ALLOW_MARKER}\n")
+      result = gate(dir).run(turn: 1, model: "m")
+      assert result.committed
+    end
+
+    # Backward compatibility: suppressions written before the rename are
+    # sitting in real repos as `ratchet:allow-secret`. They must keep
+    # exempting their line, or the gate starts blocking commits it used to let
+    # through.
+    def test_legacy_allow_secret_marker_still_exempts_a_line
+      dir = git_repo
+      File.write(File.join(dir, "conf.txt"),
+                 "OPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwx # #{CommitGate::LEGACY_ALLOW_MARKER}\n")
       result = gate(dir).run(turn: 1, model: "m")
       assert result.committed
     end
@@ -122,13 +136,19 @@ module Robur
       assert_equal "", out
     end
 
-    def test_unstages_dot_ratchet_conf
-      dir = git_repo
-      File.write(File.join(dir, ".ratchet.conf"), "VERIFY_CMD=true\n")
-      File.write(File.join(dir, "new.txt"), "hello\n")
-      gate(dir).run(turn: 1, model: "m")
-      out, = Open3.capture3("git", "-C", dir, "log", "--format=", "-1", "--name-only")
-      refute_includes out, ".ratchet.conf"
+    # The repo conf is the loop's own contract with the human: a turn must
+    # never sneak an edit to it into a commit. Both spellings are unstaged,
+    # since an un-migrated repo still has only the legacy file.
+    def test_unstages_the_repo_conf_under_either_name
+      [Paths::REPO_CONF, Paths::LEGACY_REPO_CONF].each do |conf|
+        dir = git_repo
+        File.write(File.join(dir, conf), "VERIFY_CMD=true\n")
+        File.write(File.join(dir, "new.txt"), "hello\n")
+        gate(dir).run(turn: 1, model: "m")
+        out, = Open3.capture3("git", "-C", dir, "log", "--format=", "-1", "--name-only")
+
+        refute_includes out, conf
+      end
     end
 
     # Recording proc for the VERIFY_CMD seam: records each command run,

@@ -1,0 +1,22 @@
+exit: 2
+--- stdout ---
+doctor: <TMP>/repo
+  ok   git repo
+  ok   agent command 'pi' on PATH
+  FAIL no .robur.conf (run: robur init <TMP>/repo)
+  ok   protocol delivery: harness-prompt (loop briefs its own turns)
+  ok   tracker 'PLAN.md' has an open task
+  FAIL VERIFY_CMD is EMPTY — set it in .robur.conf (no-gate is loud by design)
+  ok   tokens: defined in conf (prompt delivery)
+  ok   gitleaks: <present or absent on this host>
+  ok   pi registry cache missing/stale — model validation skipped (refresh: robur models list)
+  ok   rank source: none (unranked no-join: 0)
+---
+tier routing:
+  PLAN  : → MODELS (flat) (thinking=)
+  AUTOPL: → PLAN (thinking=)
+  BUILD : → MODELS (flat) (thinking=)
+  LIGHT : → MODELS (flat) (thinking=)
+---
+doctor: 2 problem(s). Fix before running the loop.
+--- stderr ---

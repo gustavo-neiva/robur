@@ -1,0 +1,4 @@
+exit: 1
+--- stdout ---
+[<timestamp>] FATAL: unknown option: --version (see --help)
+--- stderr ---

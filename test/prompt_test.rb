@@ -9,7 +9,8 @@ class PromptTest < Minitest::Test
   CONF = { "STEP_TOKEN" => "STEP_T", "DONE_TOKEN" => "DONE_T" }.freeze
   BASE = "Do ONE discrete step of work on this repository's current task, following the project's AGENTS.md " \
          "instructions. Write all changes to files; do not dump file contents in your reply. Do NOT edit " \
-         ".ratchet.conf or the AGENTS.md protocol markers — the loop reverts and wastes the turn. When the " \
+         ".robur.conf (or a legacy .ratchet.conf) or the AGENTS.md protocol markers — the loop reverts and " \
+         "wastes the turn. When the " \
          "step is complete, print the token STEP_T on its own line. If there is absolutely no remaining " \
          "work, print the token DONE_T on its own line instead."
 

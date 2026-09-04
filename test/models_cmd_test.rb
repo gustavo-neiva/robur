@@ -2,6 +2,7 @@
 
 require "test_helper"
 require "robur/models_cmd"
+require "robur/paths"
 require "tmpdir"
 require "digest"
 
@@ -59,21 +60,21 @@ module Robur
     # --- upsert_conf_key -----------------------------------------------------
 
     def test_upsert_conf_key_appends_when_absent
-      file = File.join(@dir, ".ratchet.conf")
+      file = File.join(@dir, Paths::REPO_CONF)
       File.write(file, "MODELS=x\n")
       ModelsCmd.upsert_conf_key(file, "PLAN_MODELS", "a/b")
       assert_equal "MODELS=x\nPLAN_MODELS=a/b\n", File.read(file)
     end
 
     def test_upsert_conf_key_replaces_existing_preserving_other_lines
-      file = File.join(@dir, ".ratchet.conf")
+      file = File.join(@dir, Paths::REPO_CONF)
       File.write(file, "# comment\nPLAN_MODELS=old\nMODELS=x\n")
       ModelsCmd.upsert_conf_key(file, "PLAN_MODELS", "new")
       assert_equal "# comment\nPLAN_MODELS=new\nMODELS=x\n", File.read(file)
     end
 
     def test_upsert_conf_key_leaves_commented_template_line_alone
-      file = File.join(@dir, ".ratchet.conf")
+      file = File.join(@dir, Paths::REPO_CONF)
       File.write(file, "#PLAN_MODELS=\nMODELS=x\n")
       ModelsCmd.upsert_conf_key(file, "PLAN_MODELS", "a/b")
       assert_equal "#PLAN_MODELS=\nMODELS=x\nPLAN_MODELS=a/b\n", File.read(file)
@@ -127,13 +128,14 @@ module Robur
     end
 
     def test_run_add_repo_target_restamps_conf_hash
-      FileUtils.mkdir_p(File.join(@dir, ".ratchet"))
+      Paths.ensure_state_dir!(@dir)
       sys = FakeProc.new(out: "provider  id\na  b\n")
       ModelsCmd.run(["add", "a/b", "--repo"], config: {}, dir: @dir, emit: @emit, home: @home, sys: sys)
-      target = File.join(@dir, ".ratchet.conf")
+      target = Paths.repo_conf(@dir)
+
       assert_equal "MODELS=a/b\n", File.read(target)
-      expected = "#{Digest::SHA256.file(target).hexdigest}\n"
-      assert_equal expected, File.read(File.join(@dir, ".ratchet", "conf.hash"))
+      assert_equal "#{Digest::SHA256.file(target).hexdigest}\n",
+                   File.read(Paths.state_file(@dir, "conf.hash"))
     end
 
     def test_run_remove

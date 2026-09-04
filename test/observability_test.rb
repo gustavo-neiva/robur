@@ -34,7 +34,7 @@ module Robur
           [2026-01-02 03:04:05] turn 3 end | class=step | took=42s | exitcode=0 | task=T1 do a thing
           [2026-01-02 03:04:05]   committed: T1 (normal) do a thing
           [2026-01-02 03:04:05] ALL models benched (exhausted), attempt 2. Sleeping 900s, then reset + retry.
-          [2026-01-02 03:04:05] ratchet END after 3 turn(s).
+          [2026-01-02 03:04:05] robur END after 3 turn(s).
         LOG
         assert_equal expected, File.read(File.join(dir, "loop.log"))
       end
@@ -196,17 +196,17 @@ module Robur
 
     def test_run_start_render_reproduces_the_loop_banner_verbatim
       lines = Observability::RENDER.fetch(:run_start).call(
-        repo: "/repo/ta_justo", session: "ratchet-ta-justo (resume=yes)", resume: "yes",
+        repo: "/repo/ta_justo", session: "robur-ta-justo (resume=yes)", resume: "yes",
         tracker: "PLAN.md", models: %w[m1 m2], turn_timeout: 3600, cooldown: 14_400,
         both_wait: 900, step_token: "STEP_COMPLETE", done_token: "ALL_DONE",
         agent_cmd: "pi agent", thinking: "", verify_cmd: "", commit_each_turn: "1",
-        push_on_done: "0", open_pr: "1", log_dir: "/repo/ta_justo/.ratchet/logs/x"
+        push_on_done: "0", open_pr: "1", log_dir: "/repo/ta_justo/.robur/logs/x"
       )
       expected = [
         "=" * 60,
-        "ratchet START",
+        "robur START",
         "  repo      : /repo/ta_justo",
-        "  session   : ratchet-ta-justo (resume=yes)",
+        "  session   : robur-ta-justo (resume=yes)",
         "  tracker   : PLAN.md",
         "  models    : m1 m2  (preference order, fallback chain)",
         "  turn cap  : 3600s   cooldown: 14400s   both-wait: 900s",
@@ -215,7 +215,7 @@ module Robur
         "  thinking  : inherit",
         "  verify    : <EMPTY — loud warning, no gate>",
         "  commit    : per-turn=yes  push-on-done=no  pr=yes",
-        "  loop log  : /repo/ta_justo/.ratchet/logs/x/loop.log",
+        "  loop log  : /repo/ta_justo/.robur/logs/x/loop.log",
         "  stop      : Ctrl-C",
         "=" * 60
       ]
@@ -241,7 +241,7 @@ module Robur
       assert_equal ["  tokens: in=423809 fresh=321 out=398 cache_r=423488 msgs=1 cost=$0.006476"],
                    r.fetch(:tokens).call(input: 321, output: 398, cache_read: 423_488,
                                          cache_write: 0, cost: 0.006475895, messages: 1)
-      assert_equal ["ratchet END after 7 turn(s)."], r.fetch(:run_end).call(turns: 7)
+      assert_equal ["robur END after 7 turn(s)."], r.fetch(:run_end).call(turns: 7)
       assert_equal r.fetch(:stop).call(turns: 7), r.fetch(:run_end).call(turns: 7)
     end
 
@@ -263,12 +263,12 @@ module Robur
     def test_metrics_append_writes_twelve_frozen_columns_in_order
       Dir.mktmpdir do |dir|
         metrics = File.join(dir, "metrics.tsv")
-        ENV["RATCHET_METRICS"] = metrics
+        ENV["ROBUR_METRICS"] = metrics
         begin
           obs(dir).metrics_append("/repo/my-project", "turn", 3, "build", "acme/model",
                                    "step", 42, "T1", 100, 200, "0.001234")
         ensure
-          ENV.delete("RATCHET_METRICS")
+          ENV.delete("ROBUR_METRICS")
         end
         row = File.read(metrics).chomp
         fields = row.split("\t")
@@ -283,7 +283,7 @@ module Robur
     def test_metrics_append_appends_extension_columns_only_when_usage_is_given
       Dir.mktmpdir do |dir|
         metrics = File.join(dir, "metrics.tsv")
-        ENV["RATCHET_METRICS"] = metrics
+        ENV["ROBUR_METRICS"] = metrics
         begin
           usage = { input: 3565, output: 785, cache_read: 2_555_904, cache_write: 0,
                     reasoning: 175, cost: 0.0388, messages: 6 }
@@ -291,7 +291,7 @@ module Robur
                                    3565 + 2_555_904, 785, "0.038800", usage: usage)
           obs(dir).metrics_append("/repo/p", "run", "-", "-", "m", "done", 1, "T1", 0, 0, "0.000000")
         ensure
-          ENV.delete("RATCHET_METRICS")
+          ENV.delete("ROBUR_METRICS")
         end
         turn_row, run_row = File.readlines(metrics).map { |l| l.chomp.split("\t", -1) }
 
@@ -312,22 +312,39 @@ module Robur
       assert Observability.runaway?({ messages: 1100 })
       assert_equal Observability::RUNAWAY_MESSAGES_DEFAULT, Observability.runaway_messages
 
-      ENV["RATCHET_RUNAWAY_MESSAGES"] = "5"
+      ENV["ROBUR_RUNAWAY_MESSAGES"] = "5"
       begin
         assert_equal 5, Observability.runaway_messages
         assert Observability.runaway?({ messages: 6 })
       ensure
-        ENV.delete("RATCHET_RUNAWAY_MESSAGES")
+        ENV.delete("ROBUR_RUNAWAY_MESSAGES")
       end
 
       # a junk/zero override falls back to the default rather than firing on
       # every turn (messages >= 0 is always true)
-      ENV["RATCHET_RUNAWAY_MESSAGES"] = "0"
+      ENV["ROBUR_RUNAWAY_MESSAGES"] = "0"
       begin
         assert_equal Observability::RUNAWAY_MESSAGES_DEFAULT, Observability.runaway_messages
         refute Observability.runaway?({ messages: 0 })
       ensure
+        ENV.delete("ROBUR_RUNAWAY_MESSAGES")
+      end
+    end
+
+    # Backward compatibility: the ceiling was tunable as RATCHET_RUNAWAY_MESSAGES
+    # long before the rename, so that name keeps working — ROBUR_ first, the
+    # legacy name as the fallback.
+    def test_runaway_ceiling_falls_back_to_the_legacy_env_name
+      ENV["RATCHET_RUNAWAY_MESSAGES"] = "5"
+      begin
+        assert_equal 5, Observability.runaway_messages
+
+        ENV["ROBUR_RUNAWAY_MESSAGES"] = "9"
+
+        assert_equal 9, Observability.runaway_messages, "ROBUR_ must win over RATCHET_"
+      ensure
         ENV.delete("RATCHET_RUNAWAY_MESSAGES")
+        ENV.delete("ROBUR_RUNAWAY_MESSAGES")
       end
     end
 
@@ -376,21 +393,46 @@ module Robur
       end
     end
 
-    def test_metrics_append_honours_ratchet_metrics_and_never_touches_the_real_file
+    def test_metrics_append_honours_robur_metrics_and_never_touches_the_real_file
       Dir.mktmpdir do |dir|
-        real_home = File.join(dir, "home", ".ratchet")
+        real_home = File.join(dir, "home", ".robur")
         FileUtils.mkdir_p(real_home)
         metrics = File.join(dir, "isolated.tsv")
-        ENV["RATCHET_HOME"] = real_home
-        ENV["RATCHET_METRICS"] = metrics
+        ENV["ROBUR_HOME"] = real_home
+        ENV["ROBUR_METRICS"] = metrics
         begin
           obs(dir).metrics_append("/repo/x", "run", "-", "-", "none", "done", 1, "?", 0, 0, "0.000000")
         ensure
-          ENV.delete("RATCHET_HOME")
-          ENV.delete("RATCHET_METRICS")
+          ENV.delete("ROBUR_HOME")
+          ENV.delete("ROBUR_METRICS")
         end
         assert File.exist?(metrics)
         refute File.exist?(File.join(real_home, "metrics.tsv"))
+      end
+    end
+
+    # Backward compatibility: an existing harness (atlas, a shell wrapper, a
+    # CI job) still exports the RATCHET_* names. Both must be honoured, with
+    # the new name winning when they disagree.
+    def test_legacy_ratchet_metrics_env_is_still_honoured
+      Dir.mktmpdir do |dir|
+        legacy = File.join(dir, "legacy.tsv")
+        ENV["RATCHET_METRICS"] = legacy
+        begin
+          obs(dir).metrics_append("/repo/x", "run", "-", "-", "none", "done", 1, "?", 0, 0, "0.000000")
+
+          assert_path_exists legacy
+
+          preferred = File.join(dir, "preferred.tsv")
+          ENV["ROBUR_METRICS"] = preferred
+          obs(dir).metrics_append("/repo/x", "run", "-", "-", "none", "done", 1, "?", 0, 0, "0.000000")
+
+          assert_path_exists preferred
+          assert_equal 1, File.readlines(legacy).size, "ROBUR_METRICS must win over RATCHET_METRICS"
+        ensure
+          ENV.delete("RATCHET_METRICS")
+          ENV.delete("ROBUR_METRICS")
+        end
       end
     end
 

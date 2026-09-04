@@ -74,7 +74,8 @@ class CliTest < Minitest::Test
       end
     end
     assert_equal 0, @status
-    assert_includes out, "Usage: ratchet <command>"
+    assert_includes out, "Usage: robur <command>"
     assert_includes out, "--verify-cmd"
+    refute_includes out, "Usage: ratchet"
   end
 end

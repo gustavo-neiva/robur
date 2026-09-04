@@ -2,6 +2,7 @@
 
 require "test_helper"
 require "robur/loop"
+require "robur/paths"
 require "fileutils"
 require "json"
 
@@ -12,16 +13,16 @@ class LoopTest < Minitest::Test
   AGENT = File.expand_path("fixtures/fake-agent", __dir__)
 
   def setup
-    @home = Dir.mktmpdir("ratchet-home")
-    @old_home = ENV["RATCHET_HOME"]
-    ENV["RATCHET_HOME"] = @home
+    @home = Dir.mktmpdir("robur-home")
+    @old_home = ENV[Robur::Paths::HOME_ENV]
+    ENV[Robur::Paths::HOME_ENV] = @home
   end
 
   def teardown
     if @old_home
-      ENV["RATCHET_HOME"] = @old_home
+      ENV[Robur::Paths::HOME_ENV] = @old_home
     else
-      ENV.delete("RATCHET_HOME")
+      ENV.delete(Robur::Paths::HOME_ENV)
     end
     # Robur::CLI.@loop_log/@quiet are module-level globals Loop.run points at
     # @home; clear them before the dir is gone or a LATER test's CLI.emit/die
@@ -43,7 +44,7 @@ class LoopTest < Minitest::Test
   def make_repo(extra_conf: "", plan: DEFAULT_PLAN)
     repo = Dir.mktmpdir
     File.write(File.join(repo, "PLAN.md"), plan)
-    File.write(File.join(repo, ".ratchet.conf"), <<~CONF)
+    File.write(File.join(repo, Robur::Paths::REPO_CONF), <<~CONF)
       MODELS="stub/stub-1"
       AGENT_CMD="#{AGENT}"
       VERIFY_CMD="true"
@@ -57,7 +58,7 @@ class LoopTest < Minitest::Test
     git repo, "init", "-q"
     git repo, "add", "-A"
     git repo, "commit", "-q", "-m", "seed"
-    git repo, "reset", "-q", "--", ".ratchet.conf"
+    git repo, "reset", "-q", "--", Robur::Paths::REPO_CONF
     repo
   end
 
@@ -80,11 +81,11 @@ class LoopTest < Minitest::Test
     assert_includes subjects[1], "T1.2"
     assert_includes subjects[0], "T1.3"
     assert_equal 3, File.read(File.join(repo, "PLAN.md")).scan("[x]").size
-    assert_equal "done\n", File.read(File.join(repo, ".ratchet", "stop_reason"))
+    assert_equal "done\n", File.read(Robur::Paths.state_file(repo, "stop_reason"))
   end
 
   # Regression guard for the audit's largest observability finding: NO
-  # events.jsonl existed anywhere under ~/.ratchet/logs across 244 log
+  # events.jsonl existed anywhere under the logs tree across 244 log
   # directories and 2,227 production turns, so every structured record the
   # Observability layer computes (tokens, gate_result, model_selected) was
   # being discarded and `stats` silently reported through the legacy
@@ -163,19 +164,19 @@ class LoopTest < Minitest::Test
     agent = File.join(repo, "red-agent")
     File.write(agent, <<~SH)
       #!/bin/bash
-      echo 'AWS_KEY=AKIAABCDEFGHIJKLMNOP' > conf.txt # ratchet:allow-secret
+      echo 'AWS_KEY=AKIAABCDEFGHIJKLMNOP' > conf.txt # robur:allow-secret
       echo "ALL_DONE"
     SH
     FileUtils.chmod(0o755, agent)
-    File.write(File.join(repo, ".ratchet.conf"),
-               File.read(File.join(repo, ".ratchet.conf")).sub(AGENT, agent))
+    conf = File.join(repo, Robur::Paths::REPO_CONF)
+    File.write(conf, File.read(conf).sub(AGENT, agent))
 
     notified = []
     stub_notify(notified) do
       code = Robur::Loop.run(repo, sleep_it: ->(_s) {})
       assert_equal 1, code
     end
-    assert_equal "gate_red\n", File.read(File.join(repo, ".ratchet", "stop_reason"))
+    assert_equal "gate_red\n", File.read(Robur::Paths.state_file(repo, "stop_reason"))
     assert notified.any? { |m| m.include?("gate RED after ALL_DONE") }
   end
 
@@ -188,6 +189,33 @@ class LoopTest < Minitest::Test
     assert_equal [900, 3600, 14_400], Robur::Loop::BACKOFF_LADDER
     health.reset_all
     assert_equal "a", health.pick(%w[a b])
+  end
+
+  # Backward compatibility: agents, hooks and wrapper scripts across the
+  # estate branch on RATCHET_LOOP to tell "inside a loop turn" from "a human
+  # typing". Both names are exported for every spawned turn so neither an
+  # updated nor an un-updated consumer goes blind.
+  def test_spawned_turns_get_both_loop_env_markers
+    repo = make_repo
+    probe = File.join(repo, "env-probe")
+    # Records the two markers, then hands the turn to the real fixture agent
+    # so the run still terminates the normal way.
+    agent = File.join(repo, "env-agent")
+    File.write(agent, <<~SH)
+      #!/bin/bash
+      printf '%s=%s\\n' ROBUR_LOOP "$ROBUR_LOOP" RATCHET_LOOP "$RATCHET_LOOP" >> #{probe}
+      exec #{AGENT} "$@"
+    SH
+    FileUtils.chmod(0o755, agent)
+    conf = File.join(repo, Robur::Paths::REPO_CONF)
+    File.write(conf, File.read(conf).sub(AGENT, agent))
+
+    Robur::Loop.run(repo, sleep_it: ->(_s) {})
+
+    seen = File.readlines(probe, chomp: true)
+
+    assert_includes seen, "ROBUR_LOOP=1"
+    assert_includes seen, "RATCHET_LOOP=1"
   end
 
   private

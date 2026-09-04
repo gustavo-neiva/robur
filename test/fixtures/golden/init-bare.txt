@@ -1,0 +1,19 @@
+exit: 0
+--- stdout ---
+[<timestamp>] robur init: <TMP>/repo
+[<timestamp>]   no stack detected -> VERIFY_CMD left empty (set it; no-gate is loud by design)
+[<timestamp>]   seeded PLAN.md (edit it, or run 'robur new' to draft from an idea)
+[<timestamp>]   seeded human AGENTS.md
+[<timestamp>] done. Next: review PLAN.md, then 'robur doctor <TMP>/repo' and 'robur run <TMP>/repo'.
+--- stderr ---
+--- tree ---
+.gitignore  [file]
+.ratchet  [symlink -> .robur]
+.ratchet.conf  [symlink -> .robur.conf]
+.robur  [dir]
+.robur.conf  [file]
+.robur/conf.hash  [file]
+.robur/last-log  [file]
+AGENTS.md  [file]
+LEARNINGS.md  [file]
+PLAN.md  [file]

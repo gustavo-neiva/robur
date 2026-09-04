@@ -1,0 +1,4 @@
+exit: 1
+--- stdout ---
+[<timestamp>] fanout requires PARALLEL=1 (set in .robur.conf or via env)
+--- stderr ---
