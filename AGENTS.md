@@ -78,6 +78,25 @@ Do NOT "fix" these back to parity; each is load-bearing and paid for:
   keeps a clean exit status.
 - **events.jsonl**: robur-only structured telemetry (`Observability` is the
   log writer); excluded from differential snapshots by name.
+
+- **metrics.tsv columns 13-15**: turn rows carry three APPENDED columns —
+  `fresh_in` (input + cache_write), `cache_read`, `messages` (agent
+  round-trips). Columns 1-12 are unchanged in content and order, run rows
+  stay at 12, and the differential harness compares the first 12, so parity
+  is still proved on exactly what the format freezes. Why: `tin` is
+  cache-inclusive and therefore ~99.9% cache_read on a real turn
+  (input=3,565 vs cache_read=2,555,904), so it cannot distinguish a bloated
+  prompt from a cheap turn with many cached round-trips — the decomposition
+  can. Verified safe for the two live consumers rather than assumed:
+  `atlas/bin/status.sh` and `morning-report.sh` parse positionally under
+  `awk -F'\t'` and never use `NF`. Set `usage:` to opt in; omit it and the
+  row is the bare frozen 12.
+- **Runaway round-trip warning**: turns at or above 200 deduped usage
+  messages log a warning naming the count and the output tokens it bought.
+  Healthy production turns measure 6; the observed pathology was ~1,100
+  round-trips and 20M prompt-side tokens for 716 output ones. Threshold is
+  `RATCHET_RUNAWAY_MESSAGES` in ENV, NOT a `.ratchet.conf` key — the conf
+  allowlist is a frozen contract bash `doctor` rejects unknown keys against.
 - **MODEL_RANK**: stale vs configured chains — tier chains + flat MODELS
   cover selection; `Tier.suggest_slice` can't fire usefully until a
   cost/rank layer exists. Don't build the models.dev join.
