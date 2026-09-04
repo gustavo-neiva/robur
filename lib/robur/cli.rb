@@ -4,6 +4,7 @@ require "optparse"
 require "fileutils"
 require "robur/config"
 require "robur/paths"
+require "robur/migrate"
 require "robur/loop"
 require "robur/plan"
 require "robur/tier"
@@ -152,7 +153,8 @@ module Robur
       puts "Config:  repo #{Paths::REPO_CONF} (PARSED, never sourced)  >  #{conf_dir} (sourced)  >  defaults."
     end
 
-    COMMANDS = %w[init new plan doctor run once selftest stats watch status models fanout fanout-clean].freeze
+    COMMANDS = %w[init new plan doctor run once selftest stats watch status models fanout
+                  fanout-clean migrate-state].freeze
 
     # Flags that swallow the NEXT argv item as their value. Only the tolerant
     # pre-scan needs this; the authoritative parse is OptionParser and knows
@@ -222,6 +224,7 @@ module Robur
         p.on("--stream") { o["STREAM_AGENT"] = "1" }
         p.on("--cheap") { o["CHEAP_MODE"] = "1" }
         p.on("--auto") { o["AUTO_PLAN"] = "1" }
+        p.on("--apply") { o["MIGRATE_APPLY"] = "1" }
         p.on("--quiet") { o["QUIET"] = "1"; o["STREAM_AGENT"] = "0" }
         p.on("--selftest") { o[:cmd] = "selftest" }
         p.on("--stats") { o[:cmd] = "stats" }
@@ -291,10 +294,28 @@ module Robur
       when "stats"
         warn_conf_issues(dir || ".")
         cmd_stats(dir)
+      when "migrate-state"
+        cmd_migrate_state(dir)
       when *COMMANDS
         die "#{command}: not ported yet (M6)"
       else die("unknown command: #{command.inspect}")
       end
+    end
+
+    # migrate-state [REPO] [--apply] — move live state onto robur's own names,
+    # leaving a symlink at every legacy path. Dry-run unless --apply: this
+    # walks a real home directory with hundreds of log dirs, so the default
+    # has to be the one that cannot lose anything.
+    def cmd_migrate_state(dir)
+      apply = (@overrides || {})["MIGRATE_APPLY"] == "1"
+      repos = dir ? [File.expand_path(dir)] : []
+      actions = Migrate.plan(repos: repos)
+      puts Migrate.render(actions, apply: apply)
+      if apply
+        done = Migrate.apply!(actions)
+        puts "  applied #{done.size} change(s)"
+      end
+      0
     end
 
     def cmd_init(dir)
