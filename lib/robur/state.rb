@@ -2,8 +2,10 @@
 
 require "fileutils"
 
+require_relative "paths"
+
 module Robur
-  # Owns every `.ratchet/` state file, one read + one write method per file,
+  # Owns every `.robur/` state file, one read + one write method per file,
   # with the byte-exact formats frozen in PLAN.md (T6.3) so a rollback to the
   # bash ratchet mid-migration finds valid state either direction. Reads
   # tolerate a missing file (return nil / []); writes never raise, matching
@@ -92,7 +94,9 @@ module Robur
       write_raw(repo_dir, "fanout.state", content)
     end
 
-    def state_path(repo_dir, name) = File.join(repo_dir, ".ratchet", name)
+    # Every state read/write resolves through Paths, which prefers `.robur/`
+    # and falls back to a pre-existing `.ratchet/` (see Robur::Paths).
+    def state_path(repo_dir, name) = Paths.state_file(repo_dir, name)
 
     def first_line(repo_dir, name)
       path = state_path(repo_dir, name)

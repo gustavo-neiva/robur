@@ -4,16 +4,19 @@ require "digest"
 require "fileutils"
 require "open3"
 
+require_relative "paths"
+
 module Robur
-  # Config resolution: repo .ratchet.conf + global ~/.ratchet/conf.
+  # Config resolution: repo .robur.conf + global ~/.robur/conf (both fall
+  # back to their legacy .ratchet names — see Robur::Paths).
   #
   # TRUST BOUNDARY (recorded here and in AGENTS.md):
-  # - The repo .ratchet.conf is NEVER evaluated — only parsed against the
+  # - The repo .robur.conf is NEVER evaluated — only parsed against the
   #   allowlist. Reason: the loop later `eval`s VERIFY_CMD and an autonomous
   #   agent can write repo files; if this file were sourced, anything landing
   #   in the repo could execute arbitrary code outside any agent permission
   #   model. Unknown keys are errors (doctor), never assigned.
-  # - The global ~/.ratchet/conf is trusted exactly as much as it is in the
+  # - The global ~/.robur/conf is trusted exactly as much as it is in the
   #   bash ratchet today: it is human-owned, not agent-writable, and it is
   #   bash-SOURCED. It contains shell expansion (`export PATH="$ASDF_DATA_DIR/shims:$PATH"`),
   #   so robur consumes it by running bash once for a baseline (env + declared
@@ -114,13 +117,13 @@ module Robur
     end
 
     def read_conf_hash(repo_dir)
-      File.read(File.join(repo_dir, ".ratchet", "conf.hash")).strip
+      File.read(Paths.state_file(repo_dir, "conf.hash")).strip
     end
 
     # One-line format, identical to `conf_hash "$repo/.ratchet.conf" > .ratchet/conf.hash`.
     def write_conf_hash(repo_dir)
-      FileUtils.mkdir_p(File.join(repo_dir, ".ratchet"))
-      File.write(File.join(repo_dir, ".ratchet", "conf.hash"), "#{conf_hash(File.join(repo_dir, '.ratchet.conf'))}\n")
+      Paths.ensure_state_dir!(repo_dir)
+      File.write(Paths.state_file(repo_dir, "conf.hash"), "#{conf_hash(Paths.repo_conf(repo_dir))}\n")
     end
 
     def numeric?(key)
@@ -191,13 +194,13 @@ module Robur
     # trusted) > defaults. `cli` is a hash of already-validated flag values.
     def load(repo_dir, cli = {})
       values, env, errors = DEFAULTS.dup, {}, []
-      if File.file?(File.join(Dir.home, ".ratchet", "conf"))
-        g = load_global(File.join(Dir.home, ".ratchet", "conf"))
+      if File.file?(Paths.global_conf)
+        g = load_global(Paths.global_conf)
         values.update(g[:values])
         env.update(g[:env])
         errors.concat(g[:errors])
       end
-      repo = File.join(repo_dir, ".ratchet.conf")
+      repo = Paths.repo_conf(repo_dir)
       if File.file?(repo)
         rv, rerrors = parse_repo(File.read(repo))
         values.update(rv)

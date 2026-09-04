@@ -10,6 +10,7 @@ lib = File.expand_path("../lib", File.dirname(self_path))
 $LOAD_PATH.unshift(lib) unless $LOAD_PATH.include?(lib)
 
 require "robur"
+require "robur/paths"
 require "robur/cli"
 require "robur/config"
 require "robur/prompt"
