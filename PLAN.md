@@ -326,3 +326,40 @@ port must be provably identical before any live reference moves.
 > swapping `cycles.conf` paths, `NOTIFY_CMD`, and the `ratchet` name on PATH — is
 > `class: HUMAN` and lives in `atlas/MIGRATION-CUTOVER.md`, blocked on T7.1
 > reporting `0 diffs`. Rollback is reverting that one config change.
+
+## M8 — Retire the bash name (post-cutover)
+
+**Blocked on Track B cutover sign-off in `atlas/MIGRATION-CUTOVER.md`.** Nothing
+in this milestone may start before that line is signed. The reason is not
+ceremony:
+
+- The parity gate is the evidence cutover rests on, and it compares robur's log
+  wording against live bash. Renaming `ratchet START` / `ratchet END` turns
+  `--suite parity` from `0 diffs` into a diff on every scenario that snapshots a
+  log — destroying the proof *while it is still load-bearing*.
+- Rollback reads the old names. bash ratchet finds state at `.ratchet/`,
+  `.ratchet.conf`, `~/.ratchet/`. Rename before sign-off and the documented
+  rollback ("repoint the symlink") lands on a binary that can see none of the
+  live state: 286 log dirs, 2,376 metrics rows, and every repo's `.ratchet/`.
+- Three repos read these names *today*: `atlas/bin/*.sh` (41 references),
+  `harbor/harbor/interfaces/telegram.py` (`/blocked`), and robur itself (86).
+  They must move in lockstep or the estate half-breaks.
+
+Sequence: sign off cutover → observe two nights → T8.1 → T8.2 → T8.3 → T8.4.
+
+- [ ] T8.1 (normal, serial) dual-read the on-disk names
+    do: teach robur to READ both `.robur*` and `.ratchet*` (new name wins, old name is the fallback) while still WRITING only the old names. Cover `.ratchet.conf`, the `.ratchet/` state dir, `RATCHET_HOME`/`RATCHET_METRICS` and their `ROBUR_*` aliases. No output wording changes in this task. This is the step that makes every later one reversible: at the end of it a repo works under either name, so the migration can stop or reverse at any point without data loss.
+    done: Given a repo with only `.ratchet.conf`, When any command runs, Then behaviour is unchanged and `--suite parity` still reports `0 diffs`; Given a repo with both `.robur.conf` and `.ratchet.conf`, Then the `.robur.conf` values win; Given only `.robur.conf`, Then the repo is loop-ready per `doctor`.
+    files: lib/robur/config.rb, lib/robur/state.rb, lib/robur/cli.rb, test/config_test.rb, test/state_test.rb
+- [ ] T8.2 (hard, serial) migrate the estate readers in lockstep
+    do: update the three external consumers to read the new names with the old as fallback, in ONE change set, before robur writes a single new name: `atlas/bin/money-loop.sh` (`.ratchet.conf`, `.ratchet/loop-backoff`, `.ratchet/stop_reason`, `.ratchet/plan-approved`), `atlas/bin/status.sh` (`.ratchet/last_task.state`, `.ratchet/last-log`, `.ratchet/last_turn.note`, `~/.ratchet/logs/`, `~/.ratchet/metrics.tsv`), `atlas/bin/brief.sh`, `atlas/bin/morning-report.sh`, and `harbor/harbor/interfaces/telegram.py`. Do NOT rename the log strings `ratchet run finished OK:` / `ERROR: ratchet run exited` — `money-loop.sh` emits those and `morning-report.sh` greps for them; they are an internal contract between two atlas scripts and renaming them silently breaks the per-repo flags.
+    done: Given each consumer and a repo in the old layout, Then behaviour is unchanged; Given a repo in the new layout, Then `/blocked`, `status.sh`, `brief.sh` and a money-loop cycle all read it correctly. harbor's and atlas's own test suites pass in both layouts.
+    files: ../atlas/bin/money-loop.sh, ../atlas/bin/status.sh, ../atlas/bin/brief.sh, ../atlas/bin/morning-report.sh, ../harbor/harbor/interfaces/telegram.py
+- [ ] T8.3 (normal, serial) write the new names, and migrate live state
+    do: flip robur to WRITE `.robur*` / `~/.robur/`, keeping the T8.1 read fallback. Ship a one-shot `robur migrate-state` that moves `~/.ratchet/` to `~/.robur/` (286 log dirs, metrics.tsv and its .bak, models.registry, rank.derived, conf) and each repo's `.ratchet/` to `.robur/`, leaving the old paths as symlinks so a rollback still resolves. Idempotent, dry-run by default, `--apply` to act.
+    done: Given a populated `~/.ratchet` and two repos, When `robur migrate-state --apply` runs, Then every file is present under the new name, the old paths resolve via symlink, metrics row count is unchanged, and a second run reports nothing to do; Given `--apply` is not passed, Then nothing is modified.
+    files: lib/robur/state.rb, lib/robur/commands.rb, test/state_test.rb
+- [ ] T8.4 (hard, serial) rename the output wording and drop the bash provenance
+    do: LAST, and only once `../ratchet` is retired as the parity oracle. Rename user-visible wording (`ratchet START`/`ratchet END`, session prefix `ratchet-<slug>`, the `ratchet-protocol` AGENTS.md marker — note `cookbook/AGENTS.md` carries it too) and strip the 43 bash provenance comments (`port of ratchet/lib/...`). Retire the differential harness in the same change: it compares against a binary that no longer defines correctness, and leaving it half-true is worse than deleting it. Replace it with golden-file tests over robur's own output so the wording stays pinned to something.
+    done: Given the rename, When the unit suite runs, Then it is green and no test references `../ratchet`; Given `grep -rn 'ratchet' lib/`, Then the only hits are the compatibility fallbacks from T8.1. `atlas/MIGRATION-CUTOVER.md` gains a dated note that the parity gate was retired deliberately and why.
+    files: lib/robur/observability.rb, lib/robur/cli.rb, lib/robur/commands.rb, test/differential/, AGENTS.md
