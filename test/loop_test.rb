@@ -112,7 +112,44 @@ class LoopTest < Minitest::Test
     end
   end
 
+  # The token-efficiency fields the metrics row cannot carry.
+  def test_tokens_events_carry_fresh_in_and_round_trip_count
+    repo = make_repo
+    Robur::Loop.run(repo, sleep_it: ->(_s) {})
 
+    log_dir = File.join(@home, "logs", Robur::CLI.project_slug(repo))
+    tokens = File.readlines(File.join(log_dir, "events.jsonl"))
+                 .map { |l| JSON.parse(l) }.select { |r| r["kind"] == "tokens" }
+    refute_empty tokens
+    tokens.each do |t|
+      %w[input output cache_read cache_write fresh_in tin messages runaway].each do |k|
+        assert t.key?(k), "tokens event missing #{k}: #{t.inspect}"
+      end
+      assert_equal t["input"] + t["cache_write"], t["fresh_in"]
+      assert_equal t["fresh_in"] + t["cache_read"], t["tin"]
+      refute t["runaway"] # the fixture agent makes no model round-trips
+    end
+  end
+
+  # Columns 13-15 ride past the frozen 12 on turn rows; run rows keep the
+  # bare 12 so the bash-comparable surface is unchanged.
+  def test_turn_metrics_rows_carry_the_extension_columns
+    repo = make_repo
+    Robur::Loop.run(repo, sleep_it: ->(_s) {})
+
+    rows = File.readlines(File.join(@home, "metrics.tsv")).map { |l| l.chomp.split("\t", -1) }
+    turns = rows.select { |c| c[2] == "turn" }
+    runs  = rows.select { |c| c[2] == "run" }
+    refute_empty turns
+    refute_empty runs
+
+    turns.each do |c|
+      assert_equal 15, c.size, "turn row is not 15 columns: #{c.inspect}"
+      # tin (col 10) must stay reconstructible from the extension
+      assert_equal c[9].to_i, c[12].to_i + c[13].to_i
+    end
+    runs.each { |c| assert_equal 12, c.size, "run row must stay 12 columns: #{c.inspect}" }
+  end
 
   def test_done_turn_red_at_gate_stops_gate_red_and_notifies
     # An empty tracker (no tasks at all) skips the all-done fast path (which

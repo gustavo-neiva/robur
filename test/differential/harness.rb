@@ -178,7 +178,12 @@ module Robur
       def split_metrics_rows(key, content)
         rows = Hash.new { |h, k| h[k] = +"" }
         content.each_line do |line|
-          cols = line.chomp("\n").split("\t", -1)
+          # Only the first 12 columns are the frozen, bash-comparable
+          # surface; 13-15 are robur's token-efficiency extension
+          # (Observability::METRICS_EXTENSION_COLUMNS), which bash neither
+          # writes nor reads. Dropping them here keeps parity provable on
+          # exactly what the format freezes.
+          cols = line.chomp("\n").split("\t", -1).first(12)
           cols[7] = "<took>" if cols.length > 7
           rows["#{key}[#{cols[2] || "?"}]"] << "#{cols.join("\t")}\n"
         end

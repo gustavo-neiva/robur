@@ -62,12 +62,36 @@ module Robur
       task_blocked: ->(f) { ["  task #{f[:task]} blocked after #{f[:stalls]} stall(s)"] },
       tokens: lambda { |f|
         ["  tokens: in=#{f[:input].to_i + f[:cache_read].to_i + f[:cache_write].to_i} " \
+         "fresh=#{f[:input].to_i + f[:cache_write].to_i} " \
          "out=#{f[:output]} cache_r=#{f[:cache_read]} msgs=#{f[:messages]} " \
          "cost=$#{format('%.6f', f[:cost])}"]
       },
     }.freeze
 
     DEFAULT_CHEAP_MODEL = "<first-model>"
+
+    # Round-trip ceiling for one turn. `messages` is the deduped per-message
+    # usage count, i.e. how many times the agent went back to the model
+    # inside a single turn. Healthy turns measured 6; the production runaway
+    # logged ~1,100 and burned 20,014,294 prompt-side tokens to emit 716
+    # output ones before timing out. 200 sits an order of magnitude above
+    # normal and an order below the pathology. Tuned via ENV, not
+    # .ratchet.conf: the conf allowlist is a frozen contract (bash `doctor`
+    # rejects unknown keys), and SUMMARY_LINES/POLL_INTERVAL already set the
+    # ENV-knob precedent.
+    RUNAWAY_MESSAGES_DEFAULT = 200
+
+    def self.runaway_messages
+      v = ENV["RATCHET_RUNAWAY_MESSAGES"].to_i
+      v.positive? ? v : RUNAWAY_MESSAGES_DEFAULT
+    end
+
+    # True when a turn's round-trip count crosses the ceiling. Callers log it
+    # and carry `runaway` on the :tokens event so the condition is queryable
+    # after the fact instead of being reconstructed from a prose line.
+    def self.runaway?(detail)
+      detail[:messages].to_i >= runaway_messages
+    end
 
     def initialize(dir, clock: Sys::Clock.new)
       @loop_log = File.join(dir, "loop.log")
@@ -122,15 +146,44 @@ module Robur
     # metrics_append (observability.sh:239): EVENT TURN TIER MODEL CLASS TOOK
     # TASK TOKIN TOKOUT COST -> one 12-column TSV row. Best-effort: never
     # raises, matching the bash `|| true`.
-    def metrics_append(repo_dir, event, turn, tier, model, klass, took, task, tok_in, tok_out, cost)
+    #
+    # `usage:` appends the three EXTENSION columns 13-15 (fresh_in,
+    # cache_read, messages) and is omitted by default, so every existing
+    # caller still writes exactly the 12 frozen columns. See
+    # METRICS_EXTENSION_COLUMNS for why they exist.
+    def metrics_append(repo_dir, event, turn, tier, model, klass, took, task, tok_in, tok_out, cost,
+                       usage: nil)
       f = ENV["RATCHET_METRICS"] || File.join(self.class.ratchet_home, "metrics.tsv")
       FileUtils.mkdir_p(File.dirname(f))
       row = [@clock.now.strftime("%F %T"), File.basename(repo_dir), event, turn, tier, model,
-             klass, took, task, tok_in, tok_out, cost].join("\t")
-      append(f, "#{row}\n")
+             klass, took, task, tok_in, tok_out, cost]
+      row.concat(self.class.extension_columns(usage)) if usage
+      append(f, "#{row.join("\t")}\n")
       nil
     rescue StandardError
       nil
+    end
+
+    # Columns 13-15, appended past the frozen 12. tin (column 10) is
+    # input+cache_read+cache_write and is dominated by cache_read — a real
+    # production turn measured input=3,565 cache_read=2,555,904, so tin says
+    # "2.5M tokens" about a turn that consumed 3.5k fresh ones. Without these
+    # three, a bloated prompt and a cheap turn with many cached round-trips
+    # are indistinguishable after the fact:
+    #   fresh_in   — input + cache_write, the tokens actually paid for at
+    #                full rate; the number that moves when a prompt bloats.
+    #   cache_read — split out so tin stays reconstructible (tin =
+    #                fresh_in + cache_read) and cache hit rate is derivable.
+    #   messages   — deduped per-message usage events = agent round-trips.
+    #                The runaway signal: one production turn logged ~1,100.
+    # Bash writes 12 columns and reads none past them, so this is additive
+    # only; the differential harness compares the first 12 (see
+    # test/differential/harness.rb#split_metrics_rows).
+    METRICS_EXTENSION_COLUMNS = %w[fresh_in cache_read messages].freeze
+
+    def self.extension_columns(usage)
+      u = usage || {}
+      [u[:input].to_i + u[:cache_write].to_i, u[:cache_read].to_i, u[:messages].to_i]
     end
 
     # _turn_usage FILE -> "in\tout\tcost" (observability.sh:215): per-message
@@ -209,15 +262,34 @@ module Robur
     # them yet — add those RENDER kinds and this starts counting them for free.
     def self.stats(dir, cheap_model: DEFAULT_CHEAP_MODEL)
       events_path = File.join(dir, "events.jsonl")
+      loop_log = File.join(dir, "loop.log")
+      # The two paths do NOT measure the same things — the loop.log regex
+      # path cannot see review verdicts, deadline-kill wall-hours, or
+      # anything token-shaped — so a silent fallback makes a degraded report
+      # look authoritative. `stats_source` names which one ran; the audit
+      # found events.jsonl had never been written in production, i.e. every
+      # `stats` ever run took the legacy path without saying so.
       metrics = if File.file?(events_path)
                   stats_from_events(events_path, cheap_model)
                 else
-                  loop_log = File.join(dir, "loop.log")
                   raise "no loop.log found at #{loop_log} (nothing run here yet?)" unless File.file?(loop_log)
 
                   stats_from_loop_log(loop_log, cheap_model)
                 end
+      # NOTE: the returned block stays byte-identical to bash cmd_stats — the
+      # parity test asserts that. The source line is a separate surface the
+      # CLI prints alongside it (stats_source).
       render_stats(metrics, cheap_model)
+    end
+
+    # Which of the two adapters `stats` would use for DIR, as a human line.
+    # Kept out of `stats` itself so the rendered block stays bash-identical.
+    def self.stats_source(dir)
+      if File.file?(File.join(dir, "events.jsonl"))
+        "events.jsonl"
+      else
+        "loop.log (legacy — no events.jsonl here; token and review metrics unavailable)"
+      end
     end
 
     def self.blank_stats

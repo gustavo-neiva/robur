@@ -160,13 +160,22 @@ module Robur
         tin = detail[:input] + detail[:cache_read] + detail[:cache_write]
         tout = detail[:output]
         cost = format("%.6f", detail[:cost])
-        CLI.metrics_append(dir, "turn", turn, tier, model, klass, took, task ? task.id : "?", tin, tout, cost)
+        CLI.metrics_append(dir, "turn", turn, tier, model, klass, took, task ? task.id : "?", tin, tout, cost,
+                           usage: detail)
         run_toks[:in] += tin
         run_toks[:out] += tout
         run_toks[:cost] += detail[:cost]
+        # fresh_in/tin/runaway ride on the event so token efficiency is
+        # queryable from events.jsonl without recomputing it from the file.
+        runaway = Observability.runaway?(detail)
         obs.emit_event(:tokens, input: detail[:input], output: detail[:output],
                           cache_read: detail[:cache_read], cache_write: detail[:cache_write],
-                          cost: detail[:cost], messages: detail[:messages])
+                          fresh_in: detail[:input] + detail[:cache_write], tin: tin,
+                          cost: detail[:cost], messages: detail[:messages], runaway: runaway)
+        if runaway
+          emit "turn #{turn}: #{detail[:messages]} agent round-trips (>= #{Observability.runaway_messages}) " \
+               "for #{tout} output tokens — runaway tool loop; see #{turn_out}."
+        end
 
         FileUtils.mkdir_p(File.join(dir, ".ratchet"))
         File.write(File.join(dir, ".ratchet", "last_task.state"), "#{task ? task.id : "?"}\t#{klass}\n")

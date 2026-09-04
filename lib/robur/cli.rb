@@ -387,6 +387,7 @@ module Robur
       flat = chain.split(",").reject(&:empty?)
       die "no models configured (MODELS='#{chain}')" if flat.empty?
       puts Observability.stats(log_dir, cheap_model: flat.first)
+      puts "source                : #{Observability.stats_source(log_dir)}"
       0
     rescue StandardError => e
       die e.message
@@ -589,13 +590,17 @@ module Robur
       Observability.turn_usage(path)
     end
 
-    # metrics_append (observability.sh:239): 12 frozen columns.
-    def metrics_append(repo_dir, event, turn, tier, model, klass, took, task, tin, tout, cost)
+    # metrics_append (observability.sh:239): 12 frozen columns, plus the
+    # optional extension columns 13-15 when `usage:` is given
+    # (Observability::METRICS_EXTENSION_COLUMNS documents why).
+    def metrics_append(repo_dir, event, turn, tier, model, klass, took, task, tin, tout, cost,
+                       usage: nil)
       f = ENV["RATCHET_METRICS"] || File.join(ratchet_home, "metrics.tsv")
       FileUtils.mkdir_p(File.dirname(f))
       row = [Time.now.strftime("%F %T"), File.basename(repo_dir), event, turn, tier, model,
-             klass, took, task, tin, tout, cost].join("\t")
-      File.write(f, "#{row}\n", mode: "a")
+             klass, took, task, tin, tout, cost]
+      row.concat(Observability.extension_columns(usage)) if usage
+      File.write(f, "#{row.join("\t")}\n", mode: "a")
     rescue StandardError
       nil
     end
@@ -800,13 +805,22 @@ module Robur
       tin = detail[:input] + detail[:cache_read] + detail[:cache_write]
       tout = detail[:output]
       cost = format("%.6f", detail[:cost])
-      metrics_append(dir, "turn", turn, tier, model, klass, took, taskid, tin, tout, cost)
+      metrics_append(dir, "turn", turn, tier, model, klass, took, taskid, tin, tout, cost,
+                     usage: detail)
       run_toks[:in] += tin
       run_toks[:out] += tout
       run_toks[:cost] += detail[:cost]
+      # fresh_in/tin/runaway ride on the event so token efficiency is
+      # queryable from events.jsonl without recomputing it from the file.
+      runaway = Observability.runaway?(detail)
       obs.emit_event(:tokens, input: detail[:input], output: detail[:output],
                         cache_read: detail[:cache_read], cache_write: detail[:cache_write],
-                        cost: detail[:cost], messages: detail[:messages])
+                        fresh_in: detail[:input] + detail[:cache_write], tin: tin,
+                        cost: detail[:cost], messages: detail[:messages], runaway: runaway)
+      if runaway
+        emit "turn #{turn}: #{detail[:messages]} agent round-trips (>= #{Observability.runaway_messages}) " \
+             "for #{tout} output tokens — runaway tool loop; see #{turn_out}."
+      end
 
       FileUtils.mkdir_p(File.join(dir, ".ratchet"))
       File.write(File.join(dir, ".ratchet", "last_task.state"), "#{taskid}\t#{klass}\n")

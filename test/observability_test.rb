@@ -234,7 +234,10 @@ module Robur
                    r.fetch(:progress_stall).call(stalls: 3, action: "reset")
       assert_equal ["  task T1.2 blocked after 5 stall(s)"],
                    r.fetch(:task_blocked).call(task: "T1.2", stalls: 5)
-      assert_equal ["  tokens: in=423809 out=398 cache_r=423488 msgs=1 cost=$0.006476"],
+      # `fresh` (input + cache_write) is the number that moves when a prompt
+      # bloats; `in` is dominated by cache_r and hides it. robur-only kind —
+      # no bash wording to hold frozen.
+      assert_equal ["  tokens: in=423809 fresh=321 out=398 cache_r=423488 msgs=1 cost=$0.006476"],
                    r.fetch(:tokens).call(input: 321, output: 398, cache_read: 423_488,
                                          cache_write: 0, cost: 0.006475895, messages: 1)
       assert_equal ["ratchet END after 7 turn(s)."], r.fetch(:run_end).call(turns: 7)
@@ -271,6 +274,69 @@ module Robur
         assert_equal 12, fields.size
         assert_equal ["2026-01-02 03:04:05", "my-project", "turn", "3", "build", "acme/model",
                        "step", "42", "T1", "100", "200", "0.001234"], fields
+      end
+    end
+
+    # The extension is opt-in: no `usage:`, no extra columns, so bash parity
+    # on the frozen 12 is preserved for every legacy caller.
+    def test_metrics_append_appends_extension_columns_only_when_usage_is_given
+      Dir.mktmpdir do |dir|
+        metrics = File.join(dir, "metrics.tsv")
+        ENV["RATCHET_METRICS"] = metrics
+        begin
+          usage = { input: 3565, output: 785, cache_read: 2_555_904, cache_write: 0,
+                    reasoning: 175, cost: 0.0388, messages: 6 }
+          obs(dir).metrics_append("/repo/p", "turn", 1, "build", "m", "step", 1, "T1",
+                                   3565 + 2_555_904, 785, "0.038800", usage: usage)
+          obs(dir).metrics_append("/repo/p", "run", "-", "-", "m", "done", 1, "T1", 0, 0, "0.000000")
+        ensure
+          ENV.delete("RATCHET_METRICS")
+        end
+        turn_row, run_row = File.readlines(metrics).map { |l| l.chomp.split("\t", -1) }
+
+        assert_equal 15, turn_row.size
+        # fresh_in = input + cache_write; cache_read split out; messages last
+        assert_equal %w[3565 2555904 6], turn_row.last(3)
+        # tin stays reconstructible: col 10 == fresh_in + cache_read
+        assert_equal turn_row[9].to_i, turn_row[12].to_i + turn_row[13].to_i
+
+        assert_equal 12, run_row.size, "a caller passing no usage: must still write 12 columns"
+      end
+    end
+
+    # The runaway ceiling: 6 round-trips is a healthy production turn, the
+    # observed pathology was ~1,100.
+    def test_runaway_detection_and_env_override
+      refute Observability.runaway?({ messages: 6 })
+      assert Observability.runaway?({ messages: 1100 })
+      assert_equal Observability::RUNAWAY_MESSAGES_DEFAULT, Observability.runaway_messages
+
+      ENV["RATCHET_RUNAWAY_MESSAGES"] = "5"
+      begin
+        assert_equal 5, Observability.runaway_messages
+        assert Observability.runaway?({ messages: 6 })
+      ensure
+        ENV.delete("RATCHET_RUNAWAY_MESSAGES")
+      end
+
+      # a junk/zero override falls back to the default rather than firing on
+      # every turn (messages >= 0 is always true)
+      ENV["RATCHET_RUNAWAY_MESSAGES"] = "0"
+      begin
+        assert_equal Observability::RUNAWAY_MESSAGES_DEFAULT, Observability.runaway_messages
+        refute Observability.runaway?({ messages: 0 })
+      ensure
+        ENV.delete("RATCHET_RUNAWAY_MESSAGES")
+      end
+    end
+
+    # stats stays byte-identical to bash; the source is a separate surface.
+    def test_stats_source_names_the_adapter_without_touching_the_rendered_block
+      Dir.mktmpdir do |dir|
+        File.write(File.join(dir, "loop.log"), "")
+        assert_includes Observability.stats_source(dir), "legacy"
+        File.write(File.join(dir, "events.jsonl"), "")
+        assert_equal "events.jsonl", Observability.stats_source(dir)
       end
     end
 
