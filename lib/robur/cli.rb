@@ -2,6 +2,7 @@
 
 require "optparse"
 require "fileutils"
+require "io/console"
 require "robur/config"
 require "robur/paths"
 require "robur/migrate"
@@ -460,7 +461,9 @@ module Robur
       ansi = Render.ansi_ok?
       print "\e[?25l" if ansi # hide cursor while redrawing
       loop do
-        frame = +status_report(dir, log_dir, log)
+        rows, cols = CLI.term_size
+        sr = status_report(dir, log_dir, log)
+        frame = +sr
         prompt_file = File.join(log_dir, "last_prompt.txt")
         if File.file?(prompt_file)
           n = File.readlines(prompt_file).size
@@ -468,15 +471,23 @@ module Robur
         end
         live = turn_text(File.join(log_dir, "last_turn.out"))
         unless live.to_s.empty?
-          frame << "\n#{Render.c_bold("Live output (last 15 lines)")}\n#{Render.summary(live, 15)}\n"
+          # Prose lines carry no ANSI; clamp width so a long line cannot wrap
+          # and shift every following redraw (overprint palimpsest). Budget
+          # the block so the whole frame fits the screen — a taller frame
+          # scrolls, and \e[H then homes to a scrolled row: same palimpsest.
+          live = live.lines(chomp: true).map { |l| l[0, cols - 1] }.join("\n")
+          n = [rows - sr.lines.size - 5, 0].max
+          frame << "\n#{Render.c_bold("Live output")}\n#{Render.summary(live, [n, 15].min)}\n" if n.positive?
         end
         _, loop_status = status_liveness(File.join(log_dir, "loop.pid"))
         running = loop_status.start_with?("running")
         frame << "\nloop not running — final state above.\n" unless running
+        lines = frame.lines
+        lines = lines.first(rows - 1) if lines.size > rows - 1 # whole-line trim keeps ANSI intact
         if ansi
-          print "\e[H#{frame}\e[J"
+          print "\e[H#{lines.join}\e[J"
         else
-          print "\n#{frame}"
+          print "\n#{lines.join}"
         end
         return 0 unless running
         sleep 2
@@ -610,13 +621,31 @@ module Robur
     # it for a status preview line; widen if a real transcript needs it.
     # The agent's live prose: joined text_deltas for the pi JSON stream,
     # raw content otherwise. nil when there is nothing yet.
+    # [rows, cols]; IO.console is nil without a TTY (tests, pipes), and
+    # winsize can raise on exotic terminals — the fallback keeps the board
+    # bounded either way.
+    def term_size
+      size = IO.console&.winsize
+      size && size[0].to_i.positive? && size[1].to_i.positive? ? size : [24, 80]
+    rescue StandardError
+      [24, 80]
+    end
+
     def turn_text(turn_out)
       return nil unless File.file?(turn_out) && !File.zero?(turn_out)
 
       content = File.read(turn_out)
+      # The turn writes this file concurrently — the trailing line is usually
+      # torn mid-write, and a torn delta line leaks JSON fragments into the
+      # live board (watch reads this every 2s).
+      unless content.end_with?("\n")
+        lines = content.each_line.to_a
+        lines.pop
+        content = lines.join
+      end
       if content.byteslice(0, 32).to_s.start_with?('{"type":"session"')
         content.each_line.grep(/"type":"text_delta"/)
-                 .map { |l| l.sub(/.*"delta":"/, "").sub(/","partial.*/, "") }
+                 .map { |l| l.sub(/.*"delta":"/, "").sub(/","partial.*/, "").chomp }
                  .join.gsub('\\"', '"')
                  .gsub('\\n', "\n").gsub('\\t', "\t").gsub('\\\\', '\\')
       else

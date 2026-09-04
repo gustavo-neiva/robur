@@ -109,4 +109,22 @@ class CliTest < Minitest::Test
   ensure
     old_home ? ENV["ROBUR_HOME"] = old_home : ENV.delete("ROBUR_HOME")
   end
+
+  # The turn writes last_turn.out concurrently; watch reads it every 2s and
+  # must not surface the torn trailing line (JSON fragments in Live output).
+  def test_turn_text_drops_torn_trailing_line
+    out = File.join(Dir.mktmpdir("robur-turn"), "last_turn.out")
+    File.write(out, [
+      %({"type":"session","version":3,"cwd":"/tmp"}),
+      %({"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"Fix the golden fixtures\\n","partial":{}}})
+    ].join("\n") + "\n" + %({"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"che))
+    text = Robur::CLI.turn_text(out)
+    assert_equal "Fix the golden fixtures\n", text
+  end
+
+  def test_term_size_always_returns_positive_rows_and_cols
+    rows, cols = Robur::CLI.term_size
+    assert_operator rows, :>=, 10
+    assert_operator cols, :>=, 40
+  end
 end
