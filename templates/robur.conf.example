@@ -1,10 +1,17 @@
-# .ratchet.conf — the machine contract for this repo.
+# .robur.conf — the machine contract for this repo.
 # PARSED (key=value, allowlisted keys only). NEVER sourced, NEVER executed.
-# Only the keys below are recognized; unknown keys are a `ratchet doctor` error.
+# Only the keys below are recognized; unknown keys are a `robur doctor` error.
 # The agent is FORBIDDEN from editing this file (the loop rejects any turn that
 # touches it). Edit it yourself; it is human-owned.
+#
+# NEVER put a `#` in a value: parsing truncates at the first `#`, so a Ruby
+# interpolation like #{...} inside VERIFY_CMD is silently cut in half and
+# RED-locks the loop.
+#
+# A repo that still has a `.ratchet.conf` keeps working untouched — robur reads
+# the new name first and falls back to the old one. Rename when you feel like it.
 
-RATCHET_PROTOCOL=1
+ROBUR_PROTOCOL=1
 
 # The work tracker. Auto-detected (PLAN.md > TODO.md > TASKS.md) if unset.
 TRACKER_FILE=PLAN.md
@@ -32,19 +39,22 @@ DONE_TOKEN=ALL_DONE
 # Reasoning level each turn: off|minimal|low|medium|high|xhigh (empty = inherit).
 #THINKING=medium
 
-# Tiered model routing (v1.1): override MODELS for plan/build/light/review turns.
+# Tiered model routing: override MODELS for plan/build/light/review turns.
 # Unset tier → falls back to MODELS. Tier exhausted → MODELS before sleep.
 #PLAN_MODELS=anthropic/claude-fable-5,anthropic/claude-opus-4-8
 #BUILD_MODELS=anthropic/claude-sonnet-4-5,zai/glm-5.2
 #LIGHT_MODELS=zai/glm-5-turbo,zai/glm-4.5-air
 #REVIEW_MODELS=anthropic/claude-sonnet-4-5
-# UNATTENDED plan turns (`ratchet plan --auto`, run by a scheduler). Unset ->
+# UNATTENDED plan turns (`robur plan --auto`, run by a scheduler). Unset ->
 # falls back to PLAN. Set this to a cheap, abundant chain if anything plans on a
 # beat: PLAN is usually your scarcest model, shared with your own sessions.
 #AUTOPLAN_MODELS=kimi-coding/k3,zai/glm-5.3
 #THINKING_AUTOPLAN=
 #THINKING_PLAN=
 #THINKING_BUILD=
+# Speed-tuned models (ids matching flash|turbo|highspeed|air) are clamped to
+# THINKING_LIGHT unless you set the tier's THINKING_* key explicitly — they
+# spend a reasoning budget without earning it back.
 #THINKING_LIGHT=off
 #THINKING_REVIEW=
 
@@ -52,13 +62,13 @@ DONE_TOKEN=ALL_DONE
 # tier-specific *_MODELS keys are unset. This is the ONE skill knob: no free
 # signal ranks coding ability (price ≠ skill — a pricey creative model is not a
 # better coder), so YOUR ordering is the truth. plan=top, light=bottom, build=middle.
-# Unset → ratchet auto-derives by models.dev output-price as a cold-start prior
+# Unset → robur auto-derives by models.dev output-price as a cold-start prior
 # and warns that it's a guess. Non-coder families (fable/mythos/vision/*-5v) are
 # dropped from the AUTO path by construction; an explicit entry here is honored.
 # STRONGLY RECOMMENDED to set this one line.
 #MODEL_RANK=anthropic/claude-opus-4-8,anthropic/claude-sonnet-4-5,zai/glm-5.2,zai/glm-4.5-air
 
-# PR flow (autonomous mode with human merge gates). Default: done (today's behavior).
+# PR flow (autonomous mode with human merge gates). Default: done.
 #PR_CADENCE=done
 # milestone → plan PR #0, review turn per milestone, PR per milestone, merge-gate.
 #PR_CADENCE=milestone
@@ -82,17 +92,20 @@ DONE_TOKEN=ALL_DONE
 # 1 = parallel (stay on milestone branch, no checkout/pull). For N concurrent loops.
 #PARALLEL=0
 
-# Human-notify command (PR-gated flow). NOT recognized here — ratchet rejects it
-# as an unknown key to keep an attacker-controlled repo conf from running a
-# command. Set it ONLY in the trusted, sourced GLOBAL conf (~/.ratchet/conf):
+# Human-notify command (PR-gated flow). NOT recognized here — robur rejects it
+# as an unknown key, because this file is one an autonomous agent could write
+# and a notify command is a command the loop runs. Set it ONLY in the trusted,
+# human-owned GLOBAL conf (~/.robur/conf):
 #   NOTIFY_CMD='afplay /System/Library/Sounds/Glass.aiff'        # macOS sound
-#   NOTIFY_CMD='osascript -e "display notification \"$1\" title ratchet"'  # macOS banner
-#   NOTIFY_CMD='notify-send ratchet "$1"'                        # Linux
+#   NOTIFY_CMD='osascript -e "display notification \"$1\" title robur"'  # macOS banner
+#   NOTIFY_CMD='notify-send robur "$1"'                          # Linux
+# The loop appends the message itself — do NOT add a trailing "$1" of your own
+# or every notification is delivered twice.
 
 # Derived rank snapshot: frozen on first use so tiers don't reshuffle mid-
 # project on catalog churn. Inspect / force a refresh:
-#   ratchet models rank           # show effective rank (explicit or derived)
-#   ratchet models rank refresh   # re-derive from live pi + models.dev caches
+#   robur models rank           # show effective rank (explicit or derived)
+#   robur models rank refresh   # re-derive from live pi + models.dev caches
 #
 # Tunables (uncomment to override defaults):
 #TURN_TIMEOUT=1800
@@ -104,3 +117,8 @@ DONE_TOKEN=ALL_DONE
 # that provider's models. Provider = model's leading path segment, upper-cased.
 #COOLDOWN_ZAI=3600
 #HEARTBEAT=15
+
+# Operational knobs are ENVIRONMENT variables, not keys here: the allowlist
+# above is a contract `robur doctor` rejects unknown keys against, so anything
+# you tune per-run (SUMMARY_LINES, POLL_INTERVAL, the runaway round-trip
+# threshold) is read from ENV instead of from this file.

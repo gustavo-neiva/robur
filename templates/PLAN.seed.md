@@ -12,8 +12,9 @@
 > tier tags at authoring time with a one-line justification for non-obvious choices.
 > Every task is done by ONE ephemeral turn with NO memory of prior turns — so
 > each task must be self-contained: name the files, the "why", and how to verify.
-> Author with the `ratchet-plan` skill. See the ratchet repo's own PLAN.md for a
-> worked example of the task schema below.
+> Author with the plan-authoring skill (`ratchet-plan`, named before the
+> rename). See the robur repo's own PLAN.md for a worked example of the task
+> schema below.
 >
 > Size each milestone as ONE reviewable unit (a feature/subfeature a human can
 > read as a single PR, target ≤~400 changed lines) — milestones are the

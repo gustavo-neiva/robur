@@ -85,6 +85,28 @@ module Robur
       nil
     end
 
+    # Leave `.ratchet.conf` as a symlink to `.robur.conf`.
+    #
+    # A directory symlink covers the state dir, but a plain FILE has no such
+    # shim, and `atlas/bin/money-loop.sh` gates `is_runnable()` on
+    # `.ratchet.conf` existing. Without this, a repo initialized fresh onto
+    # `.robur.conf` is silently never picked up by the nightly loop — the
+    # exact "the estate quietly broke" failure the compat layer exists to
+    # prevent. Called wherever robur writes a repo conf.
+    def ensure_repo_conf_link!(repo_dir)
+      legacy = File.join(repo_dir, LEGACY_REPO_CONF)
+      target = File.join(repo_dir, REPO_CONF)
+      return :no_target unless File.file?(target)
+      return :occupied if File.exist?(legacy) && !File.symlink?(legacy)
+      return :ok if File.symlink?(legacy) && File.readlink(legacy) == REPO_CONF
+
+      File.unlink(legacy) if File.symlink?(legacy)
+      File.symlink(REPO_CONF, legacy)
+      :linked
+    rescue StandardError
+      nil
+    end
+
     # Repo config path: `.robur.conf`, falling back to `.ratchet.conf`.
     def repo_conf(repo_dir)
       new_path = File.join(repo_dir, REPO_CONF)

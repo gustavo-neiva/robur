@@ -85,6 +85,33 @@ module Robur
       end
     end
 
+    # A directory symlink covers the state dir; a plain file does not, and
+    # atlas/bin/money-loop.sh gates is_runnable() on `.ratchet.conf`
+    # existing. A fresh repo must still be visible to the nightly loop.
+    def test_repo_conf_link_keeps_a_fresh_repo_visible_to_the_estate
+      Dir.mktmpdir do |d|
+        assert_equal :no_target, Paths.ensure_repo_conf_link!(d)
+
+        File.write(File.join(d, ".robur.conf"), "MODELS=x\n")
+        assert_equal :linked, Paths.ensure_repo_conf_link!(d)
+
+        legacy = File.join(d, ".ratchet.conf")
+        assert File.symlink?(legacy)
+        assert_equal ".robur.conf", File.readlink(legacy)
+        assert_equal "MODELS=x\n", File.read(legacy)
+        assert_equal :ok, Paths.ensure_repo_conf_link!(d)
+      end
+    end
+
+    def test_repo_conf_link_never_clobbers_a_real_legacy_conf
+      Dir.mktmpdir do |d|
+        File.write(File.join(d, ".robur.conf"), "new\n")
+        File.write(File.join(d, ".ratchet.conf"), "PRECIOUS\n")
+        assert_equal :occupied, Paths.ensure_repo_conf_link!(d)
+        assert_equal "PRECIOUS\n", File.read(File.join(d, ".ratchet.conf"))
+      end
+    end
+
     def test_home_env_precedence_new_then_legacy
       Dir.mktmpdir do |d|
         with_env("ROBUR_HOME" => File.join(d, "a"), "RATCHET_HOME" => File.join(d, "b")) do

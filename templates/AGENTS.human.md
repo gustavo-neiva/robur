@@ -2,10 +2,10 @@
 
 ## Loop vs interactive
 
-The headless `ratchet` loop briefs its own turns via the harness prompt — it
-never sees this file. If you're working in a human-led session (`RATCHET_LOOP`
-is unset), work normally: make as many edits as needed, run the tests, commit
-when ready. The human owns the git history.
+The headless `robur` loop briefs its own turns via the harness prompt — it
+never sees this file. If you're working in a human-led session (`ROBUR_LOOP` is
+unset), work normally: make as many edits as needed, run the tests, commit when
+ready. The human owns the git history.
 
 ## What to read
 
