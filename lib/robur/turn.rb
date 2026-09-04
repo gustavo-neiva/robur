@@ -26,6 +26,12 @@ module Robur
         last_growth = start
         reason = nil
         detected = nil
+        # Incremental token scan: re-reading the whole turn file on every
+        # growth tick is quadratic (production turn files reach ~1.8MB at a
+        # 3s poll). Only bytes past last_size are new, so scan from there,
+        # rewound by max_token-1 so a token straddling a poll boundary is
+        # still seen.
+        max_token = early_tokens.to_a.map { |t| t.to_s.bytesize }.max.to_i
 
         loop do
           # Liveness check first (mirrors bash's `while kill -0 $pid`): a
@@ -43,7 +49,8 @@ module Robur
           # (kills the harness flake where poll timing decides the exit code).
           # Still hanging after the grace -> kill instead of waiting out the
           # agent's shutdown tail.
-          if early_tokens && sz > last_size && token_in?(turn_file, early_tokens)
+          if early_tokens && sz > last_size &&
+             token_in?(turn_file, early_tokens, from: [last_size - (max_token - 1), 0].max)
             clock.sleep(0.2)
             _, wstatus = Process.waitpid2(pid, Process::WNOHANG)
             return Result.new(status: wstatus, kill_reason: nil, elapsed: clock.monotonic - start) if wstatus
@@ -75,9 +82,17 @@ module Robur
       end
     end
 
-    # Scan the turn file (binary-safe) for any early-exit token.
-    def self.token_in?(turn_file, tokens)
-      content = File.open(turn_file, "rb") { |f| f.read }
+    # Scan the turn file (binary-safe) for any early-exit token, reading only
+    # from byte offset `from` onward. The caller rewinds `from` by
+    # max_token-1 bytes so a token split across two polls is not missed;
+    # `from: 0` reproduces the original whole-file scan.
+    def self.token_in?(turn_file, tokens, from: 0)
+      content = File.open(turn_file, "rb") do |f|
+        f.seek(from) if from.positive?
+        f.read
+      end
+      return false if content.nil?
+
       tokens.any? { |t| content.include?(t) }
     rescue StandardError
       false
