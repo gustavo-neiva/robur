@@ -78,4 +78,34 @@ class CliTest < Minitest::Test
     assert_includes out, "--verify-cmd"
     refute_includes out, "Usage: ratchet"
   end
+
+  def test_watch_shows_one_frame_and_exits_when_loop_not_running
+    home = Dir.mktmpdir("robur-home")
+    repo = Dir.mktmpdir("robur-repo")
+    old_home = ENV["ROBUR_HOME"]
+    ENV["ROBUR_HOME"] = home
+    log_dir = File.join(Robur::Paths.logs_dir, Robur::CLI.project_slug(repo))
+    FileUtils.mkdir_p(log_dir)
+    File.write(File.join(log_dir, "loop.log"), "turn 1 | tier=build | model=zai/glm-5.3-flash\n")
+    out, = capture_io do
+      assert_equal 0, Robur::CLI.cmd_watch(repo)
+    end
+    assert_includes out, "loop not running"
+    assert_includes out, "zai/glm-5.3-flash"
+  ensure
+    old_home ? ENV["ROBUR_HOME"] = old_home : ENV.delete("ROBUR_HOME")
+  end
+
+  def test_watch_without_a_loop_log_returns_one
+    home = Dir.mktmpdir("robur-home")
+    repo = Dir.mktmpdir("robur-repo")
+    old_home = ENV["ROBUR_HOME"]
+    ENV["ROBUR_HOME"] = home
+    out, = capture_io do
+      assert_equal 1, Robur::CLI.cmd_watch(repo)
+    end
+    assert_includes out, "no loop.log"
+  ensure
+    old_home ? ENV["ROBUR_HOME"] = old_home : ENV.delete("ROBUR_HOME")
+  end
 end

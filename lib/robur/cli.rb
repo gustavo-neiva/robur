@@ -45,7 +45,7 @@ module Robur
         doctor [REPO]   Preflight: conf parses, tracker has open tasks, keys live, protocol current.
         selftest         Verify detection + loop logic against fixtures (NO agent calls). Exits 0/1.
         stats   [REPO]  Parse this repo's loop.log and print the baseline metrics, then exit.
-        watch   [REPO]  Pretty-print the live session JSONL the agent writes (run in a 2nd terminal).
+        watch   [REPO]  Live board in a 2nd terminal: refreshes step/%/milestones/model/ETA every 2s while `run` works.
         models          Model config UX: list | add <provider/id> | remove <provider/id> |
                         thinking <level>. Flags: --tier models|plan|build|light (default:
                         models), --pos first|last|N, --repo (edit .robur.conf instead of
@@ -272,6 +272,9 @@ module Robur
       when "status"
         warn_conf_issues(dir || ".")
         cmd_status(dir)
+      when "watch"
+        warn_conf_issues(dir || ".")
+        cmd_watch(dir)
       when "once"
         warn_conf_issues(dir || ".")
         cmd_once(dir)
@@ -440,6 +443,33 @@ module Robur
       0
     end
 
+    # Live board: refresh status_report every 2s until the loop process is
+    # gone (then one final frame) or Ctrl-C. A snapshot cousin of cmd_status —
+    # same renderer, no JSONL parsing.
+    def cmd_watch(dir)
+      dir = File.expand_path(dir || Dir.pwd)
+      log_dir = File.join(Paths.logs_dir, project_slug(dir))
+      Paths.ensure_state_dir!(dir)
+      File.write(Paths.state_file(dir, "last-log"), "#{log_dir}\n")
+      log = File.join(log_dir, "loop.log")
+      unless File.file?(log)
+        puts "watch: no loop.log found at #{log} (nothing run here yet?)"
+        return 1
+      end
+      loop do
+        print(Render.ansi_ok? ? "\e[H\e[2J" : "\n")
+        print status_report(dir, log_dir, log)
+        _, loop_status = status_liveness(File.join(log_dir, "loop.pid"))
+        unless loop_status.start_with?("running")
+          puts "\nloop not running — final state above."
+          return 0
+        end
+        sleep 2
+      end
+    rescue Interrupt
+      0
+    end
+
     def status_report(dir, log_dir, log)
       tracker = File.join(dir, Config.load(dir)[:values]["TRACKER_FILE"].to_s)
       turn_out = File.join(log_dir, "last_turn.out")
@@ -577,6 +607,7 @@ module Robur
     end
 
     # stdout only, never the loop log; a no-op under QUIET=1.
+    def quiet? = @quiet == true
     def term_only(msg)
       return if @quiet
 

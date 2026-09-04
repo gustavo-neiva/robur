@@ -218,6 +218,19 @@ class LoopTest < Minitest::Test
     assert_includes seen, "RATCHET_LOOP=1"
   end
 
+  def test_run_prints_turn_header_block
+    repo = make_repo
+    Robur::CLI.instance_variable_set(:@quiet, false)
+    out, = capture_io do
+      Robur::Loop.run(repo, sleep_it: ->(_s) {})
+    end
+    assert_includes out, "Step 0/3"
+    assert_match(/\u25B6 T1\.1/, out) # task id leads the live header line
+    assert_includes out, "stub/stub-1" # model is named per turn
+  ensure
+    Robur::CLI.instance_variable_set(:@quiet, nil)
+  end
+
   private
 
   def stub_notify(collector)

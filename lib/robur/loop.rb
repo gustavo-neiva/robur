@@ -9,6 +9,7 @@ require "robur/tier"
 require "robur/prompt"
 require "robur/model_health"
 require "robur/progress_guard"
+require "robur/render"
 require "robur/observability"
 require "robur/turn"
 require "robur/classifier"
@@ -131,6 +132,17 @@ module Robur
         done_n = plan.count(:done)
         open_n = plan.count(:open) + plan.count(:in_progress)
         emit "tasks: #{done_n} done / #{done_n + open_n} total | next: #{next_task_str.slice(0, 60)}"
+
+        # Live PM header — terminal only, never into loop.log (status_report
+        # greps that file; a status block in it would poison the parser).
+        unless CLI.quiet?
+          ms = plan.current_milestone || {}
+          $stdout.print Render.status_block(done_n, done_n + open_n,
+                                            ms[:name].to_s, ms[:done].to_i, ms[:total].to_i,
+                                            turn, tier, model,
+                                            task ? task.id : "?", (task ? task.text : next_task_str).to_s.slice(0, 70))
+          $stdout.flush
+        end
 
         obs.emit(:turn_start, turn: turn, model: model, tier: tier, thinking: thinking, task: next_task_str)
 
