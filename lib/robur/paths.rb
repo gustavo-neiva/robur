@@ -46,6 +46,18 @@ module Robur
     LEGACY_LOOP_ENV    = "RATCHET_LOOP"
     METRICS_FILE       = "metrics.tsv"
 
+    # Git identifiers robur creates: the branch namespace, the sibling
+    # worktree prefix, and the commit-subject scope. Renamed with the rest of
+    # the product; the legacy forms are still RECOGNISED when scanning for
+    # branches and worktrees a previous version left behind, so an in-flight
+    # milestone on another machine is adopted rather than orphaned. New work
+    # is always created under the new names.
+    BRANCH_NS          = "robur"
+    LEGACY_BRANCH_NS   = "ratchet"
+    WORKTREE_PREFIX    = "robur-wt-"
+    LEGACY_WT_PREFIX   = "ratchet-wt-"
+    COMMIT_SCOPE       = "robur"
+
     module_function
 
     # The repo's state directory. Prefers `.robur/`; falls back to a
@@ -143,5 +155,21 @@ module Robur
     # Both names are exported for spawned turns during the transition: an
     # agent or hook keyed on either one still fires.
     def loop_env_vars = [LOOP_ENV, LEGACY_LOOP_ENV].freeze
+
+    def plan_branch = "#{BRANCH_NS}/plan"
+
+    def milestone_branch(slug) = "#{BRANCH_NS}/m-#{slug}"
+
+    def worktree_path(slug) = "../#{WORKTREE_PREFIX}#{slug}"
+
+    # Both namespaces, newest naming first — for code that looks for a branch
+    # or worktree an earlier run may have created under the old name.
+    def milestone_branch_candidates(slug)
+      ["#{BRANCH_NS}/m-#{slug}", "#{LEGACY_BRANCH_NS}/m-#{slug}"]
+    end
+
+    def worktree_path_candidates(slug)
+      ["../#{WORKTREE_PREFIX}#{slug}", "../#{LEGACY_WT_PREFIX}#{slug}"]
+    end
   end
 end

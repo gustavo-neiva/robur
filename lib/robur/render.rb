@@ -1,8 +1,8 @@
 # frozen_string_literal: true
 
 module Robur
-  # Pure terminal rendering (ratchet/lib/render.sh port): progress bars, ANSI
-  # color wrapping, duration/ETA formatting, the PM turn header. All
+  # Pure terminal rendering: progress bars, ANSI color wrapping, duration/ETA
+  # formatting, the PM turn header. All
   # functions are PURE — no file I/O, no globals beyond the stdout-tty check
   # `ansi_ok?` needs — so they're testable with no agent and no live loop.
   module Render
@@ -73,12 +73,12 @@ module Robur
       "  \u23F1 turn #{turn} \u00B7 #{fmt_dur(elapsed)}   avg #{fmt_dur(avg)}   #{eta(remaining, avg)}"
     end
 
-    # status_block(...) -> the two-line live PM header bin/ratchet prints
-    # each turn (term_only, never logged):
+    # status_block(...) -> the two-line live PM header printed each turn
+    # (terminal only, never logged):
     #   Step D/T  [bar PCT%]   Mname  (mdone/mtotal)
     #     ▶ TASKID  TASKTEXT   tier · model
     def status_block(done, total, mname, mdone, mtotal, turn, tier, model, taskid, tasktext)
-      _ = turn # bash's positional arg 6; unused in the rendered text, kept for signature parity
+      _ = turn # unused in the rendered text; kept so callers pass a full turn context
       pct = total.to_i.positive? ? done.to_i * 100 / total.to_i : 0
       line1 = +"Step #{done}/#{total}  [#{bar(pct, 12)} #{pct}%]"
       line1 << "   #{mname}  (#{mdone}/#{mtotal})" unless mname.to_s.empty?

@@ -3,6 +3,7 @@
 require "optparse"
 require "fileutils"
 require "robur/config"
+require "robur/paths"
 require "robur/loop"
 require "robur/plan"
 require "robur/tier"
@@ -19,12 +20,11 @@ require "robur/commands"
 require "robur/models_cmd"
 
 module Robur
-  # CLI surfaces ported so far: --help, unknown-flag, doctor. Differential
-  # parity means output must match the bash baseline BYTE FOR BYTE (after the
-  # harness's narrow normalization), so the program name and all wording below
-  # are frozen contract text, copied from ratchet's usage()/cmd_doctor().
+  # The command-line surface: argument parsing, command dispatch, and the
+  # help/usage text. PROG is the single place the program name appears in
+  # user-facing text, so every "run: <prog> ..." hint stays consistent.
   module CLI
-    PROG = "ratchet" # differential parity: baseline prints "ratchet", not "robur"
+    PROG = "robur"
 
     HELP_BODY = <<~USAGE
       Usage: #{PROG} <command> [REPO_DIR] [OPTIONS]
@@ -37,7 +37,7 @@ module Robur
       Commands:
         run    [REPO]   Run the loop unattended until the agent prints ALL_DONE. (default)
         once   [REPO]   Run exactly one turn, then exit (testing/debugging).
-        init   [REPO]   Stamp AGENTS.md protocol + .ratchet.conf + seed PLAN.md (existing repo).
+        init   [REPO]   Stamp AGENTS.md protocol + .robur.conf + seed PLAN.md (existing repo).
         new    "<idea>" Scaffold a repo, draft PLAN.md, then STOP for human plan review.
         plan   [REPO]   ONE plan-drafting turn on the PLAN tier, then STOP for human review (never auto-runs).
                         --auto: unattended (AUTOPLAN tier, no review-stop) — for the nightly/interval scheduler.
@@ -47,7 +47,7 @@ module Robur
         watch   [REPO]  Pretty-print the live session JSONL the agent writes (run in a 2nd terminal).
         models          Model config UX: list | add <provider/id> | remove <provider/id> |
                         thinking <level>. Flags: --tier models|plan|build|light (default:
-                        models), --pos first|last|N, --repo (edit .ratchet.conf instead of
+                        models), --pos first|last|N, --repo (edit .robur.conf instead of
                         the global conf), --force (skip pi-registry validation). Ids are
                         validated against 'pi --list-models' (24h cache; doctor warns too).
 
@@ -56,7 +56,7 @@ module Robur
         -p, --prompt TEXT      Prompt sent each turn (default: built-in generic do-one-step prompt).
         -m, --models LIST      Comma-separated fallback chain, provider/id form.
             --agent-cmd CMD    Headless agent command (default: pi; e.g. claude, /path/to/agent).
-        -s, --session NAME     Session id suffix (default: ratchet-<project-slug>).
+        -s, --session NAME     Session id suffix (default: robur-<project-slug>).
             --thinking LEVEL   Reasoning level each turn: off|minimal|low|medium|high|xhigh.
             --turn-timeout N   Max seconds for one turn (default: 1800).
             --cooldown N       Seconds to skip a benched model (default: 14400).
@@ -90,18 +90,14 @@ module Robur
         -v, --verbose          Verbose logging.   -h, --help  Show this help.
 
       Where to look while it runs:
-        loop log   $RATCHET_HOME/logs/<slug>/loop.log        (tail -f to watch)
-        agent out  $RATCHET_HOME/logs/<slug>/last_turn.out    (what the agent said/did)
+        loop log   $ROBUR_HOME/logs/<slug>/loop.log        (tail -f to watch)
+        agent out  $ROBUR_HOME/logs/<slug>/last_turn.out    (what the agent said/did)
     USAGE
 
     module_function
 
-    def ratchet_home
-      ENV["RATCHET_HOME"] || File.join(ENV["HOME"], ".ratchet")
-    end
-
-    # bash emit tees to $LOOP_LOG once main() wires the logs up (common.sh:108);
-    # QUIET=1 makes it log-only (no stdout) once the log is wired.
+    # emit tees to the loop log once a command has wired it up; QUIET=1 makes
+    # it log-only (no stdout) from that point on.
     def emit(msg)
       line = "[#{Time.now.strftime('%Y-%m-%d %H:%M:%S')}] #{msg}"
       if !@loop_log
@@ -114,14 +110,15 @@ module Robur
       end
     end
 
-    # bash `die` — emit + exit 1.
+    # emit + exit 1.
     def die(msg)
       emit("FATAL: #{msg}")
       exit 1
     end
 
     # POSIX cksum (MSB-first CRC-32, poly 0x04C11DB7, init 0, length appended
-    # little-endian, complemented) — must match bash `cksum` for log slugs.
+    # little-endian, complemented) — log slugs must match what `cksum` gives,
+    # so shell tooling and robur agree on a repo's log directory.
     def posix_cksum(data)
       crc = 0
       upd = lambda do |b|
@@ -143,30 +140,30 @@ module Robur
       "#{base}-#{posix_cksum(dir).to_s[0, 6]}"
     end
 
-    # bash `command -v X` semantics (aliases/functions aside, PATH lookup is
-    # what doctor needs). Shelled out for exactness.
+    # `command -v X` semantics (PATH lookup is what doctor needs). Shelled out
+    # so the answer matches what a spawned turn would actually find.
     def on_path?(cmd)
       system("sh", "-c", "command -v -- \"\$1\" >/dev/null 2>&1", "sh", cmd)
     end
 
-    def usage(conf_dir = File.join(ratchet_home, "conf"))
+    def usage(conf_dir = Paths.global_conf)
       print HELP_BODY
       puts
-      puts "Config:  repo .ratchet.conf (PARSED, never sourced)  >  #{conf_dir} (sourced)  >  defaults."
+      puts "Config:  repo #{Paths::REPO_CONF} (PARSED, never sourced)  >  #{conf_dir} (sourced)  >  defaults."
     end
 
     COMMANDS = %w[init new plan doctor run once selftest stats watch status models fanout fanout-clean].freeze
 
-    # Flags that swallow the NEXT argv item as their value (bash pre_scan's
-    # shift-2 list). Only the tolerant pre-scan needs this; the authoritative
-    # parse is OptionParser and knows its own arity.
+    # Flags that swallow the NEXT argv item as their value. Only the tolerant
+    # pre-scan needs this; the authoritative parse is OptionParser and knows
+    # its own arity.
     PRESCAN_VALUE_FLAGS = %w[-p --prompt -s --session -m --models --thinking --turn-timeout --cooldown
                              --both-wait --step-token --done-token --verify-cmd --agent-cmd
                              --cache-retention --tail --heartbeat].freeze
 
-    # Tolerant pre-scan (bin/ratchet:44): extract ONLY the subcommand + repo
-    # dir (+ the `new` idea) so the repo conf can load before the
-    # authoritative parse. Skips everything else; never errors.
+    # Tolerant pre-scan: extract ONLY the subcommand + repo dir (+ the `new`
+    # idea) so the repo conf can load before the authoritative parse. Skips
+    # everything else; never errors.
     def pre_scan(argv)
       command = nil
       dir = nil
@@ -191,10 +188,10 @@ module Robur
       [command, dir, idea]
     end
 
-    # Authoritative parse (bin/ratchet:75 parse_args): OptionParser over the
-    # full flag surface; unknown option -> bash `die` message shape (exit 1).
-    # Returns the conf-key => value overrides hash (values are strings, the
-    # same "1"/"0"/raw-text encoding .ratchet.conf uses).
+    # Authoritative parse: OptionParser over the full flag surface; an unknown
+    # option dies (exit 1). Returns the conf-key => value overrides hash
+    # (values are strings, the same "1"/"0"/raw-text encoding the repo conf
+    # uses, so flags and conf keys merge without conversion).
     def parse!(argv, command, prescan_dir, _idea)
       o = {}
       op = OptionParser.new do |p|
@@ -232,9 +229,9 @@ module Robur
         p.on("-v", "--verbose") { o["VERBOSE"] = "1" }
         p.on("-h", "--help") { usage; exit 0 }
         # OptionParser defines --version (and -V) for free, printing its own
-        # "<prog>: version unknown". bash has no such flag and FATALs on it,
-        # so the freebie is a silent divergence in the unknown-option surface
-        # — take the name back and route it to the same die path.
+        # "<prog>: version unknown". We do not have a version flag, and the
+        # freebie would silently swallow it — take the name back and route it
+        # to the same die path as any other unknown option.
         p.on("--version") { raise OptionParser::InvalidOption, "--version" }
       end
       begin
@@ -244,7 +241,7 @@ module Robur
         die "unknown option: #{e.args.first} (see --help)"
       end
       argv.each do |a|
-        next if a == command || a == prescan_dir # subcommand / pre_scanned dir (bin/ratchet:99,110)
+        next if a == command || a == prescan_dir # subcommand / pre-scanned dir
         if command == "new" && o["PROMPT_OVERRIDE"].nil?
           o["PROMPT_OVERRIDE"] = a # for `new`, the idea rides in the prompt slot
         else
@@ -257,8 +254,8 @@ module Robur
     def run(argv)
       command, dir, idea = pre_scan(argv)
       # `models` owns its own arg parse (model ids + --tier/--pos would trip
-      # the general OptionParser) — dispatched right after the conf load,
-      # BEFORE the authoritative parse, same as bin/ratchet main() step 2.5.
+      # the general OptionParser) — dispatched right after the conf load and
+      # BEFORE the authoritative parse.
       return cmd_models(argv, dir) if command == "models"
 
       @overrides = parse!(argv, command, dir, idea)
@@ -309,23 +306,23 @@ module Robur
       die e.message
     end
 
-    # bin/ratchet main()'s LOG_DIR/LOOP_LOG/last-log wiring (bin/ratchet:346-
-    # 352) happens ONCE, before EVERY command dispatch (not just run/once) --
-    # `emit` tees to loop.log and `status`/`stats` read the same log_dir back.
-    # `doctor` does its own copy inline (Commands.doctor_report); every other
-    # command that emits needs this called first.
+    # LOG_DIR/loop.log/last-log wiring happens ONCE, before EVERY command
+    # dispatch (not just run/once) — `emit` tees to loop.log and
+    # `status`/`stats` read the same log_dir back. `doctor` does its own copy
+    # inline (Commands.doctor_report); every other command that emits needs
+    # this called first.
     def wire_logs!(dir)
-      log_dir = File.join(ratchet_home, "logs", project_slug(dir))
+      log_dir = File.join(Paths.logs_dir, project_slug(dir))
       FileUtils.mkdir_p(log_dir)
-      FileUtils.mkdir_p(File.join(dir, ".ratchet"))
-      File.write(File.join(dir, ".ratchet", "last-log"), "#{log_dir}\n")
+      Paths.ensure_state_dir!(dir)
+      File.write(Paths.state_file(dir, "last-log"), "#{log_dir}\n")
       @loop_log = File.join(log_dir, "loop.log")
       log_dir
     end
 
-    # bin/ratchet main() step 2.5: strips the FIRST literal "models" token
-    # from argv (wherever it falls) and hands the rest to cmd_models, after
-    # the global+repo conf load but before parse_args.
+    # Strips the FIRST literal "models" token from argv (wherever it falls)
+    # and hands the rest to cmd_models, after the global+repo conf load but
+    # before the authoritative parse.
     def cmd_models(argv, dir)
       warn_conf_issues(dir || ".")
       repo_dir = File.expand_path(dir || Dir.pwd)
@@ -350,10 +347,10 @@ module Robur
 
     def cmd_plan(dir)
       dir = File.expand_path(dir || Dir.pwd)
-      log_dir = File.join(ratchet_home, "logs", project_slug(dir))
+      log_dir = File.join(Paths.logs_dir, project_slug(dir))
       FileUtils.mkdir_p(log_dir)
-      FileUtils.mkdir_p(File.join(dir, ".ratchet"))
-      File.write(File.join(dir, ".ratchet", "last-log"), "#{log_dir}\n")
+      Paths.ensure_state_dir!(dir)
+      File.write(Paths.state_file(dir, "last-log"), "#{log_dir}\n")
       conf = Robur::Config.load(dir, @overrides || {}).values
       @quiet = conf["QUIET"] == "1"
       @loop_log = File.join(log_dir, "loop.log")
@@ -364,27 +361,26 @@ module Robur
       die e.message
     end
 
-    # main() parity (ratchet/bin/ratchet:307): any command with a repo conf
-    # that fails to parse surfaces a stderr warning — tolerate at run time,
-    # doctor is the strict gate. Uses the RAW dir arg like bash REPO_DIR.
+    # Any command whose repo conf fails to parse surfaces a stderr warning —
+    # tolerate at run time, doctor is the strict gate. Uses the RAW dir arg so
+    # the message names the path the user typed.
     def warn_conf_issues(dir)
-      conf = File.join(dir, ".ratchet.conf")
+      conf = Paths.repo_conf(dir)
       return unless File.directory?(dir) && File.file?(conf)
       _, errors = Robur::Config.parse_repo(File.read(conf))
       return if errors.empty?
-      warn "[#{Time.now.strftime('%Y-%m-%d %H:%M:%S')}] WARNING: #{dir}/.ratchet.conf has issues (run 'ratchet doctor'):"
+      warn "[#{Time.now.strftime('%Y-%m-%d %H:%M:%S')}] WARNING: #{conf} has issues (run '#{PROG} doctor'):"
       warn "\n" + errors.join("\n")
     end
 
-    # bash `stats) init_models "$MODELS"; cmd_stats; exit $?` (bin/ratchet:361):
-    # init_models dies on an empty chain before cmd_stats ever runs, so the
-    # empty-chain message wins over a missing loop.log.
+    # The model chain is validated before the log is read, so the empty-chain
+    # message wins over a missing loop.log.
     def cmd_stats(dir)
       dir = File.expand_path(dir || Dir.pwd)
-      log_dir = File.join(ratchet_home, "logs", project_slug(dir))
+      log_dir = File.join(Paths.logs_dir, project_slug(dir))
       FileUtils.mkdir_p(log_dir)
-      FileUtils.mkdir_p(File.join(dir, ".ratchet"))
-      File.write(File.join(dir, ".ratchet", "last-log"), "#{log_dir}\n")
+      Paths.ensure_state_dir!(dir)
+      File.write(Paths.state_file(dir, "last-log"), "#{log_dir}\n")
       conf = Config.load(dir, @overrides || {}).values
       @quiet = conf["QUIET"] == "1"
       @loop_log = File.join(log_dir, "loop.log")
@@ -403,18 +399,17 @@ module Robur
       exit problems
     end
 
-    # bash `status` (commands.sh:cmd_status): one-shot snapshot of a running
-    # or finished loop, reading loop.log + tracker + last_turn.out and
-    # checking loop.pid for liveness. Note the bash quirk this preserves ON
-    # PURPOSE for byte parity: unlike run/once/doctor, TRACKER_FILE here is
-    # NEVER defaulted to PLAN.md via detect_tracker_file, so a repo with a
-    # PLAN.md but no .ratchet.conf TRACKER_FILE= line shows "?" counts.
+    # One-shot snapshot of a running or finished loop, reading loop.log +
+    # tracker + last_turn.out and checking loop.pid for liveness. Unlike
+    # run/once/doctor, TRACKER_FILE here is NEVER defaulted to PLAN.md, so a
+    # repo with a PLAN.md but no TRACKER_FILE= line in its conf shows "?"
+    # counts rather than implying it read a tracker it was never pointed at.
     def cmd_status(dir)
       dir = File.expand_path(dir || Dir.pwd)
-      log_dir = File.join(ratchet_home, "logs", project_slug(dir))
+      log_dir = File.join(Paths.logs_dir, project_slug(dir))
       FileUtils.mkdir_p(log_dir)
-      FileUtils.mkdir_p(File.join(dir, ".ratchet"))
-      File.write(File.join(dir, ".ratchet", "last-log"), "#{log_dir}\n")
+      Paths.ensure_state_dir!(dir)
+      File.write(Paths.state_file(dir, "last-log"), "#{log_dir}\n")
       log = File.join(log_dir, "loop.log")
       unless File.file?(log)
         puts "status: no loop.log found at #{log} (nothing run here yet?)"
@@ -465,7 +460,7 @@ module Robur
       out
     end
 
-    # Newest state line -> [node, merge_pr, merge_since] (commands.sh:286).
+    # Newest state line -> [node, merge_pr, merge_since].
     def status_node(log_text)
       node_line = log_text.lines.select { |l| l =~ /milestone-complete|review-pass|review-fail|review-skip|merge-wait/ }.last
       return ["build", "", ""] unless node_line
@@ -484,10 +479,10 @@ module Robur
       end
     end
 
-    # Last turn line -> [turn_num, tier, model, thinking, task]
-    # (commands.sh:306), including the old-format fallback whose model regex
-    # stops at the first '-' (`[^-[:space:]]+`) — a bash quirk preserved for
-    # byte parity, not fixed.
+    # Last turn line -> [turn_num, tier, model, thinking, task], including the
+    # old-format fallback whose model regex stops at the first '-'
+    # (`[^-[:space:]]+`) — kept as-is so logs written before the current turn
+    # line format still parse.
     def status_turn_line(log_text)
       lines = log_text.lines
       turn_line = lines.select { |l| l =~ /\A\[[^\]]+\] turn \d+ \| tier=/ }.last
@@ -501,7 +496,7 @@ module Robur
       end
     end
 
-    # Same-turn end line -> "took Ns" / "finished" / "running" (commands.sh:333).
+    # Same-turn end line -> "took Ns" / "finished" / "running".
     def status_elapsed(log_text, turn_num)
       end_line = log_text.lines.select { |l| l =~ /\A\[[^\]]+\] turn \d+ end \| class=/ }.last
       return "running" unless end_line && end_line[/turn (\d+) end/, 1] == turn_num
@@ -510,8 +505,8 @@ module Robur
       took ? "took #{took}s" : "finished"
     end
 
-    # [done, open, total] as plain (non-heading-aware) grep counts
-    # (commands.sh:346) — "?" triples when there is no tracker to count.
+    # [done, open, total] as plain (non-heading-aware) line counts — "?"
+    # triples when there is no tracker to count.
     def status_task_counts(tracker)
       return %w[? ? ?] unless File.file?(tracker)
 
@@ -521,7 +516,7 @@ module Robur
       [done_n, open_n, done_n + open_n]
     end
 
-    # loop.pid -> [dot, status text] (commands.sh:358).
+    # loop.pid -> [dot, status text].
     def status_liveness(pid_file)
       return ["\u25CB", "not running"] unless File.file?(pid_file)
 
@@ -540,8 +535,8 @@ module Robur
       false
     end
 
-    # last_turn.out -> the last non-blank summary line (commands.sh:441),
-    # handling both plain-text agent output and the pi JSON stream (joining
+    # last_turn.out -> the last non-blank summary line, handling both
+    # plain-text agent output and the pi JSON stream (joining
     # text_delta fragments). ponytail: only \n, \t, \\ and \" are
     # unescaped from printf '%b' — full octal/hex escape support is not worth
     # it for a status preview line; widen if a real transcript needs it.
@@ -560,16 +555,15 @@ module Robur
       end
     end
 
-    # term_only: stdout only, never the loop log (common.sh:124); a no-op
-    # under QUIET=1.
+    # stdout only, never the loop log; a no-op under QUIET=1.
     def term_only(msg)
       return if @quiet
 
       puts "[#{Time.now.strftime('%Y-%m-%d %H:%M:%S')}] #{msg}"
     end
 
-    # flow: raw passthrough (no timestamp prefix), same QUIET gating as emit —
-    # for multi-line agent excerpts (common.sh:115 flow).
+    # Raw passthrough (no timestamp prefix), same QUIET gating as emit — for
+    # multi-line agent excerpts.
     def flow(text)
       if !@loop_log
         print text
@@ -581,8 +575,8 @@ module Robur
       end
     end
 
-    # commit_turn (commit-gate.sh:60): delegates to CommitGate, which owns the
-    # stage/exclude/scan/verify/commit ordering; CLI supplies the loop.log
+    # Delegates to CommitGate, which owns the stage/exclude/scan/verify/commit
+    # ordering; CLI supplies the loop.log
     # emit sink so the gate's prose lands in the same rendered log.
     def commit_turn(turn, model, conf, plan, dir)
       Robur::CommitGate.new(dir, plan: plan, config: conf, emit: method(:emit), loop_log: @loop_log)
@@ -595,12 +589,12 @@ module Robur
       Observability.turn_usage(path)
     end
 
-    # metrics_append (observability.sh:239): 12 frozen columns, plus the
-    # optional extension columns 13-15 when `usage:` is given
-    # (Observability::METRICS_EXTENSION_COLUMNS documents why).
+    # 12 frozen columns, plus the optional extension columns 13-15 when
+    # `usage:` is given (Observability::METRICS_EXTENSION_COLUMNS documents
+    # why).
     def metrics_append(repo_dir, event, turn, tier, model, klass, took, task, tin, tout, cost,
                        usage: nil)
-      f = ENV["RATCHET_METRICS"] || File.join(ratchet_home, "metrics.tsv")
+      f = Paths.metrics_file
       FileUtils.mkdir_p(File.dirname(f))
       row = [Time.now.strftime("%F %T"), File.basename(repo_dir), event, turn, tier, model,
              klass, took, task, tin, tout, cost]
@@ -610,7 +604,7 @@ module Robur
       nil
     end
 
-    # avg_turn_secs (observability.sh:118): int mean of took=Ns lines in loop.log.
+    # Integer mean of the took=Ns lines in loop.log.
     def avg_turn_secs(log)
       return 0 unless File.file?(log)
 
@@ -632,15 +626,14 @@ module Robur
       (1..w).map { |i| i <= fill ? "▓" : "░" }.join
     end
 
-    # bash dispatches fanout/fanout-clean right after LOG_DIR/LOOP_LOG setup,
-    # BEFORE the run/once doctor preflight block (bin/ratchet:371-372) -- no
-    # preflight gate for either.
+    # fanout/fanout-clean dispatch right after the log wiring and BEFORE the
+    # run/once doctor preflight — neither is gated on preflight.
     def cmd_fanout(dir)
       dir = File.expand_path(dir || Dir.pwd)
-      log_dir = File.join(ratchet_home, "logs", project_slug(dir))
+      log_dir = File.join(Paths.logs_dir, project_slug(dir))
       FileUtils.mkdir_p(log_dir)
-      FileUtils.mkdir_p(File.join(dir, ".ratchet"))
-      File.write(File.join(dir, ".ratchet", "last-log"), "#{log_dir}\n")
+      Paths.ensure_state_dir!(dir)
+      File.write(Paths.state_file(dir, "last-log"), "#{log_dir}\n")
       conf = Robur::Config.load(dir, @overrides || {}).values
       @quiet = conf["QUIET"] == "1"
       @loop_log = File.join(log_dir, "loop.log")
@@ -649,10 +642,10 @@ module Robur
 
     def cmd_fanout_clean(dir)
       dir = File.expand_path(dir || Dir.pwd)
-      log_dir = File.join(ratchet_home, "logs", project_slug(dir))
+      log_dir = File.join(Paths.logs_dir, project_slug(dir))
       FileUtils.mkdir_p(log_dir)
-      FileUtils.mkdir_p(File.join(dir, ".ratchet"))
-      File.write(File.join(dir, ".ratchet", "last-log"), "#{log_dir}\n")
+      Paths.ensure_state_dir!(dir)
+      File.write(Paths.state_file(dir, "last-log"), "#{log_dir}\n")
       conf = Robur::Config.load(dir, @overrides || {}).values
       @quiet = conf["QUIET"] == "1"
       @loop_log = File.join(log_dir, "loop.log")
@@ -660,9 +653,8 @@ module Robur
       0
     end
 
-    # bash main()'s shared run/once preflight (bin/ratchet:375-383): quiet
-    # doctor first, loud (re-run + print) only on failure, abort before any
-    # turn.
+    # Shared run/once preflight: quiet doctor first, loud (re-run + print)
+    # only on failure, abort before any turn.
     def cmd_run(dir)
       dir = File.expand_path(dir || Dir.pwd)
       wire_logs!(dir)
@@ -679,18 +671,17 @@ module Robur
       Robur::Loop.run(dir)
     end
 
-    # bash `once` up to the preflight gate (ratchet/bin/ratchet once path):
-    # quiet doctor first, loud only on failure, abort before any turn. Then
-    # ONE turn of the loop (banner, tier routing, watchdog run, classify,
-    # metrics, per-outcome dispatch) — the M4 slice of bin/ratchet's main loop.
+    # `once`: quiet doctor first, loud only on failure, abort before any turn.
+    # Then exactly ONE turn of the loop (banner, tier routing, watchdog run,
+    # classify, metrics, per-outcome dispatch).
     def cmd_once(dir)
       dir = File.expand_path(dir || Dir.pwd)
-      log_dir = File.join(ratchet_home, "logs", project_slug(dir))
+      log_dir = File.join(Paths.logs_dir, project_slug(dir))
       FileUtils.mkdir_p(log_dir)
-      FileUtils.mkdir_p(File.join(dir, ".ratchet"))
-      File.write(File.join(dir, ".ratchet", "last-log"), "#{log_dir}\n")
-      @quiet = Robur::Config.load(dir, @overrides || {}).values["QUIET"] == "1" # main() parses conf before preflight
-      @loop_log = File.join(log_dir, "loop.log") # bash main() wires LOOP_LOG before preflight
+      Paths.ensure_state_dir!(dir)
+      File.write(Paths.state_file(dir, "last-log"), "#{log_dir}\n")
+      @quiet = Robur::Config.load(dir, @overrides || {}).values["QUIET"] == "1" # conf before preflight
+      @loop_log = File.join(log_dir, "loop.log") # so preflight output is logged too
       emit "preflight (doctor) ..."
       require "stringio"
       buf = StringIO.new
@@ -705,12 +696,12 @@ module Robur
 
     module_function
 
-    # One turn of bin/ratchet's main loop in --once mode (bin/ratchet:520-866).
+    # One turn of the main loop, in --once mode.
     def run_once_loop(dir)
       conf = Robur::Config.load(dir, @overrides || {}).values
       plan = Plan.new(File.join(dir, conf["TRACKER_FILE"] || "PLAN.md"))
       models = Tier.chain_for("build", conf).to_s.split(",").reject(&:empty?)
-      die "no models configured (-m chain, MODELS in .ratchet.conf, or global conf)." if models.empty?
+      die "no models configured (-m chain, MODELS in #{Paths::REPO_CONF}, or global conf)." if models.empty?
       health = ModelHealth.new(conf)
       log_dir = File.dirname(@loop_log)
       obs = Observability.new(log_dir)
@@ -719,7 +710,7 @@ module Robur
       run_toks = { in: 0, out: 0, cost: 0.0 }
 
       thinking_banner = conf["THINKING"].to_s.empty? ? "inherit" : conf["THINKING"]
-      obs.emit(:run_start, repo: dir, session: "ratchet-#{project_slug(dir)} (resume=no)",
+      obs.emit(:run_start, repo: dir, session: "robur-#{project_slug(dir)} (resume=no)",
                tracker: conf["TRACKER_FILE"] || "PLAN.md", models: models,
                turn_timeout: conf["TURN_TIMEOUT"], cooldown: conf["COOLDOWN"],
                both_wait: conf["BOTH_WAIT"], step_token: conf["STEP_TOKEN"],
@@ -728,14 +719,14 @@ module Robur
                commit_each_turn: conf["COMMIT_EACH_TURN"], push_on_done: conf["PUSH_ON_DONE"],
                open_pr: conf["OPEN_PR"], log_dir: log_dir)
 
-      # write PID file (bin/ratchet:511) so `ratchet status` can check liveness.
+      # write PID file so `robur status` can check liveness.
       File.write(File.join(log_dir, "loop.pid"), "#{Process.pid}\n")
 
       stop_reason = ""
       turn = 1
       last_model = "none"
 
-      # All-done fast path (bin/ratchet:533): no open/in-progress but has [x].
+      # All-done fast path: no open/in-progress tasks but at least one [x].
       if !plan.open? && !plan.in_progress? && plan.count(:done).positive?
         emit "all #{conf["TRACKER_FILE"] || "PLAN.md"} tasks complete (#{plan.count(:done)} done) — no open work remains."
         if commit_turn("final", last_model, conf, plan, dir).block_reason.nil?
@@ -748,12 +739,12 @@ module Robur
       end
 
       obs.emit(:run_end, turns: turn)
-      File.write(File.join(dir, ".ratchet", "stop_reason"), "#{stop_reason}\n")
-      state = File.file?(File.join(dir, ".ratchet", "last_task.state")) ? File.read(File.join(dir, ".ratchet", "last_task.state")) : ""
+      File.write(Paths.state_file(dir, "stop_reason"), "#{stop_reason}\n")
+      state = File.file?(Paths.state_file(dir, "last_task.state")) ? File.read(Paths.state_file(dir, "last_task.state")) : ""
       taskid = state[/\A[^\t]*/].to_s
       metrics_append(dir, "run", "-", "-", last_model, stop_reason, elapsed_int(run_start), taskid,
                      run_toks[:in], run_toks[:out], format("%.6f", run_toks[:cost]))
-      0 # exit code, not File.write's byte count (bash: metrics_append's own exit status, always 0)
+      0 # exit code, not File.write's byte count
     end
 
     def mono = Process.clock_gettime(Process::CLOCK_MONOTONIC)
@@ -787,7 +778,7 @@ module Robur
 
       obs.emit(:turn_start, turn: turn, model: model, tier: tier, thinking: thinking, task: next_task_str)
 
-      ENV["RATCHET_LOOP"] = "1"
+      Paths.loop_env_vars.each { |k| ENV[k] = "1" }
       turn_start = mono
       cmd = [conf["AGENT_CMD"], "--model", model]
       cmd += ["--thinking", thinking] unless thinking.to_s.empty?
@@ -827,14 +818,13 @@ module Robur
              "for #{tout} output tokens — runaway tool loop; see #{turn_out}."
       end
 
-      FileUtils.mkdir_p(File.join(dir, ".ratchet"))
-      File.write(File.join(dir, ".ratchet", "last_task.state"), "#{taskid}\t#{klass}\n")
+      Paths.ensure_state_dir!(dir)
+      File.write(Paths.state_file(dir, "last_task.state"), "#{taskid}\t#{klass}\n")
 
       avg = avg_turn_secs(@loop_log)
       eta = avg.zero? ? "ETA unknown" : "~#{open_n} turns / ~#{fmt_dur(open_n * avg)} left"
       term_only "  ⏱ turn #{turn} · #{fmt_dur(took)}   avg #{fmt_dur(avg)}   #{eta}"
 
-      # show_excerpt (observability.sh:41)
       if !ENV.fetch("SUMMARY_LINES", "4").to_i.zero? && File.exist?(turn_out) && !File.zero?(turn_out)
         emit "--- summary ---"
         lines = File.read(turn_out).lines.reject { |l| l =~ /^[[:space:]]*$/ }
@@ -842,7 +832,7 @@ module Robur
         emit "---"
       end
 
-      # ALL_DONE with open tasks is mid-work, not done (bin/ratchet:663).
+      # ALL_DONE with open tasks is mid-work, not done.
       klass = :step if klass == :done && (plan.open? || plan.in_progress?)
 
       commit_result = commit_turn(turn, model, conf, plan, dir)

@@ -4,8 +4,7 @@ require "json"
 require "fileutils"
 
 module Robur
-  # Cross-provider session continuity (port of ratchet/lib/session-sanitize.sh).
-  # Providers sign assistant "thinking" blocks differently; replaying one
+  # Cross-provider session continuity. Providers sign assistant "thinking" blocks differently; replaying one
   # provider's signed thinking to another fails. Rewrites the Pi JSONL session
   # in place: drops every assistant thinking block, keeps text + tool calls,
   # never leaves an empty assistant message. Snapshots the original first.
@@ -58,8 +57,9 @@ module Robur
           obj["message"]["content"].is_a?(Array)
       end
 
-      # python json.dumps default separators (', ' / ': ') — the bash original
-      # serializes with python, so rewritten lines must match byte for byte.
+      # python json.dumps default separators (', ' / ': '): sessions are also
+      # written by python tooling, so a rewritten line must be byte-identical
+      # to one that tooling would have produced.
       def python_json(obj)
         case obj
         when Hash then "{#{obj.map { |k, v| "#{python_json(k)}: #{python_json(v)}" }.join(", ")}}"

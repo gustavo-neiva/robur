@@ -3,10 +3,10 @@
 require "robur/sys"
 
 module Robur
-  # Thin git wrapper through Sys::Proc — one default-branch detection (the
-  # bash ratchet has four copies of the symbolic-ref + main fallback) and one
-  # worktree-porcelain parser (bash has two copies of that state machine, in
-  # and after the read loop, in ratchet/lib/commands.sh's fanout-clean).
+  # Thin git wrapper through Sys::Proc. Every caller shares ONE default-branch
+  # detection (symbolic-ref with a `main` fallback) and ONE worktree-porcelain
+  # parser, so the fanout paths and the milestone paths can never disagree
+  # about which branch is the base or which worktrees exist.
   class Repo
     Worktree = Struct.new(:path, :head, :branch, :detached, keyword_init: true)
 
@@ -43,7 +43,7 @@ module Robur
     end
 
     # Un-stage a pathspec (glob wildcards resolve via git's own pathspec
-    # matching, same as the bash `git reset -q -- "$g"` it replaces).
+    # matching, not the shell's).
     def reset(pathspec)
       git("reset", "-q", "--", pathspec)
     end
@@ -148,8 +148,8 @@ module Robur
     end
 
     # `git -C WT_PATH log --branches --not --remotes` -- repo-wide (ALL local
-    # branches not on ANY remote), scoped by cwd only per bash's own
-    # implementation; nil (fail toward KEEP) on failure, else the raw output
+    # branches not on ANY remote), scoped by cwd only. Returns nil on failure
+    # so callers fail toward KEEPING a worktree, else the raw output
     # (empty = nothing unpushed).
     def unpushed_commits(wt_path)
       out, _err, status = @proc.capture("git", "-C", wt_path, "log", "--branches", "--not", "--remotes")

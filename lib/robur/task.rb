@@ -1,8 +1,8 @@
 # frozen_string_literal: true
 
 module Robur
-  # Parses one PLAN.md task line per the frozen tracker grammar
-  # (ratchet/lib/tracker.sh:1-21):  "- [ ] T1.2 (normal, serial) title"
+  # Parses one PLAN.md task line per the frozen tracker grammar:
+  #   "- [ ] T1.2 (normal, serial) title"
   class Task
     ID_RE = /\A([A-Z]+(?:\d+(?:\.\d+)?|-[\w-]+))\z/
     STATUS_RE = /\A\s*-\s+\[( |x|X)\]\s*/ # leading checkbox
@@ -39,7 +39,7 @@ module Robur
 
       tags = []
       # First parenthesised group only — a greedy scan would re-tag a task
-      # whose title mentions e.g. "hard" in parens (ratchet tracker.sh:145 bug).
+      # whose title happens to mention e.g. "hard" in parens.
       if (m = rest.match(/\A\(([^)]*)\)\s+/))
         tags = m[1].split(",").map(&:strip).reject(&:empty?)
         rest = m.post_match

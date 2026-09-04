@@ -3,8 +3,7 @@
 require "json"
 
 module Robur
-  # Turn-outcome detection (port of ratchet/lib/classify.sh's classify_turn).
-  # Classifies by CONTENT, not exit code: done > human > step > exhausted >
+  # Turn-outcome detection. Classifies by CONTENT, not exit code: done > human > step > exhausted >
   # hard > timeout > empty > transient. In json mode (pi --mode json) token matches
   # count only in assistant text_end events and error scans exclude assistant
   # text/thinking events, else prose *discussing* a rate limit false-fires.

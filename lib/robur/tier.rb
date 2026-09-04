@@ -1,10 +1,10 @@
 # frozen_string_literal: true
 
 module Robur
-  # Tier routing (port of ratchet's chain_for_tier / thinking_for_tier and the
-  # tracker-tag → tier mapping in bin/ratchet). The MODEL_RANK auto-slice takes
-  # an already-ranked model list; deriving that list from the live pi registry
-  # and cost cache is the registry layer's job, injected here.
+  # Tier routing: tracker tag → tier, tier → model chain, tier → thinking
+  # level. The MODEL_RANK auto-slice takes an already-ranked model list;
+  # deriving that list from the live pi registry and cost cache is the
+  # registry layer's job, injected here.
   module Tier
     TAG_TO_TIER = { "trivial" => "light", "hard" => "build-hard" }.freeze
 
@@ -91,7 +91,7 @@ module Robur
       level || ""
     end
 
-    # First non-empty value (bash ${A:-B}: empty counts as unset).
+    # First non-empty value — an empty string counts as unset, not as a value.
     def self.pick(*vals)
       vals.find { |v| v && !v.empty? }
     end

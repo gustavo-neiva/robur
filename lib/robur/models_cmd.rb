@@ -2,20 +2,20 @@
 
 require "fileutils"
 require "robur/config"
+require "robur/paths"
 require "robur/tier"
 require "robur/sys"
 
 module Robur
-  # `ratchet models`: list/add/remove/thinking/rank model config (port of
-  # ratchet/lib/models.sh). Registry validation is against the pi model cache
-  # ($RATCHET_HOME/models.registry, 24h TTL) — refreshed by the interactive
-  # subcommands, read-only for `list`'s registry marks when stale.
+  # `robur models`: list/add/remove/thinking/rank model config. Registry
+  # validation is against the pi model cache ($ROBUR_HOME/models.registry, 24h
+  # TTL) — refreshed by the interactive subcommands, read-only for `list`'s
+  # registry marks when stale.
   #
-  # ponytail: models.dev cost cache (ratchet/lib/model-cost.sh) is NOT ported
-  # (no task owns it yet) — `_chain_with_marks` never appends a cost suffix,
-  # and rank derivation always takes bash's own "no cost signal" branch
-  # (arbitrary registry order + stderr warning). Add model_cost.rb + wire the
-  # cost join here when a task ports model-cost.sh.
+  # ponytail: there is no models.dev cost cache yet, so `chain_with_marks`
+  # never appends a cost suffix and rank derivation always takes the "no cost
+  # signal" branch (arbitrary registry order + stderr warning). Add
+  # model_cost.rb and wire the cost join here when a task owns it.
   module ModelsCmd
     module_function
 
@@ -50,7 +50,7 @@ module Robur
       File.write(cache, "#{reg.join("\n")}\n")
       reg
     rescue Errno::ENOENT
-      nil # `pi` not on PATH (bash: `command -v pi` gate)
+      nil # `pi` not on PATH
     end
 
     # chain_add CHAIN MODEL POS -> the new chain. MODEL already present is
@@ -136,10 +136,10 @@ module Robur
       id.sub(%r{\A[^/]*/}, "") =~ NONCODER_PATTERN ? true : false
     end
 
-    # _derive_rank_live: filtered registry order (ALLOWED_PROVIDERS, drop
-    # non-coder families). No models.dev cost cache is ported here, so this
-    # always takes bash's "no cost signal" branch — arbitrary registry order,
-    # with the same stderr warning.
+    # Filtered registry order (ALLOWED_PROVIDERS, drop non-coder families).
+    # With no models.dev cost cache there is no ranking signal, so this
+    # returns arbitrary registry order and warns loudly on stderr rather than
+    # implying the chain is skill-ordered.
     def derive_rank_live(reg, allowed_providers)
       return nil if reg.nil? || reg.empty?
 
@@ -148,7 +148,7 @@ module Robur
       return nil if avail.empty?
 
       kept = avail.reject { |m| noncoder_model?(m) }
-      warn "rank: WARNING no cost/rank signal (models.dev cache empty and MODEL_RANK unset) — models are in arbitrary registry order, NOT ranked by skill. Set MODEL_RANK in ~/.ratchet/conf or run `ratchet models rank refresh`." unless kept.empty?
+      warn "rank: WARNING no cost/rank signal (models.dev cache empty and MODEL_RANK unset) — models are in arbitrary registry order, NOT ranked by skill. Set MODEL_RANK in #{Paths.global_conf} or run `robur models rank refresh`." unless kept.empty?
       kept
     end
 
@@ -207,11 +207,11 @@ module Robur
     end
 
     # --repo edit changes the contract: re-stamp the conf hash so doctor
-    # doesn't flag ratchet's own edit as tampering.
+    # doesn't flag our own edit as tampering.
     def after_edit(target, repo, repo_dir)
-      return unless repo && repo_dir && File.directory?(File.join(repo_dir, ".ratchet"))
+      return unless repo && repo_dir && File.directory?(Paths.state_dir(repo_dir))
 
-      File.write(File.join(repo_dir, ".ratchet", "conf.hash"), "#{Config.conf_hash(target)}\n")
+      File.write(Paths.state_file(repo_dir, "conf.hash"), "#{Config.conf_hash(target)}\n")
     rescue StandardError
       nil
     end
@@ -233,9 +233,9 @@ module Robur
         when "--repo" then opts.repo = true; i += 1
         when "--force" then opts.force = true; i += 1
         when "-d", "--dir" then opts.repo_dir = argv[i + 1]; i += 2
-        when /\A-/ then raise "ratchet models: unknown option '#{a}'"
+        when /\A-/ then raise "robur models: unknown option '#{a}'"
         else
-          raise "ratchet models: unexpected '#{a}'" unless opts.arg.empty?
+          raise "robur models: unexpected '#{a}'" unless opts.arg.empty?
 
           opts.arg = a
           i += 1
@@ -244,11 +244,11 @@ module Robur
       opts
     end
 
-    # cmd_models ARGV CONFIG DIR — dispatched after conf precedence load, so
-    # CONFIG holds the effective tier chains for `list`.
-    def run(argv, config:, dir:, emit:, home: CLI.ratchet_home, sys: Sys::Proc.new)
+    # ARGV CONFIG DIR — dispatched after the conf precedence load, so CONFIG
+    # holds the effective tier chains for `list`.
+    def run(argv, config:, dir:, emit:, home: Paths.home, sys: Sys::Proc.new)
       opts = parse(argv, dir)
-      target = opts.repo ? File.join(File.expand_path(opts.repo_dir || Dir.pwd), ".ratchet.conf") : global_conf(home)
+      target = opts.repo ? Paths.repo_conf(File.expand_path(opts.repo_dir || Dir.pwd)) : global_conf(home)
       repo_dir_abs = opts.repo ? File.expand_path(opts.repo_dir || Dir.pwd) : nil
 
       case opts.sub
@@ -257,7 +257,7 @@ module Robur
       when "remove" then remove(config, opts, target, repo_dir_abs, emit)
       when "thinking" then thinking(opts, target, repo_dir_abs, emit)
       when "rank" then rank(home, config, opts, emit, sys)
-      else raise "usage: ratchet models [list|add|remove|thinking|rank] ... (see --help)"
+      else raise "usage: robur models [list|add|remove|thinking|rank] ... (see --help)"
       end
     end
 
@@ -266,7 +266,7 @@ module Robur
       emit.call("note: pi registry unavailable — showing chains without validation marks") if reg.nil?
       emit.call(config["MODEL_RANK"].to_s.empty? ? "MODEL_RANK: (unset)" : "MODEL_RANK: #{config["MODEL_RANK"]}")
       emit.call("")
-      emit.call("effective chains (edit targets: global=#{global_conf(home)} | --repo <dir>/.ratchet.conf):")
+      emit.call("effective chains (edit targets: global=#{global_conf(home)} | --repo <dir>/#{Paths::REPO_CONF}):")
       emit.call("  MODELS : #{chain_with_marks(config["MODELS"], reg)}")
       %w[plan build light].each do |t|
         key = tier_key("models", t)
@@ -283,11 +283,11 @@ module Robur
       return unless reg
 
       emit.call("registry: #{reg.length} models from 'pi --list-models'")
-      emit.call("edit: ratchet models add <provider/id> [--tier plan|build|light] [--pos first|last|N] [--repo]")
+      emit.call("edit: robur models add <provider/id> [--tier plan|build|light] [--pos first|last|N] [--repo]")
     end
 
     def add(home, _config, opts, target, repo_dir_abs, emit, sys)
-      raise "usage: ratchet models add <provider/id> [--tier T] [--pos first|last|N] [--repo] [--force]" if opts.arg.empty?
+      raise "usage: robur models add <provider/id> [--tier T] [--pos first|last|N] [--repo] [--force]" if opts.arg.empty?
 
       key = tier_key("models", opts.tier)
       raise "bad --tier '#{opts.tier}' (want models|plan|build|light)" unless key
@@ -308,7 +308,7 @@ module Robur
     end
 
     def remove(_config, opts, target, repo_dir_abs, emit)
-      raise "usage: ratchet models remove <provider/id> [--tier T] [--repo]" if opts.arg.empty?
+      raise "usage: robur models remove <provider/id> [--tier T] [--repo]" if opts.arg.empty?
 
       key = tier_key("models", opts.tier)
       raise "bad --tier '#{opts.tier}' (want models|plan|build|light)" unless key
@@ -326,7 +326,7 @@ module Robur
     THINKING_LEVELS = %w[off minimal low medium high xhigh].freeze
 
     def thinking(opts, target, repo_dir_abs, emit)
-      raise "usage: ratchet models thinking <off|minimal|low|medium|high|xhigh> [--tier T] [--repo]" if opts.arg.empty?
+      raise "usage: robur models thinking <off|minimal|low|medium|high|xhigh> [--tier T] [--repo]" if opts.arg.empty?
       raise "bad thinking level '#{opts.arg}' (off|minimal|low|medium|high|xhigh)" unless THINKING_LEVELS.include?(opts.arg)
 
       key = tier_key("thinking", opts.tier)
@@ -352,7 +352,7 @@ module Robur
       else
         snap = File.join(home, "rank.derived")
         emit.call(File.file?(snap) ? "effective rank: derived (snapshot: #{snap})" : "effective rank: derived (no snapshot yet; will be created on first use)")
-        emit.call("signal: NONE — arbitrary registry order (no cost cache, MODEL_RANK unset). Set MODEL_RANK or run 'ratchet models rank refresh'.")
+        emit.call("signal: NONE — arbitrary registry order (no cost cache, MODEL_RANK unset). Set MODEL_RANK or run 'robur models rank refresh'.")
         ranked = derived_rank(home, reg, config["ALLOWED_PROVIDERS"])
         raise "failed to derive rank" if ranked.nil?
 

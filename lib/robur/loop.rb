@@ -3,6 +3,7 @@
 require "json"
 require "open3"
 require "robur/config"
+require "robur/paths"
 require "robur/plan"
 require "robur/tier"
 require "robur/prompt"
@@ -19,7 +20,8 @@ require "robur/state"
 require "robur/commands"
 
 module Robur
-  # The unattended run loop (port of bin/ratchet main's while-true cycle).
+  # The unattended run loop: one turn per cycle until the agent is done, the
+  # models are all benched, or a human is needed.
   # Shares CLI's emit/commit_turn/metrics helpers (same loop.log surface);
   # sleep is injectable so the all-benched ladder is testable.
   module Loop
@@ -31,16 +33,16 @@ module Robur
     def run(dir, once: false, sleep_it: Kernel.method(:sleep))
       dir = File.expand_path(dir)
       conf = Robur::Config.load(dir, {}).values
-      log_dir = File.join(CLI.ratchet_home, "logs", CLI.project_slug(dir))
+      log_dir = File.join(Paths.logs_dir, CLI.project_slug(dir))
       FileUtils.mkdir_p(log_dir)
-      FileUtils.mkdir_p(File.join(dir, ".ratchet"))
-      File.write(File.join(dir, ".ratchet", "last-log"), "#{log_dir}\n")
+      Paths.ensure_state_dir!(dir)
+      File.write(Paths.state_file(dir, "last-log"), "#{log_dir}\n")
       CLI.instance_variable_set(:@quiet, conf["QUIET"] == "1")
       CLI.instance_variable_set(:@loop_log, File.join(log_dir, "loop.log"))
 
       plan = Plan.new(File.join(dir, conf["TRACKER_FILE"] || "PLAN.md"))
       flat = conf["MODELS"].to_s.split(",").reject(&:empty?)
-      CLI.die "no models configured (-m chain, MODELS in .ratchet.conf, or global conf)." if flat.empty?
+      CLI.die "no models configured (-m chain, MODELS in #{Paths::REPO_CONF}, or global conf)." if flat.empty?
 
       turn_out = File.join(log_dir, "last_turn.out")
       run_start = CLI.mono
@@ -60,7 +62,7 @@ module Robur
 
       emit = ->(m) { CLI.emit(m) }
 
-      session_id = conf["SESSION_NAME"].to_s.empty? ? "ratchet-#{CLI.project_slug(dir)}" : "ratchet-#{conf["SESSION_NAME"]}"
+      session_id = conf["SESSION_NAME"].to_s.empty? ? "robur-#{CLI.project_slug(dir)}" : "robur-#{conf["SESSION_NAME"]}"
       resume = conf["RESUME_SESSION"] == "1" ? "yes" : "no"
       thinking_banner = conf["THINKING"].to_s.empty? ? "inherit" : conf["THINKING"]
 
@@ -78,7 +80,7 @@ module Robur
 
       milestone_branch_lifecycle(dir, conf, plan)
 
-      # write PID file (bin/ratchet:511) so `ratchet status` can check liveness.
+      # write PID file so `robur status` can check liveness.
       File.write(File.join(log_dir, "loop.pid"), "#{Process.pid}\n")
 
       loop do
@@ -132,7 +134,7 @@ module Robur
 
         obs.emit(:turn_start, turn: turn, model: model, tier: tier, thinking: thinking, task: next_task_str)
 
-        ENV["RATCHET_LOOP"] = "1"
+        Paths.loop_env_vars.each { |k| ENV[k] = "1" }
         turn_start = CLI.mono
         cmd = [conf["AGENT_CMD"], "--model", model]
         cmd += ["--thinking", thinking] unless thinking.to_s.empty?
@@ -154,8 +156,8 @@ module Robur
         obs.emit(:turn_end, turn: turn, class: klass, took: took, exitcode: status, task: next_task_str.slice(0, 20))
 
         # tin is cache-inclusive (audit fix #4): input + cache_read +
-        # cache_write — bash's number was 50-100x low; the cache fields
-        # didn't exist when _turn_usage was written.
+        # cache_write. Counting only fresh input under-reported the real
+        # spend by 50-100x once prompt caching was in play.
         detail = Observability.turn_usage_detail(turn_out)
         tin = detail[:input] + detail[:cache_read] + detail[:cache_write]
         tout = detail[:output]
@@ -177,10 +179,9 @@ module Robur
                "for #{tout} output tokens — runaway tool loop; see #{turn_out}."
         end
 
-        FileUtils.mkdir_p(File.join(dir, ".ratchet"))
-        File.write(File.join(dir, ".ratchet", "last_task.state"), "#{task ? task.id : "?"}\t#{klass}\n")
+        Paths.ensure_state_dir!(dir)
+        File.write(Paths.state_file(dir, "last_task.state"), "#{task ? task.id : "?"}\t#{klass}\n")
 
-        # show_excerpt (observability.sh:41)
         if !ENV.fetch("SUMMARY_LINES", "4").to_i.zero? && File.exist?(turn_out) && !File.zero?(turn_out)
           emit "--- summary ---"
           lines = File.read(turn_out).lines.reject { |l| l =~ /^[[:space:]]*$/ }
@@ -188,9 +189,9 @@ module Robur
           emit "---"
         end
 
-        # sanity-gate BEFORE the case: done-with-open-tasks is mid-work. Setting
-        # the status inside a `done` arm would never re-dispatch (the bash bug
-        # that exited with open tasks) — downgrade here instead.
+        # sanity-gate BEFORE the case: done-with-open-tasks is mid-work.
+        # Setting the status inside a `done` arm would never re-dispatch, and
+        # the loop would exit with open tasks — downgrade here instead.
         if klass == :done && (plan.open? || plan.in_progress?)
           emit "agent printed #{conf["DONE_TOKEN"]} but open tasks remain — treating as step and continuing."
           klass = :step
@@ -340,11 +341,10 @@ module Robur
           sleep_it.call(conf["SHORT_SLEEP"].to_i)
         end
 
-        # Milestone-complete detection + bounded review turn (PR_CADENCE=
-        # milestone only; bin/ratchet:768-830). Reached ONLY on the common
-        # tail -- the `done`/`human` branches `break` and the RED-gate-repair
-        # branches `next` above, both skipping this exactly like bash's
-        # `break`/`continue` skip the same block.
+        # Milestone-complete detection + bounded review turn
+        # (PR_CADENCE=milestone only). Reached ONLY on the common tail -- the
+        # `done`/`human` branches `break` and the RED-gate-repair branches
+        # `next` above, so neither reaches this block.
         if commit_result.committed && (conf["PR_CADENCE"] || "done") == "milestone"
           action = milestone_complete_check(dir, conf, plan, thinking, flat, turn_out, log_dir, sleep_it: sleep_it)
           if action == :review_exceeded
@@ -367,8 +367,8 @@ module Robur
       end
 
       obs.emit(:run_end, turns: turn)
-      File.write(File.join(dir, ".ratchet", "stop_reason"), "#{stop_reason}\n")
-      state = File.file?(File.join(dir, ".ratchet", "last_task.state")) ? File.read(File.join(dir, ".ratchet", "last_task.state")) : ""
+      File.write(Paths.state_file(dir, "stop_reason"), "#{stop_reason}\n")
+      state = File.file?(Paths.state_file(dir, "last_task.state")) ? File.read(Paths.state_file(dir, "last_task.state")) : ""
       CLI.metrics_append(dir, "run", "-", "-", last_model, stop_reason, CLI.elapsed_int(run_start),
                          state[/\A[^\t]*/].to_s, run_toks[:in], run_toks[:out], format("%.6f", run_toks[:cost]))
       stop_reason == "gate_red" || stop_reason == "human_blocked" ? 1 : 0
@@ -397,11 +397,10 @@ module Robur
       return unless File.directory?(File.join(dir, ".git"))
 
       repo.add(tracker)
-      repo.commit("loop(ratchet): task #{task.id} BLOCKED \u2014 no progress in #{stalls} turns") unless repo.staged_files.empty?
+      repo.commit("loop(#{Paths::COMMIT_SCOPE}): task #{task.id} BLOCKED \u2014 no progress in #{stalls} turns") unless repo.staged_files.empty?
     end
 
-    # write_turn_note (bin/ratchet:179): the gate-status FIRST line is
-    # ALWAYS derived from whether this turn committed, so the next turn's
+    # The gate-status FIRST line of last_turn.note is ALWAYS derived from whether this turn committed, so the next turn's
     # prompt never trusts a stale note; REASON is the optional extra line.
     def write_note(log_dir, committed, reason)
       first = committed ? "Verify gate after last turn: GREEN" : "Verify gate after last turn: RED (fix this first)"
@@ -410,7 +409,8 @@ module Robur
       nil
     end
 
-    # bash notify_human: NOTIFY_CMD from ENV only (never the repo conf), MSG as $1.
+    # NOTIFY_CMD comes from ENV only, never the repo conf: an agent can write
+    # the repo conf, and this runs a shell command.
     def notify_human(msg, notify_cmd: ENV["NOTIFY_CMD"])
       emit "HUMAN NEEDED: #{msg}"
       return if notify_cmd.to_s.empty?
@@ -427,28 +427,27 @@ module Robur
       CLI.commit_turn(turn, model, conf, plan, dir)
     end
 
-    # Auto-plan PR #0 (bin/ratchet:424-467, PR_CADENCE=milestone only, and
-    # only when the tracker is not yet `Plan#ready?`): branch off the default
-    # branch, run ONE plan turn, push, open a PR, then block on
-    # `wait_for_merge` before the build loop starts. Returns nil to continue
-    # into the build loop, or an Integer process exit code (1 or 2) when the
-    # caller must stop immediately — mirroring bash's direct `exit 1`/`exit 2`
-    # calls in this block, which skip the pid-file write, the turn loop, and
-    # the "ratchet END" epilogue entirely.
+    # Auto-plan PR #0 (PR_CADENCE=milestone only, and only when the tracker
+    # is not yet `Plan#ready?`): branch off the default branch, run ONE plan
+    # turn, push, open a PR, then block on `wait_for_merge` before the build
+    # loop starts. Returns nil to continue into the build loop, or an Integer
+    # process exit code (1 or 2) when the caller must stop immediately — a
+    # stop here skips the pid-file write, the turn loop, and the run-end
+    # epilogue entirely.
     def auto_plan_pr0(dir, conf, plan, turn_out, log_path, repo: Repo.new(dir), sys: Sys::Proc.new, sleep_it: Kernel.method(:sleep))
       return nil unless (conf["PR_CADENCE"] || "done") == "milestone"
       return nil if plan.ready?
 
-      emit "auto-plan: tracker not ready, running plan turn on ratchet/plan branch ..."
+      emit "auto-plan: tracker not ready, running plan turn on #{Paths.plan_branch} branch ..."
       default_branch = repo.default_branch
-      CLI.die "failed to create ratchet/plan branch" unless repo.checkout_b("ratchet/plan", default_branch)
+      CLI.die "failed to create #{Paths.plan_branch} branch" unless repo.checkout_b(Paths.plan_branch, default_branch)
 
       Commands.plan_turn(dir, conf, auto: conf["AUTO_PLAN"] == "1", turn_out: turn_out, emit: method(:emit))
 
       if repo.remote?("origin")
-        emit "pushing ratchet/plan ..."
-        unless repo.push("-u", "origin", "ratchet/plan")
-          notify_human "auto-plan: git push failed (see #{log_path}) — push ratchet/plan manually and merge the PR"
+        emit "pushing #{Paths.plan_branch} ..."
+        unless repo.push("-u", "origin", Paths.plan_branch)
+          notify_human "auto-plan: git push failed (see #{log_path}) — push #{Paths.plan_branch} manually and merge the PR"
           return 2
         end
       end
@@ -460,18 +459,18 @@ module Robur
                             .map { |l| l.sub(/\A\+/, "") }.join
         emit "opening PR #0 (plan review) ..."
         _out, _err, status = sys.capture("gh", "pr", "create", "--base", default_branch,
-                                         "--title", "ratchet plan: #{repo_name}", "--body", "Plan turn output:\n\n#{pr_body}")
+                                         "--title", "#{Paths::BRANCH_NS} plan: #{repo_name}", "--body", "Plan turn output:\n\n#{pr_body}")
         unless status&.success?
           emit "gh pr create failed (see #{log_path})"
           return 1
         end
         emit "PR #0 opened — waiting for merge ..."
       else
-        notify_human "auto-plan: merge ratchet/plan PR manually (no gh/origin)"
+        notify_human "auto-plan: merge #{Paths.plan_branch} PR manually (no gh/origin)"
         return 2
       end
 
-      rc = wait_for_merge("ratchet/plan", dir, conf, repo: repo, sys: sys, sleep_it: sleep_it)
+      rc = wait_for_merge(Paths.plan_branch, dir, conf, repo: repo, sys: sys, sleep_it: sleep_it)
       if rc != 0
         emit "auto-plan: merge wait failed or PR closed — stopping."
         return 1
@@ -481,14 +480,13 @@ module Robur
       nil
     end
 
-    # Milestone branch lifecycle (bin/ratchet:469-503, PR_CADENCE=milestone
-    # only). Runs ONCE at `run` startup, before the turn loop: if the
-    # tracker's current milestone differs from the one recorded in
-    # .ratchet/milestone.cur, create a fresh ratchet/m-<slug> branch off the
-    # default branch and record name/base_sha/cycle=0/errors=0. This does NOT
-    # re-fire mid-loop when a milestone completes (bash places it before the
-    # `while true`, not inside it) -- a supervisor's next `run` invocation
-    # picks up the following milestone.
+    # Milestone branch lifecycle (PR_CADENCE=milestone only). Runs ONCE at
+    # `run` startup, before the turn loop: if the tracker's current milestone
+    # differs from the one recorded in the state dir's milestone.cur, create a
+    # fresh milestone branch off the default branch and record
+    # name/base_sha/cycle=0/errors=0. This deliberately does NOT re-fire
+    # mid-loop when a milestone completes -- a supervisor's next `run`
+    # invocation picks up the following milestone.
     def milestone_branch_lifecycle(dir, conf, plan, repo: Repo.new(dir))
       return unless (conf["PR_CADENCE"] || "done") == "milestone"
 
@@ -504,7 +502,7 @@ module Robur
       default_branch = repo.default_branch
       base_sha = repo.rev_parse(default_branch) || repo.rev_parse("HEAD")
       slug = mname.downcase.gsub(/[^a-z0-9]+/, "-").gsub(/\A-+|-+\z/, "")
-      branch_name = "ratchet/m-#{slug}"
+      branch_name = Paths.milestone_branch(slug)
 
       CLI.die "failed to create #{branch_name}" unless repo.checkout_b(branch_name, default_branch)
 
@@ -512,10 +510,10 @@ module Robur
       emit "milestone branch #{branch_name} created at #{base_sha}"
     end
 
-    # Milestone-complete detection + bounded review turn (bin/ratchet:768-830,
-    # PR_CADENCE=milestone only). Fires when the just-committed turn moved
-    # the tracker's current milestone away from the one recorded in
-    # .ratchet/milestone.cur. Returns :review_exceeded when MAX_REVIEW_CYCLES
+    # Milestone-complete detection + bounded review turn
+    # (PR_CADENCE=milestone only). Fires when the just-committed turn moved
+    # the tracker's current milestone away from the one recorded in the state
+    # dir's milestone.cur. Returns :review_exceeded when MAX_REVIEW_CYCLES
     # is hit (the caller stops the loop), nil otherwise.
     def milestone_complete_check(dir, conf, plan, thinking, flat, turn_out, log_dir,
                                  repo: Repo.new(dir), sys: Sys::Proc.new, sleep_it: Kernel.method(:sleep))
@@ -568,19 +566,17 @@ module Robur
       repo.add(conf["TRACKER_FILE"] || "PLAN.md")
       return if repo.staged_files.empty?
 
-      repo.commit("review(ratchet): fix tasks from review cycle #{cycle_count}")
+      repo.commit("review(#{Paths::COMMIT_SCOPE}): fix tasks from review cycle #{cycle_count}")
       emit "  review-injected tasks committed"
     end
 
-    # run_review_turn BASE_SHA MNAME CYCLE -> "pass"|"fail"|"error"
-    # (lib/run-turn.sh:148). Runs ONE read-only review turn with swapped
-    # tokens (STEP_TOKEN=REVIEW_PASS, DONE_TOKEN=REVIEW_FAIL) so classify
-    # works unmodified: step => pass, done => fail, anything else => error.
-    # Never strikes/benches the review model. `thinking` is the JUST-FINISHED
-    # build turn's thinking level — bash never calls thinking_for_tier
-    # "review" here, it reuses whatever $THINKING main() set for the build
-    # turn that triggered this check (bin/ratchet:593 sets it once per turn;
-    # run_review_turn never resets it).
+    # BASE_SHA MNAME CYCLE -> "pass"|"fail"|"error". Runs ONE read-only
+    # review turn with swapped tokens (STEP_TOKEN=REVIEW_PASS,
+    # DONE_TOKEN=REVIEW_FAIL) so classify works unmodified: step => pass,
+    # done => fail, anything else => error. Never strikes/benches the review
+    # model. `thinking` is deliberately the JUST-FINISHED build turn's level,
+    # not a review-tier lookup: the review reads the same diff the build turn
+    # produced, so it gets the same reasoning budget.
     def run_review_turn(base_sha, mname, cycle, dir, conf, thinking, flat, turn_out, repo: Repo.new(dir))
       review_chain = Tier.chain_for("review", conf).to_s
       review_model = review_chain.split(",").reject(&:empty?).first || flat.first
@@ -592,8 +588,8 @@ module Robur
                "**Milestone**: #{mname} (review cycle #{cycle + 1})\n" \
                "**Tracker**: #{conf["TRACKER_FILE"] || "PLAN.md"}\n"
 
-      # bash run-turn.sh:60 exports this for every turn — review included.
-      ENV["RATCHET_LOOP"] = "1"
+      # Every spawned turn gets the loop marker — review turns included.
+      Paths.loop_env_vars.each { |k| ENV[k] = "1" }
 
       cmd = [conf["AGENT_CMD"], "--model", review_model]
       cmd += ["--thinking", thinking] unless thinking.to_s.empty?
@@ -613,13 +609,13 @@ module Robur
       end
     end
 
-    # wait_for_merge BRANCH DIR CONF -> poll the PR until merged/closed/timeout
-    # (bin/ratchet:203). Returns 0=merged+ff'd, 1=closed, 2=manual mode
-    # (no gh/origin, or gh pr view failed), 3=timeout. Emits the frozen
+    # BRANCH DIR CONF -> poll the PR until merged/closed/timeout. Returns
+    # 0=merged+ff'd, 1=closed, 2=manual mode (no gh/origin, or gh pr view
+    # failed), 3=timeout. Emits the frozen
     # `merge-wait | pr=<branch> | state=<state>` line on state changes only.
-    # MERGE_POLL_SECS/MERGE_WAIT_TIMEOUT have no global default in common.sh
-    # either (bash resolves them inline with `${VAR:-N}` at this one call
-    # site) — mirrored here rather than invented as a Config default.
+    # MERGE_POLL_SECS/MERGE_WAIT_TIMEOUT are resolved inline here rather than
+    # as Config defaults: this is their only call site, and a global default
+    # would imply they apply to turns that never poll a PR.
     def wait_for_merge(branch, dir, conf, repo: Repo.new(dir), sys: Sys::Proc.new, sleep_it: Kernel.method(:sleep))
       unless CLI.on_path?("gh")
         notify_human "merge the PR: gh not found, manual mode"
@@ -682,8 +678,7 @@ module Robur
       nil
     end
 
-    # open_milestone_pr NAME BASE_SHA -> push milestone branch, open PR,
-    # wait_for_merge (bin/ratchet:261). Returns 0=PR opened+wait_for_merge's
+    # NAME BASE_SHA -> push milestone branch, open PR, wait_for_merge. Returns 0=PR opened+wait_for_merge's
     # result, 1=push or `gh pr create` failed, 2=no gh/origin (manual PR).
     def open_milestone_pr(mname, base_sha, dir, conf, plan, log_path,
                           repo: Repo.new(dir), sys: Sys::Proc.new, sleep_it: Kernel.method(:sleep))
@@ -713,7 +708,7 @@ module Robur
 
       first_subject = plan.milestone_completed_list(mname).first.to_s.sub(/\A\[x\][[:space:]]*/, "").gsub("**", "")
       emit "opening PR for milestone #{mname} ..."
-      _out, _err, status = sys.capture("gh", "pr", "create", "--title", "ratchet #{mname}: #{first_subject}",
+      _out, _err, status = sys.capture("gh", "pr", "create", "--title", "#{Paths::BRANCH_NS} #{mname}: #{first_subject}",
                                        "--body-file", "-", stdin_data: body)
       unless status&.success?
         emit "gh pr create failed (see #{log_path})."
@@ -723,9 +718,9 @@ module Robur
       wait_for_merge(current_branch, dir, conf, repo: repo, sys: sys, sleep_it: sleep_it)
     end
 
-    # git diff --shortstat -> total changed lines (insertions + deletions),
-    # replacing bash's positional `awk '{print $4+$6}'` with a pattern match
-    # that's correct whether one or both counts are present.
+    # git diff --shortstat -> total changed lines (insertions + deletions).
+    # Matched by pattern, not by field position, so it stays correct whether
+    # one or both counts are present.
     def shortstat_changed_lines(text)
       ins = text[/(\d+) insertions?\(\+\)/, 1].to_i
       del = text[/(\d+) deletions?\(-\)/, 1].to_i
@@ -742,8 +737,7 @@ module Robur
     # pattern) -- the binary `fanout` re-invokes per worktree as `... run`.
     ROBUR_BIN = File.expand_path("../../exe/robur", __dir__)
 
-    # ratchet fanout (lib/commands.sh:cmd_fanout): serially create one git
-    # worktree per independent milestone, then fan out parallel `run` loops
+    # fanout: serially create one git worktree per independent milestone, then fan out parallel `run` loops
     # bounded by FANOUT_MAX, then sweep with fanout_clean. Returns the
     # process exit code (0 on a clean run, 1 on a hard precondition/worktree
     # failure).
@@ -759,7 +753,7 @@ module Robur
       CLI.die "not a directory: #{dir}" unless File.directory?(dir)
 
       unless conf["PARALLEL"] == "1"
-        emit "fanout requires PARALLEL=1 (set in .ratchet.conf or via env)"
+        emit "fanout requires PARALLEL=1 (set in #{Paths::REPO_CONF} or via env)"
         return 1
       end
       unless CLI.on_path?("gh")
@@ -771,7 +765,7 @@ module Robur
         return 1
       end
 
-      emit "ratchet fanout: #{dir}"
+      emit "robur fanout: #{dir}"
 
       tracker_file = conf["TRACKER_FILE"]
       tracker_file = Commands.detect_tracker_file(dir) if tracker_file.to_s.empty?
@@ -788,8 +782,8 @@ module Robur
 
       pairs = []
       milestones.each do |m|
-        wt_path = "../ratchet-wt-#{m[:slug]}"
-        branch = "ratchet/m-#{m[:slug]}"
+        wt_path = Paths.worktree_path(m[:slug])
+        branch = Paths.milestone_branch(m[:slug])
         emit "  creating worktree: #{wt_path} (branch #{branch})"
 
         created = false
@@ -846,7 +840,7 @@ module Robur
       0
     end
 
-    # ratchet fanout-clean (lib/commands.sh:cmd_fanout_clean): fail-safe
+    # fanout-clean: fail-safe
     # worktree sweep -- NEVER --force removes; a stash for the worktree's
     # branch, an unpushed commit, or a dirty tree (git's own removal refusal)
     # each KEEP the worktree. Returns [removed_count, kept_count].

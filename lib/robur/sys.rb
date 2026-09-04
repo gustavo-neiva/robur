@@ -11,13 +11,12 @@ module Robur
   module Sys
     # Read a file as UTF-8 with invalid bytes replaced.
     #
-    # EVERY read of a loop.log or a turn file must go through this. bash was
-    # byte-oriented and immune; Ruby raises `ArgumentError: invalid byte
-    # sequence in UTF-8` the moment a regex touches such a string, and real
-    # production logs DO contain invalid bytes (agents stream partial UTF-8
-    # sequences when a turn is killed mid-write). Measured against the real
-    # ~/.ratchet/logs/robur-271438/loop.log, this crashed `status`, `stats`
-    # and the ETA path outright.
+    # EVERY read of a loop.log or a turn file must go through this. Ruby
+    # raises `ArgumentError: invalid byte sequence in UTF-8` the moment a
+    # regex touches such a string, and real production logs DO contain
+    # invalid bytes (agents stream partial UTF-8 sequences when a turn is
+    # killed mid-write). Measured against a real production loop.log, that
+    # crashed `status`, `stats` and the ETA path outright.
     #
     # Missing/unreadable file -> nil, never a raise, so callers treat it as
     # an absent section exactly like Prompt.read_scrubbed does.

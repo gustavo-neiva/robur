@@ -4,10 +4,10 @@ require "robur/task"
 require "robur/sys"
 
 module Robur
-  # Wraps a tracker file (PLAN.md) per the frozen grammar
-  # (ratchet/lib/tracker.sh). One counter for open/in-progress/done — the
-  # bash loop had three, and atlas/bin/board-update.sh got the open one
-  # wrong by anchoring `^- [ ]`.
+  # Wraps a tracker file (PLAN.md) per the frozen grammar. ONE counter serves
+  # open/in-progress/done: separate counters drift, and an external one in
+  # atlas/bin/board-update.sh already got the open count wrong by anchoring
+  # `^- [ ]`.
   class Plan
     TASK_LINE = /\A[[:space:]]*-?[[:space:]]*\[( |x|X|IN PROGRESS)\]/
     HEADING = /\A#+ /
@@ -41,10 +41,9 @@ module Robur
       done_lines.map { |l| l.sub(/\A[[:space:]]*-?[[:space:]]*\[x\][[:space:]]*/, "").gsub("**", "") }
     end
 
-    # [x] tasks under the named `## ` milestone, `[x] text` form (the `[x]`
-    # itself kept — bash's tracker_milestone_completed_list only strips the
-    # leading dash, not the checkbox). Requires the literal `-` bash's awk
-    # pattern does; a bare `[x]` with no dash does not count.
+    # [x] tasks under the named `## ` milestone, in `[x] text` form — only
+    # the leading dash is stripped, the checkbox is kept. The literal `-` is
+    # required: a bare `[x]` with no dash does not count.
     def milestone_completed_list(mname)
       sec = sections.find { |name, _| name == mname }
       return [] unless sec
@@ -82,7 +81,7 @@ module Robur
     # the done/checklist heading skip when finding it; the section scan does
     # not). index is the 1-based position of that task within its section.
     def current_milestone
-      target = bash_skipped_line(:in_progress) || bash_skipped_line(:open)
+      target = first_task_lineno(:in_progress) || first_task_lineno(:open)
       return unless target
 
       name = nil
@@ -149,7 +148,7 @@ module Robur
 
     # Telegram DM body for a human-gate stop (human_block_brief): title line,
     # the task's block bounded at 900 bytes, unblock instruction, /blocked
-    # pointer. Byte-truncated to match bash `head -c 900`.
+    # pointer. Byte-truncated at 900 so the DM fits one message.
     def human_block_brief(id, title)
       block = block_for(id)
       block = block.byteslice(0, 900) if block&.empty? == false
@@ -171,7 +170,7 @@ module Robur
 
     # Line number of the first task of `kind`, using tracker_next's rule:
     # open/in-progress lines under a done/checklist heading are skipped.
-    def bash_skipped_line(kind)
+    def first_task_lineno(kind)
       each_task(kind) { |t| return t.lineno }
       nil
     end
@@ -214,9 +213,8 @@ module Robur
     def all_lines
       # Cache keyed on [mtime, size], re-statted on EVERY call: the run loop
       # holds one Plan across turns while the agent edits the file — a naive
-      # memo once served turn-1's lines forever. bash re-reads per tracker
-      # call; the stamp check gives that observable behaviour with one read
-      # per change instead of one per call.
+      # memo once served turn-1's lines forever. The stamp check gives
+      # always-fresh reads at one read per change instead of one per call.
       # ponytail: a same-tick same-size rewrite keeps the stale cache; upgrade
       # path = content digest instead of mtime+size.
       return [] unless File.exist?(@path)

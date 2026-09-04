@@ -3,17 +3,17 @@
 require "fileutils"
 require "open3"
 require "robur/config"
+require "robur/paths"
 require "robur/plan"
 require "robur/tier"
 require "robur/turn"
 require "robur/classifier"
 
 module Robur
-  # init | doctor | new | plan (port of ratchet/lib/commands.sh). PROG mirrors
-  # CLI::PROG ("ratchet") — differential parity means user-facing text stays
-  # the bash program name.
+  # init | doctor | new | plan. PROG mirrors CLI::PROG so every "run: <prog>
+  # ..." hint names the same binary the user typed.
   module Commands
-    PROG = "ratchet"
+    PROG = "robur"
     TEMPLATES_DIR = File.expand_path("../../templates", __dir__)
 
     module_function
@@ -40,13 +40,13 @@ module Robur
     def init(dir, emit: ->(m) { puts m })
       raise "not a directory: #{dir}" unless File.directory?(dir)
 
-      conf = File.join(dir, ".ratchet.conf")
+      conf = Paths.repo_conf(dir)
       emit.call("#{PROG} init: #{dir}")
 
       if File.file?(conf)
-        emit.call("  .ratchet.conf exists — leaving it (re-stamp only)")
+        emit.call("  #{File.basename(conf)} exists — leaving it (re-stamp only)")
       else
-        FileUtils.cp(File.join(TEMPLATES_DIR, "ratchet.conf.example"), conf)
+        FileUtils.cp(File.join(TEMPLATES_DIR, "robur.conf.example"), conf)
         seed_vc = detect_verify_cmd(dir)
         if seed_vc.empty?
           emit.call("  no stack detected -> VERIFY_CMD left empty (set it; no-gate is loud by design)")
@@ -56,9 +56,16 @@ module Robur
         end
       end
 
+      # Leave `.ratchet.conf` pointing at the new conf. A directory symlink
+      # covers the state dir, but a plain file has no shim, and the nightly
+      # supervisor decides whether a repo is runnable by testing for
+      # `.ratchet.conf` — without this a freshly initialised repo is silently
+      # never picked up.
+      Paths.ensure_repo_conf_link!(dir)
+
       values, errors = Config.parse_repo(File.read(conf))
       unless errors.empty?
-        emit.call("  WARNING: .ratchet.conf has errors:")
+        emit.call("  WARNING: #{File.basename(conf)} has errors:")
         emit.call(errors.join("\n"))
       end
       tr = values["TRACKER_FILE"]
@@ -83,18 +90,22 @@ module Robur
       emit.call("done. Next: review #{tr}, then '#{PROG} doctor #{dir}' and '#{PROG} run #{dir}'.")
     end
 
-    # Strips a legacy `ratchet-protocol:v1` block (awk port: drop lines between
-    # the begin/end markers, preserve everything else verbatim). Returns true
-    # if a migration happened.
+    # Strips a legacy loop-protocol block from AGENTS.md: drop the lines
+    # between the begin/end markers, preserve everything else verbatim. Both
+    # the current and the pre-rename marker names are recognised so a repo
+    # stamped before the rename still migrates. Returns true if a migration
+    # happened.
+    PROTOCOL_MARKER = /(?:robur|ratchet)-protocol:/
+
     def migrate_agents_md(dir)
       agents = File.join(dir, "AGENTS.md")
-      return false unless File.file?(agents) && File.read(agents) =~ /ratchet-protocol:.*:begin/
+      return false unless File.file?(agents) && File.read(agents) =~ /#{PROTOCOL_MARKER}.*:begin/
 
       skip = false
       kept = File.readlines(agents).each_with_object(+"") do |line, out|
-        if line =~ /ratchet-protocol:.*:begin/
+        if line =~ /#{PROTOCOL_MARKER}.*:begin/
           skip = true
-        elsif line =~ /ratchet-protocol:.*:end/
+        elsif line =~ /#{PROTOCOL_MARKER}.*:end/
           skip = false
         elsif !skip
           out << line
@@ -116,7 +127,11 @@ module Robur
       gi = File.join(dir, ".gitignore")
       File.write(gi, "") unless File.file?(gi)
       existing = File.readlines(gi, chomp: true)
-      %w[.ratchet/ .ratchet.conf].each do |line|
+      # The legacy names stay listed: `Paths.ensure_state_dir!` leaves
+      # `.ratchet` as a symlink, and an un-migrated repo still has the old
+      # conf — neither should ever be committed.
+      ["#{Paths::STATE_DIR}/", Paths::REPO_CONF, "#{Paths::LEGACY_STATE_DIR}/",
+       Paths::LEGACY_REPO_CONF].each do |line|
         next if existing.include?(line)
 
         File.write(gi, "#{line}\n", mode: "a")
@@ -135,16 +150,16 @@ module Robur
       end
 
       slug = CLI.project_slug(dir)
-      log_dir = File.join(CLI.ratchet_home, "logs", slug)
+      log_dir = File.join(Paths.logs_dir, slug)
       FileUtils.mkdir_p(log_dir)
-      FileUtils.mkdir_p(File.join(dir, ".ratchet"))
-      File.write(File.join(dir, ".ratchet", "last-log"), "#{log_dir}\n")
+      Paths.ensure_state_dir!(dir)
+      File.write(Paths.state_file(dir, "last-log"), "#{log_dir}\n")
 
       out.puts "doctor: #{dir}"
 
       mid_operation_check(dir, pr_fail)
 
-      conf_path = File.join(dir, ".ratchet.conf")
+      conf_path = Paths.repo_conf(dir)
       conf_values = {}
       conf_errors = []
       conf_values, conf_errors = Config.parse_repo(File.read(conf_path)) if File.file?(conf_path)
@@ -159,22 +174,25 @@ module Robur
 
       if File.file?(conf_path)
         if conf_errors.empty?
-          pr_ok.call(".ratchet.conf parses (allowlisted keys)")
+          pr_ok.call("#{File.basename(conf_path)} parses (allowlisted keys)")
         else
-          pr_fail.call(".ratchet.conf has errors:")
+          pr_fail.call("#{File.basename(conf_path)} has errors:")
           out.puts ("\n" + conf_errors.join("\n")).gsub(/^/, "         ")
         end
-        case conf_values["RATCHET_PROTOCOL"] || "1"
-        when "1" then pr_ok.call("RATCHET_PROTOCOL=1 supported")
-        else pr_fail.call("RATCHET_PROTOCOL=#{conf_values["RATCHET_PROTOCOL"]} unsupported (want 1)")
+        # Either spelling of the protocol key is honoured; a repo conf written
+        # before the rename must not start failing doctor.
+        protocol_key = conf_values.key?("ROBUR_PROTOCOL") ? "ROBUR_PROTOCOL" : "RATCHET_PROTOCOL"
+        case conf_values[protocol_key] || "1"
+        when "1" then pr_ok.call("#{protocol_key}=1 supported")
+        else pr_fail.call("#{protocol_key}=#{conf_values[protocol_key]} unsupported (want 1)")
         end
         conf_hash_check(dir, conf_path, pr_ok, pr_fail)
       else
-        pr_fail.call("no .ratchet.conf (run: #{PROG} init #{dir})")
+        pr_fail.call("no #{Paths::REPO_CONF} (run: #{PROG} init #{dir})")
       end
 
       agents = File.join(dir, "AGENTS.md")
-      if File.file?(agents) && File.read(agents) =~ /ratchet-protocol:.*:begin/
+      if File.file?(agents) && File.read(agents) =~ /#{PROTOCOL_MARKER}.*:begin/
         pr_fail.call("AGENTS.md carries a legacy loop-in-file protocol block; run `#{PROG} init #{dir}` to migrate (loop protocol now travels in the harness prompt)")
       else
         pr_ok.call("protocol delivery: harness-prompt (loop briefs its own turns)")
@@ -201,7 +219,7 @@ module Robur
 
       verify_cmd = conf_values["VERIFY_CMD"] || ENV["VERIFY_CMD"]
       if verify_cmd.to_s.empty?
-        pr_fail.call("VERIFY_CMD is EMPTY — set it in .ratchet.conf (no-gate is loud by design)")
+        pr_fail.call("VERIFY_CMD is EMPTY — set it in #{Paths::REPO_CONF} (no-gate is loud by design)")
       else
         pr_ok.call("VERIFY_CMD is set: '#{verify_cmd}'")
         first = verify_cmd.split[0]
@@ -250,13 +268,13 @@ module Robur
     end
 
     def conf_hash_check(dir, conf_path, pr_ok, pr_fail)
-      hash_file = File.join(dir, ".ratchet", "conf.hash")
+      hash_file = Paths.state_file(dir, "conf.hash")
       return unless File.file?(hash_file)
 
       if Config.conf_hash(conf_path) == File.read(hash_file).strip
-        pr_ok.call(".ratchet.conf unchanged since onboarding")
+        pr_ok.call("#{File.basename(conf_path)} unchanged since onboarding")
       else
-        pr_fail.call(".ratchet.conf CHANGED since onboarding — review & re-acknowledge (run: #{PROG} init #{dir})")
+        pr_fail.call("#{File.basename(conf_path)} CHANGED since onboarding — review & re-acknowledge (run: #{PROG} init #{dir})")
       end
     end
 
@@ -269,7 +287,7 @@ module Robur
       if missing.empty?
         pr_ok.call("all required tools available: #{required}")
       else
-        pr_fail.call("missing required tool(s):#{missing.map { |t| " #{t}" }.join} (install them or remove from REQUIRED_TOOLS in .ratchet.conf)")
+        pr_fail.call("missing required tool(s):#{missing.map { |t| " #{t}" }.join} (install them or remove from REQUIRED_TOOLS in #{Paths::REPO_CONF})")
       end
     end
 
@@ -403,9 +421,9 @@ module Robur
       cmd += ["--thinking", thinking] unless thinking.to_s.empty?
       cmd += ["--no-session", "-p", prompt]
 
-      # bash run-turn.sh:60 exports this for EVERY turn (build/plan/review
-      # alike) — the agent's protocol reads it to know it is loop-driven.
-      ENV["RATCHET_LOOP"] = "1"
+      # Exported for EVERY turn (build/plan/review alike) — the agent's
+      # protocol reads it to know it is loop-driven.
+      Paths.loop_env_vars.each { |k| ENV[k] = "1" }
       start = Process.clock_gettime(Process::CLOCK_MONOTONIC)
       result = Turn.run(cmd: cmd, turn_file: turn_out, chdir: dir,
                         turn_timeout: conf["TURN_TIMEOUT"].to_i,
@@ -420,7 +438,6 @@ module Robur
                                            deadline: deadline, json: false, human_token: human_token)
       emit.call("plan turn 1 end | class=#{klass} | took=#{took}s")
 
-      # show_excerpt (observability.sh:41)
       if !ENV.fetch("SUMMARY_LINES", "4").to_i.zero? && File.exist?(turn_out) && !File.zero?(turn_out)
         emit.call("--- summary ---")
         lines = File.read(turn_out).lines.reject { |l| l =~ /^[[:space:]]*$/ }
@@ -437,16 +454,16 @@ module Robur
     def build_plan_prompt(tracker_path, tracker_file, step_token)
       return build_ktlo_prompt(tracker_file, step_token) unless File.read(tracker_path) =~ /^- \[ \]/
 
-      "You are doing a PLAN-drafting turn (ratchet plan), not implementation. Read this repository, read #{tracker_file}, and draft or refresh the open tasks so the plan is concrete and actionable. Rules: keep a Milestone 0 walking skeleton whose verify gate is green; ASSIGN a tier tag (trivial|normal|hard) to EVERY task as you write it, with a one-line justification for any non-obvious choice; make each task ONE discrete step; size each milestone as ONE human-reviewable unit (a coherent feature/subfeature, target under ~400 changed lines of implementation) because milestones are the review/PR boundary; the FIRST line of the tracker must be a class marker, `<!-- class: MACHINE -->` or `<!-- class: HUMAN -->` — HUMAN when the plan involves money movement, strategy pivots, outward-facing launches, or taste-heavy product calls, MACHINE for internal tooling under green gates, and MACHINE when unsure; do NOT write or change code in this turn — only #{tracker_file} and LEARNINGS.md. When you have finished drafting/refreshing the plan, print the token #{step_token} on its own line and STOP. Do not run the build loop."
+      "You are doing a PLAN-drafting turn (robur plan), not implementation. Read this repository, read #{tracker_file}, and draft or refresh the open tasks so the plan is concrete and actionable. Rules: keep a Milestone 0 walking skeleton whose verify gate is green; ASSIGN a tier tag (trivial|normal|hard) to EVERY task as you write it, with a one-line justification for any non-obvious choice; make each task ONE discrete step; size each milestone as ONE human-reviewable unit (a coherent feature/subfeature, target under ~400 changed lines of implementation) because milestones are the review/PR boundary; the FIRST line of the tracker must be a class marker, `<!-- class: MACHINE -->` or `<!-- class: HUMAN -->` — HUMAN when the plan involves money movement, strategy pivots, outward-facing launches, or taste-heavy product calls, MACHINE for internal tooling under green gates, and MACHINE when unsure; do NOT write or change code in this turn — only #{tracker_file} and LEARNINGS.md. When you have finished drafting/refreshing the plan, print the token #{step_token} on its own line and STOP. Do not run the build loop."
     end
 
     def build_ktlo_prompt(tracker_file, step_token)
-      "You are doing a KTLO PLAN-drafting turn (ratchet plan) on a repository with NO open tasks left. It is caught up, so your job is to source keep-the-lights-on and self-improvement work, not new features. Read this repository, read #{tracker_file} (the completed plan), read LEARNINGS.md, and read recent git history. Draft the next milestone ONLY from these sources: (1) dependency freshness and security advisories; (2) flaky, slow, skipped, or missing tests, especially covering the most recently completed milestones; (3) LEARNINGS.md entries that describe a recurring gotcha no test or guard yet prevents; (4) dead code, unused config keys, and duplicated logic that a single shared function would remove; (5) documentation drift where README/AGENTS.md contradicts current behaviour; (6) error paths and edge cases in recently added code that the verify gate does not yet exercise. Hard rules: propose NO new features, NO speculative abstractions, and NO refactors without a behavioural test that would catch a regression; EVERY task must be verifiable by this repo VERIFY_CMD gate, so if you cannot state how the gate proves it, drop it; prefer deleting code over adding it. Keep the milestone SMALL: at most 5 tasks, target under ~400 changed lines total. Tag EVERY task (trivial|normal|hard). Keep the class marker on the FIRST line of the tracker (`<!-- class: MACHINE -->` for maintenance work). If, after genuinely checking all six sources, there is nothing worth doing, write NOTHING to the tracker and say so plainly — an honest empty plan is a correct outcome and beats invented work. Do NOT write or change code in this turn — only #{tracker_file} and LEARNINGS.md. When done, print the token #{step_token} on its own line and STOP. Do not run the build loop."
+      "You are doing a KTLO PLAN-drafting turn (robur plan) on a repository with NO open tasks left. It is caught up, so your job is to source keep-the-lights-on and self-improvement work, not new features. Read this repository, read #{tracker_file} (the completed plan), read LEARNINGS.md, and read recent git history. Draft the next milestone ONLY from these sources: (1) dependency freshness and security advisories; (2) flaky, slow, skipped, or missing tests, especially covering the most recently completed milestones; (3) LEARNINGS.md entries that describe a recurring gotcha no test or guard yet prevents; (4) dead code, unused config keys, and duplicated logic that a single shared function would remove; (5) documentation drift where README/AGENTS.md contradicts current behaviour; (6) error paths and edge cases in recently added code that the verify gate does not yet exercise. Hard rules: propose NO new features, NO speculative abstractions, and NO refactors without a behavioural test that would catch a regression; EVERY task must be verifiable by this repo VERIFY_CMD gate, so if you cannot state how the gate proves it, drop it; prefer deleting code over adding it. Keep the milestone SMALL: at most 5 tasks, target under ~400 changed lines total. Tag EVERY task (trivial|normal|hard). Keep the class marker on the FIRST line of the tracker (`<!-- class: MACHINE -->` for maintenance work). If, after genuinely checking all six sources, there is nothing worth doing, write NOTHING to the tracker and say so plainly — an honest empty plan is a correct outcome and beats invented work. Do NOT write or change code in this turn — only #{tracker_file} and LEARNINGS.md. When done, print the token #{step_token} on its own line and STOP. Do not run the build loop."
     end
 
     # plan_commit: commit ONLY the tracker + LEARNINGS.md. No `git add -A`, no
     # verify gate (the tree may legitimately be RED while planning), no
-    # contract-tamper guard (plan never stages .ratchet.conf/AGENTS.md).
+    # contract-tamper guard (plan never stages the repo conf or AGENTS.md).
     def plan_commit(dir, tracker_file, conf, emit)
       return unless conf["COMMIT_EACH_TURN"] == "1"
       return unless File.directory?(File.join(dir, ".git"))
@@ -457,7 +474,7 @@ module Robur
         emit.call("  nothing plan-staged to commit (idempotent plan turn).")
         return
       end
-      _out2, _err2, commit_status = Open3.capture3("git", "-C", dir, "commit", "-q", "-m", "plan(ratchet): refresh #{tracker_file}")
+      _out2, _err2, commit_status = Open3.capture3("git", "-C", dir, "commit", "-q", "-m", "plan(#{Paths::COMMIT_SCOPE}): refresh #{tracker_file}")
       if commit_status.success?
         emit.call("  plan-committed: #{tracker_file} (+ LEARNINGS.md if changed)")
       else

@@ -1,9 +1,11 @@
 # frozen_string_literal: true
 
+require_relative "paths"
+
 module Robur
-  # Per-turn prompt builder: port of build_default_prompt (ratchet
-  # lib/common.sh:135) plus the task/note injection bash does at
-  # bin/ratchet:620-640, with a RED-note verify tail bash lacks.
+  # Per-turn prompt builder: the base do-one-step instruction, the current
+  # task quoted from the tracker, the previous turn's gate note, and — when
+  # that note is RED — the tail of the failing verify output.
   class Prompt
     BLOCK_CAP = 40
     TAIL_LINES = 30
@@ -20,7 +22,8 @@ module Robur
     def self.base(conf)
       "Do ONE discrete step of work on this repository's current task, following the project's AGENTS.md " \
         "instructions. Write all changes to files; do not dump file contents in your reply. Do NOT edit " \
-        ".ratchet.conf or the AGENTS.md protocol markers — the loop reverts and wastes the turn. When the " \
+        "#{Paths::REPO_CONF} (or a legacy #{Paths::LEGACY_REPO_CONF}) or the AGENTS.md protocol markers " \
+        "— the loop reverts and wastes the turn. When the " \
         "step is complete, print the token #{conf['STEP_TOKEN']} on its own line. If there is absolutely no " \
         "remaining work, print the token #{conf['DONE_TOKEN']} on its own line instead."
     end

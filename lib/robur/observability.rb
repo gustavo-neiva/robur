@@ -4,17 +4,18 @@ require "json"
 require "fileutils"
 require "time"
 require_relative "sys"
+require_relative "paths"
 
 module Robur
   # loop.log is a RENDERING of events.jsonl, not free-form prose parsed back
-  # with regexes (port of the emit lines in ratchet/bin/ratchet +
-  # ratchet/lib/commit-gate.sh). Each emit call appends one JSON record with
+  # with regexes. Each emit call appends one JSON record with
   # the exact fields that produced the human line, so a metric never breaks
   # because someone reworded a log line.
   class Observability
     Event = Struct.new(:kind, :ts, :fields, keyword_init: true)
 
-    # kind => fields hash -> array of human lines, in the exact bash wording.
+    # kind => fields hash -> array of human lines. The wording is contract:
+    # `stats`' legacy loop.log adapter parses these lines back.
     RENDER = {
       turn_start: lambda { |f|
         ["--- turn #{f[:turn]} | model=#{f[:model]} ---",
@@ -30,8 +31,8 @@ module Robur
         ["ALL models benched (exhausted), attempt #{f[:attempt]}. " \
          "Sleeping #{f[:backoff]}s, then reset + retry."]
       },
-      stop: ->(f) { ["ratchet END after #{f[:turns]} turn(s)."] },
-      run_end: ->(f) { ["ratchet END after #{f[:turns]} turn(s)."] },
+      stop: ->(f) { ["robur END after #{f[:turns]} turn(s)."] },
+      run_end: ->(f) { ["robur END after #{f[:turns]} turn(s)."] },
       human: ->(f) { ["HUMAN NEEDED: #{f[:msg]}"] },
       # run_start reproduces Loop.run's startup banner verbatim (loop.rb:61-75).
       # session is the full "name (resume=x)" string; commit/push/pr render
@@ -39,7 +40,7 @@ module Robur
       run_start: lambda { |f|
         yn = ->(v) { (v == "1" || v == true) ? "yes" : "no" }
         ["=" * 60,
-         "ratchet START",
+         "robur START",
          "  repo      : #{f[:repo]}",
          "  session   : #{f[:session]}",
          "  tracker   : #{f[:tracker]}",
@@ -76,13 +77,13 @@ module Robur
     # logged ~1,100 and burned 20,014,294 prompt-side tokens to emit 716
     # output ones before timing out. 200 sits an order of magnitude above
     # normal and an order below the pathology. Tuned via ENV, not
-    # .ratchet.conf: the conf allowlist is a frozen contract (bash `doctor`
+    # the repo conf: its allowlist is a frozen contract (`doctor`
     # rejects unknown keys), and SUMMARY_LINES/POLL_INTERVAL already set the
     # ENV-knob precedent.
     RUNAWAY_MESSAGES_DEFAULT = 200
 
     def self.runaway_messages
-      v = ENV["RATCHET_RUNAWAY_MESSAGES"].to_i
+      v = (ENV["ROBUR_RUNAWAY_MESSAGES"] || ENV["RATCHET_RUNAWAY_MESSAGES"]).to_i
       v.positive? ? v : RUNAWAY_MESSAGES_DEFAULT
     end
 
@@ -119,13 +120,13 @@ module Robur
       Event.new(kind: kind, ts: ts, fields: fields)
     end
 
-    # notify_human MSG -> surface a message a human must act on (observability.sh:17).
+    # Surface a message a human must act on.
     # Emits "HUMAN NEEDED: MSG", rings the terminal bell when stderr is a TTY,
     # and runs NOTIFY_CMD in the background (never blocks the caller) with MSG
     # as $1. SECURITY: NOTIFY_CMD is only ever taken from ENV/the explicit
     # argument here — this method never reads a conf file itself, so a repo
-    # .ratchet.conf (agent-writable, PARSED not sourced per T2.2) can never
-    # reach it; only the trusted, bash-sourced global conf may set it.
+    # conf (agent-writable, PARSED not sourced per T2.2) can never reach it;
+    # only the trusted, shell-sourced global conf may set it.
     def notify_human(msg, notify_cmd: ENV["NOTIFY_CMD"])
       emit(:human, msg: msg)
       $stderr.write("\a") if $stderr.tty?
@@ -136,16 +137,9 @@ module Robur
       nil
     end
 
-    # RATCHET_HOME (observability.sh:14): never $HOME directly — metrics_append
-    # honours the override so isolating RATCHET_HOME (tests, selftest) never
-    # leaks a row into the real ~/.ratchet/metrics.tsv.
-    def self.ratchet_home
-      ENV["RATCHET_HOME"] || File.join(ENV["HOME"], ".ratchet")
-    end
-
-    # metrics_append (observability.sh:239): EVENT TURN TIER MODEL CLASS TOOK
-    # TASK TOKIN TOKOUT COST -> one 12-column TSV row. Best-effort: never
-    # raises, matching the bash `|| true`.
+    # EVENT TURN TIER MODEL CLASS TOOK TASK TOKIN TOKOUT COST -> one
+    # 12-column TSV row. Best-effort: never raises, because losing a metrics
+    # row must never take a turn down with it.
     #
     # `usage:` appends the three EXTENSION columns 13-15 (fresh_in,
     # cache_read, messages) and is omitted by default, so every existing
@@ -153,7 +147,7 @@ module Robur
     # METRICS_EXTENSION_COLUMNS for why they exist.
     def metrics_append(repo_dir, event, turn, tier, model, klass, took, task, tok_in, tok_out, cost,
                        usage: nil)
-      f = ENV["RATCHET_METRICS"] || File.join(self.class.ratchet_home, "metrics.tsv")
+      f = Paths.metrics_file
       FileUtils.mkdir_p(File.dirname(f))
       row = [@clock.now.strftime("%F %T"), File.basename(repo_dir), event, turn, tier, model,
              klass, took, task, tok_in, tok_out, cost]
@@ -176,9 +170,8 @@ module Robur
     #                fresh_in + cache_read) and cache hit rate is derivable.
     #   messages   — deduped per-message usage events = agent round-trips.
     #                The runaway signal: one production turn logged ~1,100.
-    # Bash writes 12 columns and reads none past them, so this is additive
-    # only; the differential harness compares the first 12 (see
-    # test/differential/harness.rb#split_metrics_rows).
+    # Readers of the frozen 12 columns ignore anything past them, so this is
+    # additive only and never breaks an existing consumer.
     METRICS_EXTENSION_COLUMNS = %w[fresh_in cache_read messages].freeze
 
     def self.extension_columns(usage)
@@ -186,12 +179,11 @@ module Robur
       [u[:input].to_i + u[:cache_write].to_i, u[:cache_read].to_i, u[:messages].to_i]
     end
 
-    # _turn_usage FILE -> "in\tout\tcost" (observability.sh:215): per-message
-    # usage is a DELTA, never cumulative, so sum (not max) is the only correct
-    # aggregate. The `in` column is input + cacheRead + cacheWrite (total
-    # prompt-side tokens moved) — deliberate divergence from bash _turn_usage:
-    # real usage events carry cacheRead ~1300x input, so bash's number was
-    # 50-100x low; the cache fields didn't exist when it was written.
+    # FILE -> "in\tout\tcost". Per-message usage is a DELTA, never
+    # cumulative, so sum (not max) is the only correct aggregate. The `in`
+    # column is input + cacheRead + cacheWrite (total prompt-side tokens
+    # moved): real usage events carry cacheRead ~1300x input, so counting
+    # only fresh input under-reports what moved by 50-100x.
     def self.turn_usage(path)
       return "0\t0\t0" unless File.file?(path)
 
@@ -235,8 +227,8 @@ module Robur
       { input: 0, output: 0, cache_read: 0, cache_write: 0, reasoning: 0, cost: 0.0, messages: 0 }
     end
 
-    # avg_turn_secs LOGFILE -> mean turn duration in seconds from took= lines
-    # (observability.sh:118). 0 when the file is missing or has no took= line —
+    # LOGFILE -> mean turn duration in seconds from took= lines.
+    # 0 when the file is missing or has no took= line —
     # the "before any recorded duration" case render_eta/ETA renders honestly.
     def self.avg_turn_secs(logfile)
       return 0 unless File.file?(logfile)
@@ -253,8 +245,7 @@ module Robur
       count.positive? ? sum / count : 0
     end
 
-    # stats DIR -> baseline metrics text (observability.sh:132 cmd_stats).
-    # Prefers DIR/events.jsonl (structured `class=` on turn_end, no prose
+    # DIR -> baseline metrics text. Prefers DIR/events.jsonl (structured `class=` on turn_end, no prose
     # regex) and falls back to DIR/loop.log so pre-robur logs still report;
     # both feed the SAME renderer, so the two sources can never drift in
     # wording. ponytail: the events path counts review/milestone verdicts and
@@ -276,14 +267,13 @@ module Robur
 
                   stats_from_loop_log(loop_log, cheap_model)
                 end
-      # NOTE: the returned block stays byte-identical to bash cmd_stats — the
-      # parity test asserts that. The source line is a separate surface the
-      # CLI prints alongside it (stats_source).
+      # NOTE: the returned block's wording is asserted by test. The source
+      # line is a separate surface the CLI prints alongside it (stats_source).
       render_stats(metrics, cheap_model)
     end
 
     # Which of the two adapters `stats` would use for DIR, as a human line.
-    # Kept out of `stats` itself so the rendered block stays bash-identical.
+    # Kept out of `stats` itself so the rendered block's wording stays fixed.
     def self.stats_source(dir)
       if File.file?(File.join(dir, "events.jsonl"))
         "events.jsonl"
@@ -300,9 +290,9 @@ module Robur
     end
     private_class_method :blank_stats
 
-    # events.jsonl adapter: turn_start already carries tier+model together (one
-    # record replaces bash's two separate log lines), and turn_end's `class`
-    # field IS the outcome classification, so no substring matching is needed.
+    # events.jsonl adapter: turn_start already carries tier+model together in
+    # one record, and turn_end's `class` field IS the outcome classification,
+    # so no substring matching is needed.
     def self.stats_from_events(path, cheap_model)
       m = blank_stats
       bench_ts = nil
@@ -340,9 +330,8 @@ module Robur
     end
     private_class_method :stats_from_events
 
-    # loop.log adapter — a faithful Ruby port of cmd_stats' python regexes
-    # (observability.sh:136), unchanged so it still reports on logs a bash
-    # ratchet run left behind.
+    # loop.log adapter — kept unchanged so `stats` still reports on logs left
+    # behind by runs that predate events.jsonl.
     def self.stats_from_loop_log(path, cheap_model)
       m = blank_stats
       ts_re = /\A\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\] (.*)\z/
@@ -399,7 +388,7 @@ module Robur
     end
     private_class_method :stats_from_loop_log
 
-    # Same wording/order as bash cmd_stats' python f-strings, for either source.
+    # One renderer for both sources, so the two can never drift in wording.
     def self.render_stats(m, cheap_model)
       succ = m[:steps] + m[:dones]
       att = succ + m[:hard] + m[:transient] + m[:timeout]

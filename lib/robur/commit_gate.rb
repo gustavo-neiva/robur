@@ -1,22 +1,27 @@
 # frozen_string_literal: true
 
+require "robur/paths"
 require "robur/repo"
 require "robur/sys"
 
 module Robur
   # The loop owns the commit, so a turn can never land red even if the agent
-  # forgets to commit (port of ratchet/lib/commit-gate.sh). Ordering is load
-  # bearing: stage everything so the gate scans the actual proposed commit,
-  # THEN un-stage runtime junk and .ratchet.conf, THEN the idempotent-turn
-  # skip (moved AHEAD of the gates — deliberate divergence, see #run), THEN
+  # forgets to commit. Ordering is load bearing: stage everything so the gate
+  # scans the actual proposed commit, THEN un-stage runtime junk and the repo
+  # conf, THEN the idempotent-turn skip (moved AHEAD of the gates, see #run), THEN
   # the tracker zero-task sanity check, THEN secret-scan, THEN the hard
   # VERIFY_CMD gate, THEN one commit.
   class CommitGate
     Result = Struct.new(:committed, :block_reason, :verify_cmd_empty, keyword_init: true)
 
-    ALLOW_MARKER = "ratchet:allow-secret"
+    # An inline marker on a `+` line opts that line out of the secret scan.
+    # The pre-rename spelling is still honoured so existing suppressions in
+    # real repos keep working.
+    ALLOW_MARKER = "robur:allow-secret"
+    LEGACY_ALLOW_MARKER = "ratchet:allow-secret"
 
-    # [pattern, reason], checked in this exact order (bash's elif chain).
+    # [pattern, reason], checked in this exact order — first hit wins, so the
+    # most specific patterns come first.
     SECRET_CHECKS = [
       [/-----BEGIN ((RSA|EC|OPENSSH|DSA) )?PRIVATE KEY-----/i, "private key material in staged diff"],
       [/(^|[^A-Za-z0-9])(AKIA[0-9A-Z]{16})([^A-Za-z0-9]|$)/i, "AWS access key id in staged diff"],
@@ -26,10 +31,10 @@ module Robur
       [/eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/, "JWT in staged diff"],
     ].freeze
 
-    # emit: optional CLI-owned logger (Observability's rendered-line home is
-    # loop.log, but commit-gate.sh's own lines aren't in Observability::RENDER
-    # — they're CLI prose, same as bash's inline `emit` calls). loop_log: where
-    # to tail a failed VERIFY_CMD's last 40 lines raw (bash: no timestamp).
+    # emit: optional CLI-owned logger. The gate's lines are CLI prose, not
+    # Observability::RENDER events, so they go through the injected sink.
+    # loop_log: where to tail a failed VERIFY_CMD's last 40 lines, raw and
+    # untimestamped so the output is still copy-pasteable.
     def initialize(dir, plan:, config:, repo: Repo.new(dir), proc: Sys::Proc.new,
                    emit: ->(_msg) {}, loop_log: nil)
       @dir = dir
@@ -52,17 +57,16 @@ module Robur
 
       @repo.add_all
       exclude_globs.each { |g| @repo.reset(g) }
-      @repo.reset(".ratchet.conf")
+      @repo.reset(Paths::REPO_CONF)
+      @repo.reset(Paths::LEGACY_REPO_CONF)
 
       # Nothing staged ⇒ nothing to scan or verify, so check BEFORE the secret
-      # scan and the VERIFY_CMD gate. DELIBERATE divergence from bash
-      # ../ratchet/lib/commit-gate.sh, which runs the verify gate before the
-      # idempotent check: this repo's VERIFY_CMD is the full 208-test suite
-      # (measured 36.5s) and 66% of turns stage nothing — bash re-verifies an
-      # unchanged tree for most of the run. Skipping cannot change the outcome
-      # of a turn that DOES stage (those still run every gate below). Do not
-      # "restore parity" here. Verify never runs on this path, so
-      # verify_cmd_empty stays false.
+      # scan and the VERIFY_CMD gate. This ordering is deliberate: this repo's
+      # VERIFY_CMD is the full test suite (measured 36.5s) and 66% of turns
+      # stage nothing, so gating first would re-verify an unchanged tree for
+      # most of a run. Skipping cannot change the outcome of a turn that DOES
+      # stage (those still run every gate below). Verify never runs on this
+      # path, so verify_cmd_empty stays false.
       if @repo.staged_diff.empty?
         @emit.call("  nothing staged to commit (idempotent turn).")
         return Result.new(committed: false, block_reason: nil, verify_cmd_empty: false)
@@ -96,13 +100,13 @@ module Robur
         if verify_cmd.nil? || verify_cmd.empty?
           verify_cmd_empty = true
           @emit.call("  \e[31mWARNING: VERIFY_CMD is empty — committing with NO green gate " \
-                     "(no-gate is loud by design; set VERIFY_CMD in .ratchet.conf).\e[0m")
+                     "(no-gate is loud by design; set VERIFY_CMD in #{Paths::REPO_CONF}).\e[0m")
         else
           @emit.call("  commit gate: running '#{verify_cmd}' \u2026")
           out, err, status = @proc.capture(verify_cmd, chdir: @dir)
           captured = "#{out}#{err}"
-          # bash parity (commit-gate.sh:98): the FULL verify output goes to
-          # last_verify.out beside loop.log, on pass AND fail — a chatty
+          # The FULL verify output goes to last_verify.out beside loop.log,
+          # on pass AND fail — a chatty
           # VERIFY_CMD would otherwise flood loop.log; only the last 40 lines
           # are tailed in on RED (below).
           unless @loop_log.nil?
@@ -117,7 +121,7 @@ module Robur
       end
 
       subject = @plan.completed_subject
-      committed = @repo.commit("auto(ratchet): turn #{turn} #{model} \u2014 #{subject}",
+      committed = @repo.commit("auto(#{Paths::COMMIT_SCOPE}): turn #{turn} #{model} \u2014 #{subject}",
                                 "Autonomous loop turn #{turn}. verify: green.")
       if committed
         @emit.call("  committed: #{subject}")
@@ -129,7 +133,7 @@ module Robur
 
     private
 
-    # Raw append, no timestamp — matches bash's `tail -n 40 "$_vout" >>"$LOOP_LOG"`.
+    # Raw append, no timestamp: the tail must stay copy-pasteable.
     def tail_into_log(text)
       return if @loop_log.nil?
 
@@ -147,7 +151,7 @@ module Robur
     def secret_scan
       lines = @repo.staged_diff.each_line(chomp: true)
                    .select { |l| l.start_with?("+") && !l.start_with?("+++ ") }
-                   .reject { |l| l.include?(ALLOW_MARKER) }
+                   .reject { |l| l.include?(ALLOW_MARKER) || l.include?(LEGACY_ALLOW_MARKER) }
       return nil if lines.empty?
 
       SECRET_CHECKS.each do |pattern, reason|
