@@ -3,6 +3,7 @@
 require "test_helper"
 require "robur/loop"
 require "fileutils"
+require "json"
 
 # Integration tests: the full `run` cycle against the fake-agent fixture stub.
 # fake-agent ticks ONE task per invocation (python3-based, portable), which is
@@ -81,6 +82,37 @@ class LoopTest < Minitest::Test
     assert_equal 3, File.read(File.join(repo, "PLAN.md")).scan("[x]").size
     assert_equal "done\n", File.read(File.join(repo, ".ratchet", "stop_reason"))
   end
+
+  # Regression guard for the audit's largest observability finding: NO
+  # events.jsonl existed anywhere under ~/.ratchet/logs across 244 log
+  # directories and 2,227 production turns, so every structured record the
+  # Observability layer computes (tokens, gate_result, model_selected) was
+  # being discarded and `stats` silently reported through the legacy
+  # loop.log regex path. A real run must leave the structured log behind.
+  def test_run_writes_structured_events_jsonl_alongside_loop_log
+    repo = make_repo
+    Robur::Loop.run(repo, sleep_it: ->(_s) {})
+
+    log_dir = File.join(@home, "logs", Robur::CLI.project_slug(repo))
+    events = File.join(log_dir, "events.jsonl")
+    assert File.file?(events), "run left no events.jsonl in #{log_dir}"
+
+    records = File.readlines(events).map { |l| JSON.parse(l) }
+    kinds = records.map { |r| r["kind"] }
+    assert_includes kinds, "run_start"
+    assert_includes kinds, "turn_start"
+    assert_includes kinds, "turn_end"
+    assert_includes kinds, "tokens"
+    assert_includes kinds, "run_end"
+
+    # every record is one parseable object carrying its kind and timestamp
+    records.each do |r|
+      assert r["kind"], "record without kind: #{r.inspect}"
+      assert_match(/\A\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\z/, r["ts"])
+    end
+  end
+
+
 
   def test_done_turn_red_at_gate_stops_gate_red_and_notifies
     # An empty tracker (no tasks at all) skips the all-done fast path (which
