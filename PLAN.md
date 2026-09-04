@@ -369,10 +369,11 @@ other people.
     done: Given a bare repo, When `robur init` runs, Then it stamps `.robur.conf`, AGENTS.md with `robur-protocol:v1`, a seed PLAN.md and LEARNINGS.md, and `robur doctor` on it exits 0.
     files: templates/, AGENTS.md, REWIRING.md, LEARNINGS.md
     note: done 2026-09-04. Most of the rebirth landed in b9c7dab; this pass closed the remainder — init now stamps `robur-protocol:v1` into AGENTS.md (was: marker existed nowhere, so the done-criterion check had nothing to find), init's no-stack message tells the truth (VERIFY_CMD stays at the template default — blanking it would fail doctor, breaking this very criterion), REWIRING.md §5 no longer calls the `.ratchet.conf` gap open (ensure_repo_conf_link! closed it), and a bare-repo acceptance test pins the full stamp + doctor zero-problems.
-- [ ] T8.6 (trivial, serial) M8 self-QA
+- [x] T8.6 (trivial, serial) M8 self-QA
     do: full gate, then confirm the estate still reads robur's state through the compatibility symlinks.
     done: the unit suite exits 0 AND `git -C ../ratchet status --porcelain` is empty AND, after `migrate-state --apply` on a scratch repo, reading `.ratchet/stop_reason` returns what robur wrote to `.robur/stop_reason`.
     files: LEARNINGS.md
+    note: done 2026-09-04. Gate green (315 runs, 0 failures), `../ratchet` porcelain clean, scratch-repo `migrate-state . --apply` verified the symlink read-back; gotcha about the positional repo arg appended to LEARNINGS.md.
 
 ## M9 — Test suite performance: remove the artificial waits
 
