@@ -316,10 +316,11 @@ port must be provably identical before any live reference moves.
     done: Given the estate, When `REWIRING.md` is complete, Then every entry names a file and line that currently exists, each has a one-line revert, and re-running the same greps surfaces no reference absent from the document.
     files: REWIRING.md
     note: done 2026-09-03. Inventory is 1 EDIT (the /usr/local/bin/ratchet symlink) + 7 VERIFY-ONLY entries; every caller invokes the bare command name, so the symlink moves all of them. harbor needs no rewiring (frozen .ratchet/ state reads only). No live RATCHET_HOME/RATCHET_METRICS override exists. All 21 file:line citations re-verified. Flags one stale line in the human-owned MIGRATION-CUTOVER.md checklist (metrics 12-vs-15 fields).
-- [ ] T7.4 (trivial, serial) M7 self-QA and Track B close
+- [x] T7.4 (trivial, serial) M7 self-QA and Track B close
     do: final gate, then append the Track B close entry to `LEARNINGS.md`.
     done: `ruby -Ilib -e 'Dir["test/**/*_test.rb"].each{|f| require File.expand_path(f)}'` exits 0 AND `ruby test/differential/run.rb --suite parity` reports `0 diffs` AND `git -C ../ratchet status --porcelain` is empty, proving no task in this plan touched the read-only bash ratchet. PASS is all three.
     files: LEARNINGS.md
+    note: PASS 2026-09-03, all three parts — unit 257 runs/956 assertions/0 failures exit 0; parity 0 diffs across 49 scenarios (1 unsupported) exit 0; `git -C ../ratchet status --porcelain` empty. Track B close entry appended to LEARNINGS.md. M7 complete; cutover remains class: HUMAN in atlas/MIGRATION-CUTOVER.md.
 
 > **Cutover is not in this plan.** Executing the rewiring in `REWIRING.md` —
 > swapping `cycles.conf` paths, `NOTIFY_CMD`, and the `ratchet` name on PATH — is
