@@ -82,6 +82,14 @@ module Robur
       end
     end
 
+    # pi in -p mode buffers its ENTIRE output until exit — no liveness signal
+    # for the watchdog, nothing live for `watch`, no token-seen early kill.
+    # --mode json makes pi stream events to stdout as they happen (mirrors
+    # bash run-turn.sh:36-40). Only pi has this mode; other agents untouched.
+    def self.pi_json?(agent_cmd) = File.basename(agent_cmd.to_s) == "pi"
+
+    def self.mode_args(agent_cmd) = pi_json?(agent_cmd) ? ["--mode", "json"] : []
+
     # Scan the turn file (binary-safe) for any early-exit token, reading only
     # from byte offset `from` onward. The caller rewinds `from` by
     # max_token-1 bytes so a token split across two polls is not missed;

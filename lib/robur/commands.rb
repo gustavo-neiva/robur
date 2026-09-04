@@ -417,7 +417,7 @@ module Robur
       prompt = build_plan_prompt(tracker_path, tracker_file, conf["STEP_TOKEN"])
 
       emit.call("plan turn 1 | tier=#{tier} | model=#{model} | thinking=#{thinking}")
-      cmd = [conf["AGENT_CMD"], "--model", model]
+      cmd = [conf["AGENT_CMD"], "--model", model] + Turn.mode_args(conf["AGENT_CMD"])
       cmd += ["--thinking", thinking] unless thinking.to_s.empty?
       cmd += ["--no-session", "-p", prompt]
 
@@ -435,7 +435,7 @@ module Robur
       done_token = conf["DONE_TOKEN"].to_s.empty? ? Config::DEFAULTS["DONE_TOKEN"] : conf["DONE_TOKEN"]
       human_token = conf["HUMAN_TOKEN"].to_s.empty? ? Config::DEFAULTS["HUMAN_TOKEN"] : conf["HUMAN_TOKEN"]
       klass = Classifier.classify(turn_out, step_token: step_token, done_token: done_token,
-                                           deadline: deadline, json: false, human_token: human_token)
+                                           deadline: deadline, json: Turn.pi_json?(conf["AGENT_CMD"]), human_token: human_token)
       emit.call("plan turn 1 end | class=#{klass} | took=#{took}s")
 
       if !ENV.fetch("SUMMARY_LINES", "4").to_i.zero? && File.exist?(turn_out) && !File.zero?(turn_out)

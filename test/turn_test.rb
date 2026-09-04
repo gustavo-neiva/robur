@@ -65,5 +65,14 @@ module Robur
       assert_equal 7, result.status.exitstatus
       assert_equal "done", out
     end
+
+    def test_mode_args_stream_json_only_for_pi
+      assert_equal ["--mode", "json"], Turn.mode_args("pi")
+      assert_equal ["--mode", "json"], Turn.mode_args("/opt/homebrew/bin/pi")
+      assert_equal [], Turn.mode_args("claude")
+      assert_equal [], Turn.mode_args("/path/to/fake-agent")
+      assert_equal true, Turn.pi_json?("pi")
+      assert_equal false, Turn.pi_json?("claude")
+    end
   end
 end

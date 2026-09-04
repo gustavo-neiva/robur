@@ -855,7 +855,7 @@ module Robur
 
       Paths.loop_env_vars.each { |k| ENV[k] = "1" }
       turn_start = mono
-      cmd = [conf["AGENT_CMD"], "--model", model]
+      cmd = [conf["AGENT_CMD"], "--model", model] + Turn.mode_args(conf["AGENT_CMD"])
       cmd += ["--thinking", thinking] unless thinking.to_s.empty?
       # P0 fix: REAL prompt, not the literal string "turn" (see Loop.run).
       prompt = conf["PROMPT_OVERRIDE"].to_s.empty? ? Robur::Prompt.for_turn(conf: conf, plan: plan, log_dir: log_dir) : conf["PROMPT_OVERRIDE"]
@@ -868,7 +868,7 @@ module Robur
       status = result.kill_reason ? 128 + (result.status.termsig || 0) : result.status.exitstatus
       deadline = !result.kill_reason.nil? && result.kill_reason != "token-seen"
       klass = Classifier.classify(turn_out, step_token: conf["STEP_TOKEN"], done_token: conf["DONE_TOKEN"],
-                                           deadline: deadline, json: false, human_token: conf["HUMAN_TOKEN"])
+                                           deadline: deadline, json: Turn.pi_json?(conf["AGENT_CMD"]), human_token: conf["HUMAN_TOKEN"])
       took = elapsed_int(turn_start)
       obs.emit(:turn_end, turn: turn, class: klass, took: took, exitcode: status, task: next_task_str.slice(0, 20))
 

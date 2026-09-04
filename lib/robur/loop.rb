@@ -148,7 +148,7 @@ module Robur
 
         Paths.loop_env_vars.each { |k| ENV[k] = "1" }
         turn_start = CLI.mono
-        cmd = [conf["AGENT_CMD"], "--model", model]
+        cmd = [conf["AGENT_CMD"], "--model", model] + Turn.mode_args(conf["AGENT_CMD"])
         cmd += ["--thinking", thinking] unless thinking.to_s.empty?
         # P0 fix (audit 2026-09-03): build the REAL per-turn prompt (base +
         # task block + last-turn note + RED verify tail) — the loop used to
@@ -166,7 +166,7 @@ module Robur
         status = result.kill_reason ? 128 + (result.status.termsig || 0) : result.status.exitstatus
         deadline = !result.kill_reason.nil? && result.kill_reason != "token-seen"
         klass = Classifier.classify(turn_out, step_token: conf["STEP_TOKEN"], done_token: conf["DONE_TOKEN"],
-                                             deadline: deadline, json: false, human_token: conf["HUMAN_TOKEN"])
+                                             deadline: deadline, json: Turn.pi_json?(conf["AGENT_CMD"]), human_token: conf["HUMAN_TOKEN"])
         took = CLI.elapsed_int(turn_start)
         obs.emit(:turn_end, turn: turn, class: klass, took: took, exitcode: status, task: next_task_str.slice(0, 20))
 
@@ -606,7 +606,7 @@ module Robur
       # Every spawned turn gets the loop marker — review turns included.
       Paths.loop_env_vars.each { |k| ENV[k] = "1" }
 
-      cmd = [conf["AGENT_CMD"], "--model", review_model]
+      cmd = [conf["AGENT_CMD"], "--model", review_model] + Turn.mode_args(conf["AGENT_CMD"])
       cmd += ["--thinking", thinking] unless thinking.to_s.empty?
       cmd += ["--no-session", "-p", prompt]
       result = Turn.run(cmd: cmd, turn_file: turn_out, chdir: dir,
@@ -616,7 +616,7 @@ module Robur
                         early_tokens: ["REVIEW_PASS", "REVIEW_FAIL"])
       deadline = !result.kill_reason.nil? && result.kill_reason != "token-seen"
       klass = Classifier.classify(turn_out, step_token: "REVIEW_PASS", done_token: "REVIEW_FAIL",
-                                           deadline: deadline, json: false, human_token: conf["HUMAN_TOKEN"])
+                                           deadline: deadline, json: Turn.pi_json?(conf["AGENT_CMD"]), human_token: conf["HUMAN_TOKEN"])
       case klass
       when :step then "pass"
       when :done then "fail"
