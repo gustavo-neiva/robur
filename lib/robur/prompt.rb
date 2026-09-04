@@ -23,6 +23,8 @@ module Robur
       "One step of the tracker task. If the task lacks repo-convention detail, read AGENTS.md first. Write " \
         "changes to files; never paste file contents in your reply. Never edit #{Paths::REPO_CONF} (or legacy " \
         "#{Paths::LEGACY_REPO_CONF}) or the AGENTS.md protocol markers — the loop reverts them. Step done: " \
+        "change the task's `- [ ]` to `- [x]` in #{conf['TRACKER_FILE'] || 'PLAN.md'} — the loop never does this " \
+        "for you, and an unflipped box means the next turn is handed the same task again — then " \
         "print #{conf['STEP_TOKEN']} on its own line. No work left at all: print #{conf['DONE_TOKEN']} on its own line."
     end
 

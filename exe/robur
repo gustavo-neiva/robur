@@ -1,6 +1,12 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+# Trackers, AGENTS.md and logs are UTF-8. Under launchd there is no LANG, so
+# Ruby defaults to US-ASCII and every bare File.read raises on the first
+# non-ASCII byte (the money-loop died this way on `doctor`). Pin it here, at
+# the one entrypoint, rather than per-call.
+Encoding.default_external = Encoding::UTF_8
+
 # Resolve symlink chain so exe/robur works from PATH, brew links, etc.
 self_path = File.expand_path(__FILE__)
 while File.symlink?(self_path)

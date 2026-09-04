@@ -9,7 +9,9 @@ class PromptTest < Minitest::Test
   CONF = { "STEP_TOKEN" => "STEP_T", "DONE_TOKEN" => "DONE_T" }.freeze
   BASE = "One step of the tracker task. If the task lacks repo-convention detail, read AGENTS.md first. Write " \
          "changes to files; never paste file contents in your reply. Never edit .robur.conf (or legacy " \
-         ".ratchet.conf) or the AGENTS.md protocol markers — the loop reverts them. Step done: print STEP_T on " \
+         ".ratchet.conf) or the AGENTS.md protocol markers — the loop reverts them. Step done: " \
+         "change the task's `- [ ]` to `- [x]` in PLAN.md — the loop never does this for you, and an " \
+         "unflipped box means the next turn is handed the same task again — then print STEP_T on " \
          "its own line. No work left at all: print DONE_T on its own line."
 
   def plan_with(content)
