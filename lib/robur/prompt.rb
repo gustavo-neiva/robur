@@ -20,23 +20,20 @@ module Robur
     end
 
     def self.base(conf)
-      "Do ONE discrete step of work on this repository's current task, following the project's AGENTS.md " \
-        "instructions. Write all changes to files; do not dump file contents in your reply. Do NOT edit " \
-        "#{Paths::REPO_CONF} (or a legacy #{Paths::LEGACY_REPO_CONF}) or the AGENTS.md protocol markers " \
-        "— the loop reverts and wastes the turn. When the " \
-        "step is complete, print the token #{conf['STEP_TOKEN']} on its own line. If there is absolutely no " \
-        "remaining work, print the token #{conf['DONE_TOKEN']} on its own line instead."
+      "One step of the tracker task, per this repo's AGENTS.md. Write changes to files; never paste file " \
+        "contents in your reply. Never edit #{Paths::REPO_CONF} (or legacy #{Paths::LEGACY_REPO_CONF}) or the " \
+        "AGENTS.md protocol markers — the loop reverts them. Step done: print #{conf['STEP_TOKEN']} on its own " \
+        "line. No work left at all: print #{conf['DONE_TOKEN']} on its own line."
     end
 
     def self.task_section(conf, plan)
       tracker = conf["TRACKER_FILE"] || "PLAN.md"
       block = plan.task_block
       if block && !block.empty?
-        "Your current task, quoted from #{tracker} (authoritative — verify it is still the first open/IN " \
-          "PROGRESS task there before starting):\n#{cap(block)}"
+        "Task, quoted from #{tracker} — verify it is still the first open/IN PROGRESS task before starting:\n#{cap(block)}"
       elsif (task = plan.next_task(:in_progress) || plan.next_task(:open))
-        "The current tracker task is: #{task.id} (#{task.tags.join(', ')}) #{task.text}\n" \
-          "(Verify it is still the first open/IN PROGRESS task in #{tracker} before starting.)"
+        "Current tracker task: #{task.id} (#{task.tags.join(', ')}) #{task.text}\n" \
+        "(Verify it is still the first open/IN PROGRESS task in #{tracker}.)"
       end
     end
 

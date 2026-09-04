@@ -27,6 +27,7 @@ Loop/turn mechanics:
 Tokens and telemetry:
 - Prompt bloat is rarely where the cost is: `Prompt.for_turn` is base + a ≤40-line task block + note + verify tail, and nothing accumulates across turns (`--no-session`). Tokens burn inside the agent's own tool loop — only the round-trip count shows it. Measure before refactoring a prompt.
 - `Turn.token_in?` must not re-read the whole turn file every poll tick that shows growth — quadratic on 1.8MB files at a 3s poll. Scan from `last_size`, rewound by `max_token - 1` so a token straddling a poll boundary is still seen; the rewind is the part that is easy to get wrong.
+- In json mode a completion token counts ONLY inside an assistant `text_end` event (Classifier parity). `--mode json` streams the user-message echo live, and the prompt quotes the token names in its own instructions — a raw substring match TERM-killed every turn at the first poll and the loop read it as `:empty` on every model (2026-09-04 outage; the Classifier test suite already knew this, the watchdog didn't).
 - Extending a frozen TSV: append past the last frozen column, keep the extension opt-in (`usage:`). Consumers parse positionally (`awk -F'\t'`, never `NF`) — a rollback onto a file with wider rows stays safe in both directions.
 - Work in a `git worktree`, not a branch, when another session has the repo as its cwd. A branch switch moves HEAD for that session too; the supervisor can restart `robur run` at any time and would commit onto your branch.
 

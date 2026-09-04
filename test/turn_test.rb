@@ -39,6 +39,37 @@ module Robur
       refute Turn.token_in?(file, ["STEP_COMPLETE"], from: 99) # past EOF, no raise
     end
 
+    # json mode: the streamed user-message echo and thinking deltas quote the
+    # token names in prose — only a completed assistant text event counts
+    # (the 2026-09-04 outage: every model died :empty at the first poll).
+    def test_token_in_json_mode_ignores_prompt_echo_and_thinking_prose
+      file = File.join(Dir.mktmpdir, "turn.out")
+      File.write(file, [
+        %({"type":"message_start","message":{"role":"user","content":[{"type":"text","text":"print the token STEP_COMPLETE on its own line, else ALL_DONE"}]}},),
+        %({"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","delta":"I must end with STEP_COMPLETE\\n"}})
+      ].join("\n") + "\n")
+      refute Turn.token_in?(file, ["STEP_COMPLETE", "ALL_DONE"], from: 0)
+
+      File.open(file, "a") do |f|
+        f.puts %({"type":"message_update","assistantMessageEvent":{"type":"text_end","contentIndex":0,"content":"done\\nSTEP_COMPLETE\\n"}})
+      end
+      assert Turn.token_in?(file, ["STEP_COMPLETE", "ALL_DONE"], from: 0)
+    end
+
+    # End-to-end for the outage: a json-mode turn whose only output is the
+    # prompt echo must NOT be token-killed — it runs to its deadline.
+    def test_json_prompt_echo_quoting_the_token_does_not_early_kill
+      echo = %({"type":"message_end","message":{"role":"user","content":[{"type":"text","text":"print the token STEP_COMPLETE on its own line. Otherwise ALL_DONE."}]}})
+      file = File.join(Dir.mktmpdir, "turn.out")
+      result = Turn.run(
+        cmd: [RbConfig.ruby, "-e", "puts '#{echo}'; $stdout.flush; sleep 30"],
+        turn_file: file, turn_timeout: 1, stall_timeout: 10, poll_interval: 0.05,
+        early_tokens: ["STEP_COMPLETE", "ALL_DONE"]
+      )
+      assert_includes File.read(file), "STEP_COMPLETE"
+      assert_equal "deadline-1s", result.kill_reason
+    end
+
     def test_deadline_kill
       start = Process.clock_gettime(Process::CLOCK_MONOTONIC)
       result, _out = run_turn([RbConfig.ruby, "-e", "sleep 30"], turn_timeout: 1)

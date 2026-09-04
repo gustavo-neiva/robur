@@ -7,12 +7,10 @@ require "tmpdir"
 
 class PromptTest < Minitest::Test
   CONF = { "STEP_TOKEN" => "STEP_T", "DONE_TOKEN" => "DONE_T" }.freeze
-  BASE = "Do ONE discrete step of work on this repository's current task, following the project's AGENTS.md " \
-         "instructions. Write all changes to files; do not dump file contents in your reply. Do NOT edit " \
-         ".robur.conf (or a legacy .ratchet.conf) or the AGENTS.md protocol markers — the loop reverts and " \
-         "wastes the turn. When the " \
-         "step is complete, print the token STEP_T on its own line. If there is absolutely no remaining " \
-         "work, print the token DONE_T on its own line instead."
+  BASE = "One step of the tracker task, per this repo's AGENTS.md. Write changes to files; never paste file " \
+         "contents in your reply. Never edit .robur.conf (or legacy .ratchet.conf) or the AGENTS.md protocol " \
+         "markers — the loop reverts them. Step done: print STEP_T on its own line. No work left at all: " \
+         "print DONE_T on its own line."
 
   def plan_with(content)
     dir = Dir.mktmpdir
@@ -37,8 +35,7 @@ class PromptTest < Minitest::Test
         accept: gate green
       ## Done
     PLAN
-    header = "Your current task, quoted from PLAN.md (authoritative — verify it is still the first open/IN " \
-             "PROGRESS task there before starting):"
+    header = "Task, quoted from PLAN.md — verify it is still the first open/IN PROGRESS task before starting:"
     prompt = Robur::Prompt.for_turn(conf: CONF, plan: plan)
     assert_equal [BASE, "#{header}\n- [IN PROGRESS] T1.1 (normal) do the thing\n  do: first step\n  accept: gate green"].join("\n"),
                  prompt
@@ -60,8 +57,8 @@ class PromptTest < Minitest::Test
       Robur::Task.parse("- [ ] T2.3 (normal, serial) wire the prompt", 3) if kind == :open
     end
     prompt = Robur::Prompt.for_turn(conf: CONF, plan: plan)
-    assert_equal [BASE, "The current tracker task is: T2.3 (normal, serial) wire the prompt\n" \
-                        "(Verify it is still the first open/IN PROGRESS task in PLAN.md before starting.)"].join("\n"),
+    assert_equal [BASE, "Current tracker task: T2.3 (normal, serial) wire the prompt\n" \
+                        "(Verify it is still the first open/IN PROGRESS task in PLAN.md.)"].join("\n"),
                  prompt
   end
 

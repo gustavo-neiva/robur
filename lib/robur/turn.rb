@@ -94,6 +94,13 @@ module Robur
     # from byte offset `from` onward. The caller rewinds `from` by
     # max_token-1 bytes so a token split across two polls is not missed;
     # `from: 0` reproduces the original whole-file scan.
+    #
+    # json mode: a token counts only inside a completed assistant text event
+    # (the Classifier's rule). The streamed user-message echo and thinking
+    # deltas quote the token names in prose; a raw substring match on those
+    # TERM-killed every turn at the first poll and the loop classified it
+    # :empty across all models (2026-09-04 outage). Windows without JSON
+    # events keep the raw substring behavior for text-mode agents.
     def self.token_in?(turn_file, tokens, from: 0)
       content = File.open(turn_file, "rb") do |f|
         f.seek(from) if from.positive?
@@ -101,7 +108,11 @@ module Robur
       end
       return false if content.nil?
 
-      tokens.any? { |t| content.include?(t) }
+      if content.include?("\"type\"")
+        content.each_line.any? { |l| l.include?("\"text_end\"") && tokens.any? { |t| l.include?(t) } }
+      else
+        tokens.any? { |t| content.include?(t) }
+      end
     rescue StandardError
       false
     end
