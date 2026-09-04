@@ -354,14 +354,16 @@ other people.
     done: Given a populated home and two repos, When `--apply` runs, Then every file is present under the new name and every old path still resolves; When it runs again, Then it reports nothing to do; Given no `--apply`, Then nothing is modified.
     files: lib/robur/migrate.rb, test/migrate_test.rb
     note: done 2026-09-04. 6 tests. Dry-run verified against the real estate: 295 log dirs, 2,376 metrics rows.
-- [ ] T8.3 (hard, serial) sweep lib/ onto Paths and robur's own wording
+- [x] T8.3 (hard, serial) sweep lib/ onto Paths and robur's own wording
     do: route every remaining hardcoded name through `Paths`; rename user-visible wording (`robur START`, `robur END`, session prefix `robur-<slug>`, `robur-protocol` marker written, both read); delete the ~43 bash provenance citations, rewriting the comments that carry a real reason so they stand alone.
     done: Given `grep -rn 'ratchet' lib/`, Then the only hits are the deliberate compatibility fallbacks; the unit suite is green; `robur --help`, `robur doctor` and `robur init` all work.
     files: lib/robur/*.rb
-- [ ] T8.4 (normal, serial) retire the differential harness
+    note: done 2026-09-04, commit ba5a3e6 (found unticked during M9 setup; verified: grep clean, Paths is the single source, suite green at that commit).
+- [x] T8.4 (normal, serial) retire the differential harness
     do: remove `test/differential/` — it compares against a binary that no longer defines correctness, and a half-true gate is worse than no gate. Replace it with golden-file tests over robur's OWN output so the CLI surface stays pinned to something.
     done: Given the unit suite, Then it is green and no test shells out to `../ratchet`; Given a wording change, Then a golden test fails and names the surface.
     files: test/differential/, test/golden_test.rb
+    note: done 2026-09-04, commit 1bfa4b3 (found unticked during M9 setup; verified: test/differential/ gone, test/golden_test.rb exists).
 - [ ] T8.5 (normal, serial) templates, docs, and the setup path
     do: `templates/robur.conf.example`; rewrite AGENTS.md for a product that stands alone; update REWIRING.md around the compatibility symlink; append the rebirth entry to LEARNINGS.md. Verify `robur init` on a bare repo end to end.
     done: Given a bare repo, When `robur init` runs, Then it stamps `.robur.conf`, AGENTS.md with `robur-protocol:v1`, a seed PLAN.md and LEARNINGS.md, and `robur doctor` on it exits 0.
@@ -369,4 +371,33 @@ other people.
 - [ ] T8.6 (trivial, serial) M8 self-QA
     do: full gate, then confirm the estate still reads robur's state through the compatibility symlinks.
     done: the unit suite exits 0 AND `git -C ../ratchet status --porcelain` is empty AND, after `migrate-state --apply` on a scratch repo, reading `.ratchet/stop_reason` returns what robur wrote to `.robur/stop_reason`.
+    files: LEARNINGS.md
+
+## M9 — Test suite performance: remove the artificial waits
+
+Profiling 2026-09-04: the unit gate takes 39s wall but only ~13s CPU — 66% of
+the suite is sleeping, not computing. Four tests are 66% of the wall time:
+the two LoopTest integrations (~9.5s each) poll at the 3s `POLL_INTERVAL`
+default while fake-agent finishes in ~150ms, and the two TurnTest kill tests
+(~3s each) pay `Sys::Proc#kill`'s unconditional 2s sleep between TERM and KILL.
+This suite is also this repo's `VERIFY_CMD`, so every production turn that
+stages something pays it — halving it halves the committed turn. Do NOT touch
+the parity tests (render/harness/plan/repo): they are subprocess-bound by
+design, each test is ≤1.2s, and they are the repo's core value.
+
+- [ ] T9.1 (trivial, serial) LoopTest polls at test speed
+    do: `test/loop_test.rb`'s `make_repo` writes a conf without `POLL_INTERVAL`, so `Loop.run`'s `Turn.run` call polls at the 3s default — three turns = ~9.5s for ~150ms of agent work. Add `POLL_INTERVAL="0.1"` to the conf heredoc in `make_repo`, the exact convention `test/pr_flow_test.rb` already uses. Do NOT write a fractional value expecting fractional polling: the call site does `.to_i`, so anything below 1 polls at 0 (a spin — existing pr_flow behaviour, fine for a 150ms agent). No `lib/` changes in this task.
+    done: Given the unit gate, When it runs, Then it exits 0 and the two LoopTest integration tests finish in ~1s each instead of ~9s, cutting total wall time by roughly 16s.
+    files: test/loop_test.rb
+- [ ] T9.2 (normal, serial) kill grace: poll-reap instead of blind sleep
+    do: `lib/robur/turn.rb` defines its own `Sys::Proc` (spawn/reap/kill, near the bottom of the file) — its `kill` does TERM, unconditional `sleep(2)`, then KILL, so every watchdog kill pays 2s even when TERM worked (the common case). Replace the blind sleep with a `Process.waitpid2(pid, Process::WNOHANG)` poll loop (0.05s tick, 2s ceiling); if the ceiling passes, KILL then blocking-reap. `kill` returns the reaped `Process::Status` (nil on ESRCH), and `Turn.run`'s tail — currently `proc.kill(pid); status = proc.reap(pid)` — becomes `status = proc.kill(pid) || proc.reap(pid)`, so a status kill already reaped is not passed to `Process.wait` again (that raises ECHILD). The TERM→KILL escalation and the resulting wstatus are unchanged: TERM-responsive still reports SIGTERM, TERM-trapping still gets SIGKILL at the ceiling — only the wait becomes adaptive. Add two `test/turn_test.rb` cases: a deadline kill returns within ~0.2s of detection (not 2s), and a hanger that traps TERM (`RbConfig.ruby, "-e", "trap('TERM'){}; sleep 30"`) still dies with termsig 9.
+    done: Given a stub that sleeps past the deadline and honours TERM, When the turn is killed, Then kill_reason and the signaled status are unchanged AND the kill completes within ~0.2s of detection; Given a TERM-trapping stub, When the 2s ceiling passes, Then it dies by SIGKILL; the unit gate exits 0 and the two TurnTest kill tests drop from ~3s each to ~1.2s.
+    files: lib/robur/turn.rb, test/turn_test.rb
+- [ ] T9.3 (normal, serial) evaluate Minitest.parallel_fork — adopt or reject with evidence
+    do: after T9.1+T9.2 the suite should be ~17s; try going lower with the stdlib fork runner. Add `Minitest.parallel_fork` to `test/test_helper.rb` (stdlib, no gems). Fork isolation also quarantines the ENV-juggling tests (RATCHET_HOME et al) that today depend on teardown ordering. Run the gate FIVE times: if all five are green and wall time drops materially, keep it; if any run fails a test that passes serially, revert the enablement and tick this task with a `rejected:flaky` note naming the failing test — a flaky gate is worse than a slow gate, and the revert is a valid deliverable, not a failure.
+    done: Given five consecutive gate runs, Then either all five exit 0 with materially lower wall time and `parallel_fork` stays, or it is reverted and the tick carries a `rejected:flaky` note naming the failing test; either way the gate exits 0 on the final state.
+    files: test/test_helper.rb
+- [ ] T9.4 (trivial, serial) M9 self-QA and the timing record
+    do: run `time ruby -Ilib -e 'Dir["test/**/*_test.rb"].each{|f| require File.expand_path(f)}'` and append the measured wall time plus which of T9.1–T9.3 landed to LEARNINGS.md. Run the differential gate too if `test/differential/` still exists (T8.4 may have already retired it — if so, note that and run the unit gate only).
+    done: the unit gate exits 0; LEARNINGS.md carries the M9 entry with the measured wall time; `git -C ../ratchet status --porcelain` is empty.
     files: LEARNINGS.md

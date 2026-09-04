@@ -1,6 +1,10 @@
 # ratchet runtime
 .ratchet/
 .ratchet.conf
+
+# robur runtime
+.robur/
+.robur.conf
 *.log
 
 # robur test scratch
@@ -10,3 +14,5 @@ tmp/
 .DS_Store
 *.swp
 *~
+.ratchet
+.robur
