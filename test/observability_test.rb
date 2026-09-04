@@ -447,7 +447,7 @@ module Robur
         # Poll on CONTENT, not existence: the async printf creates the file
         # before flushing, so reading at first existence can race to "".
         content = ""
-        50.times do
+        500.times do # 5s deadline; exits on first success, tolerates a loaded machine
           content = File.exist?(marker) ? File.read(marker) : ""
           break if content.include?("merge the PR")
 

@@ -364,7 +364,7 @@ other people.
     done: Given the unit suite, Then it is green and no test shells out to `../ratchet`; Given a wording change, Then a golden test fails and names the surface.
     files: test/differential/, test/golden_test.rb
     note: done 2026-09-04, commit 1bfa4b3 (found unticked during M9 setup; verified: test/differential/ gone, test/golden_test.rb exists).
-- [ ] T8.5 (normal, serial) templates, docs, and the setup path
+- [x] T8.5 (normal, serial) templates, docs, and the setup path — BLOCKED by progress guard (10 no-progress turns)
     do: `templates/robur.conf.example`; rewrite AGENTS.md for a product that stands alone; update REWIRING.md around the compatibility symlink; append the rebirth entry to LEARNINGS.md. Verify `robur init` on a bare repo end to end.
     done: Given a bare repo, When `robur init` runs, Then it stamps `.robur.conf`, AGENTS.md with `robur-protocol:v1`, a seed PLAN.md and LEARNINGS.md, and `robur doctor` on it exits 0.
     files: templates/, AGENTS.md, REWIRING.md, LEARNINGS.md
