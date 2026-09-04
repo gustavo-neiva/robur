@@ -158,10 +158,12 @@ Both call the **name**, so §1 moves them. This is why the cutover is one line.
 it, and the file names inside the state dir are unchanged, so every one of those
 reads resolves through the symlink. `is_runnable()` at `:91` gates on
 `.ratchet.conf` existing — a repo that already has one keeps it (robur reads it
-in place and never rewrites the name), and a repo that gets a fresh
-`.robur.conf` must have `is_runnable()` taught the new name before it can be
-driven. That is the one place where the compatibility symlink does *not* cover
-the estate, because a plain file has no symlink left behind.
+in place and never rewrites the name), and since the rebirth, `robur init`
+leaves a fresh repo's `.ratchet.conf` as a symlink to `.robur.conf` too
+(`Paths.ensure_repo_conf_link!`; a plain file has no shim unless we install
+one), so a repo initialized on the new name passes the gate untaught. The
+residual caveat: the shim is installed by `robur init`, not by every conf
+write — a `.robur.conf` created by hand gets no symlink until init runs.
 
 `money-loop.sh:81` also does `mkdir -p "$repo/.ratchet"` before writing
 backoff. On a repo robur has already initialized, that is a no-op against the
@@ -268,7 +270,7 @@ override does either (§7), and no caller anywhere holds a filesystem path into
 | 2 | `atlas/cycles.conf:27,29` | verify — human decision on unparking |
 | 3 | `~/.robur/conf` `NOTIFY_CMD` | verify — no trailing `"$1"`; home symlinked |
 | 4 | `com.gustavo.money-loop.plist` | verify — no edit, no reload |
-| 5 | `atlas/bin/money-loop.sh:120,184` | verify — moved by §1; ⚠️ `is_runnable()` sees only `.ratchet.conf` |
+| 5 | `atlas/bin/money-loop.sh:120,184` | verify — moved by §1; `is_runnable()` covered by init's `.ratchet.conf` symlink |
 | 6 | harbor `.ratchet/` state reads | verify — symlink covers it, no rewiring |
 | 7 | `RATCHET_*` / `ROBUR_*` env | verify — no live override exists |
 | 8 | `metrics.tsv` column count | verify — ⚠️ stale checklist line |

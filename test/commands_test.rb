@@ -21,6 +21,22 @@ module Robur
       FileUtils.remove_entry(@dir)
     end
 
+    # T8.5 acceptance, run end to end: a bare repo gets the whole stamp from
+    # one command — conf, tracker, learnings, an AGENTS.md carrying the
+    # protocol marker — and the result passes doctor with zero problems.
+    def test_init_on_a_bare_repo_stamps_the_full_surface_and_doctor_passes
+      Commands.init(@dir, emit: ->(_m) {})
+
+      assert_path_exists File.join(@dir, Paths::REPO_CONF)
+      assert_path_exists File.join(@dir, "PLAN.md")
+      assert_path_exists File.join(@dir, "LEARNINGS.md")
+      assert_includes File.read(File.join(@dir, "AGENTS.md")), "robur-protocol:v1"
+
+      out = StringIO.new
+      assert_equal 0, Commands.doctor_report(@dir, out: out)
+      assert_includes out.string, "protocol delivery: harness-prompt"
+    end
+
     def test_init_stamps_conf_tracker_agents_learnings_and_gitignore
       Commands.init(@dir, emit: ->(_m) {})
 

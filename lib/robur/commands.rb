@@ -49,7 +49,10 @@ module Robur
         FileUtils.cp(File.join(TEMPLATES_DIR, "robur.conf.example"), conf)
         seed_vc = detect_verify_cmd(dir)
         if seed_vc.empty?
-          emit.call("  no stack detected -> VERIFY_CMD left empty (set it; no-gate is loud by design)")
+          # The template's VERIFY_CMD stays: doctor FAILs on an empty one, so a
+          # bare repo would fail its own first doctor. The placeholder is loud
+          # in its own way — say what actually happened, not "left empty".
+          emit.call("  no stack detected -> VERIFY_CMD left at the template default (set it; no-gate is loud by design)")
         else
           emit.call("  detected stack -> VERIFY_CMD='#{seed_vc}'")
           File.write(conf, File.read(conf).sub(/^VERIFY_CMD=.*$/, "VERIFY_CMD=#{seed_vc}"))

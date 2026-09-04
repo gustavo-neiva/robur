@@ -1,7 +1,7 @@
 exit: 0
 --- stdout ---
 [<timestamp>] robur init: <TMP>/repo
-[<timestamp>]   no stack detected -> VERIFY_CMD left empty (set it; no-gate is loud by design)
+[<timestamp>]   no stack detected -> VERIFY_CMD left at the template default (set it; no-gate is loud by design)
 [<timestamp>]   seeded PLAN.md (edit it, or run 'robur new' to draft from an idea)
 [<timestamp>]   seeded human AGENTS.md
 [<timestamp>] done. Next: review PLAN.md, then 'robur doctor <TMP>/repo' and 'robur run <TMP>/repo'.

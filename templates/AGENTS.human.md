@@ -1,3 +1,6 @@
+<!-- robur-protocol:v1 — the loop protocol travels in the harness prompt, not in
+     this file. Do not remove or hand-edit this marker; `robur init` owns it. -->
+
 # Agent context
 
 ## Loop vs interactive

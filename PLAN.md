@@ -364,10 +364,11 @@ other people.
     done: Given the unit suite, Then it is green and no test shells out to `../ratchet`; Given a wording change, Then a golden test fails and names the surface.
     files: test/differential/, test/golden_test.rb
     note: done 2026-09-04, commit 1bfa4b3 (found unticked during M9 setup; verified: test/differential/ gone, test/golden_test.rb exists).
-- [ ] T8.5 (normal, serial) templates, docs, and the setup path
+- [x] T8.5 (normal, serial) templates, docs, and the setup path
     do: `templates/robur.conf.example`; rewrite AGENTS.md for a product that stands alone; update REWIRING.md around the compatibility symlink; append the rebirth entry to LEARNINGS.md. Verify `robur init` on a bare repo end to end.
     done: Given a bare repo, When `robur init` runs, Then it stamps `.robur.conf`, AGENTS.md with `robur-protocol:v1`, a seed PLAN.md and LEARNINGS.md, and `robur doctor` on it exits 0.
     files: templates/, AGENTS.md, REWIRING.md, LEARNINGS.md
+    note: done 2026-09-04. Most of the rebirth landed in b9c7dab; this pass closed the remainder — init now stamps `robur-protocol:v1` into AGENTS.md (was: marker existed nowhere, so the done-criterion check had nothing to find), init's no-stack message tells the truth (VERIFY_CMD stays at the template default — blanking it would fail doctor, breaking this very criterion), REWIRING.md §5 no longer calls the `.ratchet.conf` gap open (ensure_repo_conf_link! closed it), and a bare-repo acceptance test pins the full stamp + doctor zero-problems.
 - [ ] T8.6 (trivial, serial) M8 self-QA
     do: full gate, then confirm the estate still reads robur's state through the compatibility symlinks.
     done: the unit suite exits 0 AND `git -C ../ratchet status --porcelain` is empty AND, after `migrate-state --apply` on a scratch repo, reading `.ratchet/stop_reason` returns what robur wrote to `.robur/stop_reason`.
