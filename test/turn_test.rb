@@ -90,6 +90,30 @@ module Robur
       assert_predicate result.status, :signaled?
     end
 
+    # The grace used to be an unconditional sleep(2), so a TERM-responsive
+    # child cost 2s on every watchdog kill. Now it polls for the exit.
+    def test_deadline_kill_returns_promptly_when_term_is_honoured
+      start = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      result, _out = run_turn([RbConfig.ruby, "-e", "sleep 30"], turn_timeout: 1, poll: 0.05)
+      elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - start
+      assert_equal "deadline-1s", result.kill_reason
+      assert_equal 15, result.status.termsig
+      # detection is capped at turn_timeout + one poll; the kill itself must
+      # not add anything like the old 2s grace on top.
+      assert_operator elapsed - result.elapsed, :<, 1.0
+    end
+
+    # A child that traps TERM still has to die — the escalation to KILL at the
+    # ceiling is what the poll loop must not lose.
+    def test_term_trapping_hanger_still_dies_by_sigkill
+      result, _out = run_turn(
+        [RbConfig.ruby, "-e", "trap('TERM') {}; $stdout.sync = true; sleep 30"],
+        turn_timeout: 1, poll: 0.05
+      )
+      assert_equal "deadline-1s", result.kill_reason
+      assert_equal 9, result.status.termsig
+    end
+
     def test_normal_completion
       result, out = run_turn([RbConfig.ruby, "-e", "print 'done'; exit 7"])
       assert_nil result.kill_reason

@@ -187,6 +187,7 @@ class GoldenTest < Minitest::Test
   # a subprocess `run` would really sleep. The fake-agent ticks exactly one
   # task per invocation, so two tasks = two working turns + one ALL_DONE turn.
   def test_loop_log_of_a_full_run_to_all_done
+    fast_poll!
     seed_repo!(committed: true)
     code = nil
     capture_io { code = Robur::Loop.run(@repo, sleep_it: ->(_s) {}) }
@@ -203,6 +204,7 @@ class GoldenTest < Minitest::Test
   end
 
   def test_stats_rendering_after_a_run
+    fast_poll!
     seed_repo!(committed: true)
     capture_io { Robur::Loop.run(@repo, sleep_it: ->(_s) {}) }
     out, err, status = robur("stats", ".", chdir: @repo)
@@ -345,6 +347,13 @@ class GoldenTest < Minitest::Test
   ].freeze
 
   # ---------------------------- fixtures ------------------------------------
+
+  # Only the two tests that actually drive `Loop.run` call this: the watchdog
+  # would otherwise poll at the 3s default while fake-agent finishes in ~150ms.
+  # It is an ENV knob, not a conf key — the conf ALLOWLIST is a frozen contract
+  # and doctor rejects unknown keys, which would corrupt these very goldens.
+  # `setup` snapshots ENV and `teardown` restores it, so no cleanup here.
+  def fast_poll! = ENV["POLL_INTERVAL"] = "0.1"
 
   def base_conf
     <<~CONF

@@ -76,8 +76,9 @@ module Robur
           clock.sleep(poll_interval)
         end
 
-        proc.kill(pid)
-        status = proc.reap(pid)
+        # kill reaps when TERM lands (the common case); only a TERM-ignoring
+        # child survives to the ceiling and is still unreaped here.
+        status = proc.kill(pid) || proc.reap(pid)
         Result.new(status: status, kill_reason: reason, elapsed: detected - start)
       end
     end
@@ -149,12 +150,26 @@ module Robur
         $?
       end
 
-      # TERM, grace period, then KILL.
+      # TERM, then poll for the exit instead of sleeping the whole grace out:
+      # a TERM-responsive child dies in milliseconds and used to cost 2s every
+      # time. A child that traps TERM still gets KILL at the ceiling, so the
+      # escalation and the resulting wstatus are unchanged. Returns the reaped
+      # status, or nil if there was nothing to reap (caller reaps instead).
+      GRACE = 2.0
+      TICK = 0.05
+
       def kill(pid)
         Process.kill("TERM", pid)
-        sleep(2)
+        deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + GRACE
+        while Process.clock_gettime(Process::CLOCK_MONOTONIC) < deadline
+          _, status = Process.waitpid2(pid, Process::WNOHANG)
+          return status if status
+
+          sleep(TICK)
+        end
         Process.kill("KILL", pid)
-      rescue Errno::ESRCH
+        Process.waitpid2(pid)[1]
+      rescue Errno::ESRCH, Errno::ECHILD
         nil
       end
     end

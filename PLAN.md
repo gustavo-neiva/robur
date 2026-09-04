@@ -377,29 +377,52 @@ other people.
 
 ## M9 — Test suite performance: remove the artificial waits
 
-Profiling 2026-09-04: the unit gate takes 39s wall but only ~13s CPU — 66% of
-the suite is sleeping, not computing. Four tests are 66% of the wall time:
-the two LoopTest integrations (~9.5s each) poll at the 3s `POLL_INTERVAL`
-default while fake-agent finishes in ~150ms, and the two TurnTest kill tests
-(~3s each) pay `Sys::Proc#kill`'s unconditional 2s sleep between TERM and KILL.
-This suite is also this repo's `VERIFY_CMD`, so every production turn that
-stages something pays it — halving it halves the committed turn. Do NOT touch
-the parity tests (render/harness/plan/repo): they are subprocess-bound by
-design, each test is ≤1.2s, and they are the repo's core value.
+Re-profiled 2026-09-04 before starting: the gate had grown to **105.7s wall on
+8.5s user CPU — 92% of it sleeping, not computing**. The 39s/4-test figure
+below was stale; the real distribution was thirteen tests holding 91.5s (87%):
 
-- [ ] T9.1 (trivial, serial) LoopTest polls at test speed
-    do: `test/loop_test.rb`'s `make_repo` writes a conf without `POLL_INTERVAL`, so `Loop.run`'s `Turn.run` call polls at the 3s default — three turns = ~9.5s for ~150ms of agent work. Add `POLL_INTERVAL="0.1"` to the conf heredoc in `make_repo`, the exact convention `test/pr_flow_test.rb` already uses. Do NOT write a fractional value expecting fractional polling: the call site does `.to_i`, so anything below 1 polls at 0 (a spin — existing pr_flow behaviour, fine for a 150ms agent). No `lib/` changes in this task.
-    done: Given the unit gate, When it runs, Then it exits 0 and the two LoopTest integration tests finish in ~1s each instead of ~9s, cutting total wall time by roughly 16s.
-    files: test/loop_test.rb
-- [ ] T9.2 (normal, serial) kill grace: poll-reap instead of blind sleep
+| tests | wall | root cause |
+|---|---|---|
+| LoopTest × **7** @ 9.5s | 66.5s | watchdog polls at the 3s `POLL_INTERVAL` default while fake-agent finishes in ~150ms, × 3 turns |
+| GoldenTest × 2 @ 6.4s | 12.8s | same cause, second fixture — **missed by the original M9 write-up** |
+| TurnTest × 4 @ 3.0s | 12.2s | `Sys::Proc#kill`'s unconditional 2s sleep between TERM and KILL |
+| all other 302 tests | ~14s | 46ms average |
+
+Pruning was evaluated first and **rejected**: 302 of 315 tests ran in 14s
+total, so deleting the entire rest of the suite would buy 13% and cost all the
+coverage. Test:lib is 4865:5325 lines (~0.91:1, lean), and the whole suite
+contains exactly one `assert_respond_to`/`assert_kind_of`/`assert_instance_of`
+between all 315 tests — there is no tautological padding to cut. The suite was
+not overtested, it was sleeping.
+
+This suite is also this repo's `VERIFY_CMD`, so every production turn that
+stages something pays it. Do NOT touch the parity tests
+(render/harness/plan/repo): they are subprocess-bound by design, each test is
+≤1.2s, and they are the repo's core value.
+
+**Result: 105.7s → ~35s (3x), 319 runs green, three consecutive runs stable.**
+
+- [x] T9.1 (trivial, serial) LoopTest and GoldenTest poll at test speed
+    do: `test/loop_test.rb`'s `make_repo` and `test/golden_test.rb`'s `base_conf` both write a conf without `POLL_INTERVAL`, so `Loop.run`'s `Turn.run` call polls at the 3s default — three turns = ~9.5s for ~150ms of agent work. Set `POLL_INTERVAL="0.1"` for those runs. Do NOT write a fractional value expecting fractional polling: the call site does `.to_i`, so anything below 1 polls at 0 (a spin — existing pr_flow behaviour, fine for a 150ms agent). No `lib/` changes in this task.
+    done: Given the unit gate, When it runs, Then it exits 0 and the LoopTest/GoldenTest integration tests finish in ~1s each instead of ~9s and ~6.4s.
+    files: test/loop_test.rb, test/golden_test.rb
+    note: done 2026-09-04. **The original instruction was wrong and was corrected during implementation.** It said to add `POLL_INTERVAL` "to the conf heredoc in `make_repo`, the exact convention `test/pr_flow_test.rb` already uses" — but pr_flow passes conf **hashes** in-process and never writes a `.robur.conf` through the validator. `POLL_INTERVAL` is deliberately NOT in `Config::ALLOWLIST` (a frozen contract mirroring `ratchet/lib/contract.sh`); it is an ENV knob by design, per the precedent recorded at `lib/robur/observability.rb:81`. Writing it into the conf file made `doctor` emit `unknown key 'POLL_INTERVAL' (not in allowlist)`, which broke the `loop-log` golden and sped up nothing. Correct fix is ENV: `loop_test` sets/restores it alongside the existing `HOME_ENV` juggling in setup/teardown; `golden_test` gets a `fast_poll!` helper called only by the two tests that actually drive `Loop.run`, since its `setup` snapshots ENV and `teardown` restores it. Keeping it out of `base_conf` also guarantees the four doctor goldens (which render the conf) cannot shift. LoopTest 9.5s → ~1.4s each, GoldenTest 6.4s → ~1.0s each.
+- [x] T9.2 (normal, serial) kill grace: poll-reap instead of blind sleep
     do: `lib/robur/turn.rb` defines its own `Sys::Proc` (spawn/reap/kill, near the bottom of the file) — its `kill` does TERM, unconditional `sleep(2)`, then KILL, so every watchdog kill pays 2s even when TERM worked (the common case). Replace the blind sleep with a `Process.waitpid2(pid, Process::WNOHANG)` poll loop (0.05s tick, 2s ceiling); if the ceiling passes, KILL then blocking-reap. `kill` returns the reaped `Process::Status` (nil on ESRCH), and `Turn.run`'s tail — currently `proc.kill(pid); status = proc.reap(pid)` — becomes `status = proc.kill(pid) || proc.reap(pid)`, so a status kill already reaped is not passed to `Process.wait` again (that raises ECHILD). The TERM→KILL escalation and the resulting wstatus are unchanged: TERM-responsive still reports SIGTERM, TERM-trapping still gets SIGKILL at the ceiling — only the wait becomes adaptive. Add two `test/turn_test.rb` cases: a deadline kill returns within ~0.2s of detection (not 2s), and a hanger that traps TERM (`RbConfig.ruby, "-e", "trap('TERM'){}; sleep 30"`) still dies with termsig 9.
     done: Given a stub that sleeps past the deadline and honours TERM, When the turn is killed, Then kill_reason and the signaled status are unchanged AND the kill completes within ~0.2s of detection; Given a TERM-trapping stub, When the 2s ceiling passes, Then it dies by SIGKILL; the unit gate exits 0 and the two TurnTest kill tests drop from ~3s each to ~1.2s.
     files: lib/robur/turn.rb, test/turn_test.rb
-- [ ] T9.3 (normal, serial) evaluate Minitest.parallel_fork — adopt or reject with evidence
+    note: done 2026-09-04. Implemented as specified: `kill` TERMs, then polls `Process.waitpid2(pid, Process::WNOHANG)` on a 0.05s tick against a 2s `GRACE` ceiling, returning the reaped status; past the ceiling it KILLs and blocking-reaps. `Turn.run`'s tail is now `status = proc.kill(pid) || proc.reap(pid)` so an already-reaped status is never handed to `Process.wait` again (ECHILD). Rescues `Errno::ECHILD` as well as `ESRCH`. Two tests added — `test_deadline_kill_returns_promptly_when_term_is_honoured` asserts the kill adds <1s on top of detection (was a flat 2s) and still reports termsig 15, and `test_term_trapping_hanger_still_dies_by_sigkill` proves a `trap('TERM'){}` child still dies by termsig 9 at the ceiling. The four TurnTest kill tests dropped 3.0s → ~1.1s. This was also a **production** fix, not just a test one: every watchdog kill in a real run burned 2s even when TERM worked, which is the common case. The one remaining 3.05s test is the TERM-trapping ceiling test itself — irreducible without adding an injection seam for a single test, so it stays.
+- [x] T9.3 (normal, serial) evaluate Minitest.parallel_fork — adopt or reject with evidence
     do: after T9.1+T9.2 the suite should be ~17s; try going lower with the stdlib fork runner. Add `Minitest.parallel_fork` to `test/test_helper.rb` (stdlib, no gems). Fork isolation also quarantines the ENV-juggling tests (RATCHET_HOME et al) that today depend on teardown ordering. Run the gate FIVE times: if all five are green and wall time drops materially, keep it; if any run fails a test that passes serially, revert the enablement and tick this task with a `rejected:flaky` note naming the failing test — a flaky gate is worse than a slow gate, and the revert is a valid deliverable, not a failure.
     done: Given five consecutive gate runs, Then either all five exit 0 with materially lower wall time and `parallel_fork` stays, or it is reverted and the tick carries a `rejected:flaky` note naming the failing test; either way the gate exits 0 on the final state.
     files: test/test_helper.rb
-- [ ] T9.4 (trivial, serial) M9 self-QA and the timing record
+    note: **rejected:flaky** 2026-09-04. `test/test_helper.rb` is unchanged.
+      Two independent reasons, both verified rather than assumed:
+      1. **The task's premise is factually wrong.** `Minitest.parallel_fork` is not stdlib — `ruby -e 'require "minitest"; puts Minitest.respond_to?(:parallel_fork)'` prints `false` on the installed minitest 6.0.6. It is jeremyevans' separate `minitest-parallel_fork` **gem**. This repo has no Gemfile and no gemspec (zero dependencies), so adopting it would mean taking on the repo's first dependency to save ~15s on a suite that is now 35s. Bad trade.
+      2. **The stdlib alternative deadlocks.** stdlib's only option is thread-based `parallelize_me!`. Measured: run 1 finished in 7.9s but with **16 failures and 7 errors**; run 2 **hung indefinitely** and was killed at 400s. Cause is structural, not tunable — the suite mutates process-global state that threads share: `ENV[RATCHET_HOME]`/`ENV[ROBUR_HOME]`/`ENV[POLL_INTERVAL]` in loop_test and golden_test setup/teardown, `ENV.replace(@old_env)` wholesale in golden_test, the `Robur::CLI.@loop_log`/`@quiet` module-level ivars, and `Dir.chdir`. Fork isolation would fix this, which is exactly why the gem exists — but see reason 1.
+      A gate that hangs is worse than a gate that takes 35s. T9.1+T9.2 already delivered 3x with zero flake across three consecutive green runs.
+- [x] T9.4 (trivial, serial) M9 self-QA and the timing record
     do: run `time ruby -Ilib -e 'Dir["test/**/*_test.rb"].each{|f| require File.expand_path(f)}'` and append the measured wall time plus which of T9.1–T9.3 landed to LEARNINGS.md. Run the differential gate too if `test/differential/` still exists (T8.4 may have already retired it — if so, note that and run the unit gate only).
     done: the unit gate exits 0; LEARNINGS.md carries the M9 entry with the measured wall time; `git -C ../ratchet status --porcelain` is empty.
     files: LEARNINGS.md
+    note: done 2026-09-04. `test/differential/` is already retired (T8.4), so the unit gate is the only gate — confirmed absent, not skipped. Three consecutive runs: 36.04s / 35.72s / 35.06s, all `319 runs, 1172 assertions, 0 failures, 0 errors, 0 skips`. Baseline was 105.7s / 315 runs. `git -C ../ratchet status --porcelain` is empty. LEARNINGS.md carries the M9 entry.

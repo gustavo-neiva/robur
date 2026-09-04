@@ -16,6 +16,13 @@ class LoopTest < Minitest::Test
     @home = Dir.mktmpdir("robur-home")
     @old_home = ENV[Robur::Paths::HOME_ENV]
     ENV[Robur::Paths::HOME_ENV] = @home
+    # Without this the watchdog polls at the 3s default while fake-agent
+    # finishes in ~150ms — three turns per test, ~9.5s of pure sleeping.
+    # POLL_INTERVAL is an ENV knob, not a conf key: the conf ALLOWLIST is a
+    # frozen contract and doctor rejects unknown keys. The read site does
+    # `.to_i`, so this polls at 0 (a spin) — fine against a 150ms agent.
+    @old_poll = ENV["POLL_INTERVAL"]
+    ENV["POLL_INTERVAL"] = "0.1"
   end
 
   def teardown
@@ -24,6 +31,7 @@ class LoopTest < Minitest::Test
     else
       ENV.delete(Robur::Paths::HOME_ENV)
     end
+    @old_poll ? ENV["POLL_INTERVAL"] = @old_poll : ENV.delete("POLL_INTERVAL")
     # Robur::CLI.@loop_log/@quiet are module-level globals Loop.run points at
     # @home; clear them before the dir is gone or a LATER test's CLI.emit/die
     # ENOENTs writing to a deleted path.
