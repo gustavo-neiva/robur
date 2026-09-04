@@ -443,9 +443,10 @@ module Robur
       0
     end
 
-    # Live board: refresh status_report every 2s until the loop process is
-    # gone (then one final frame) or Ctrl-C. A snapshot cousin of cmd_status —
-    # same renderer, no JSONL parsing.
+    # Live board: refreshes every 2s until the loop process is gone (one
+    # final frame) or Ctrl-C. Redraws IN PLACE — cursor home + erase-below, one
+    # buffered write per frame, cursor hidden — a full-screen clear per tick
+    # is what made it flicker.
     def cmd_watch(dir)
       dir = File.expand_path(dir || Dir.pwd)
       log_dir = File.join(Paths.logs_dir, project_slug(dir))
@@ -456,18 +457,34 @@ module Robur
         puts "watch: no loop.log found at #{log} (nothing run here yet?)"
         return 1
       end
+      ansi = Render.ansi_ok?
+      print "\e[?25l" if ansi # hide cursor while redrawing
       loop do
-        print(Render.ansi_ok? ? "\e[H\e[2J" : "\n")
-        print status_report(dir, log_dir, log)
-        _, loop_status = status_liveness(File.join(log_dir, "loop.pid"))
-        unless loop_status.start_with?("running")
-          puts "\nloop not running — final state above."
-          return 0
+        frame = +status_report(dir, log_dir, log)
+        prompt_file = File.join(log_dir, "last_prompt.txt")
+        if File.file?(prompt_file)
+          n = File.readlines(prompt_file).size
+          frame << "\nAsked: #{Render.c_dim("#{prompt_file} (#{n} lines)")}\n"
         end
+        live = turn_text(File.join(log_dir, "last_turn.out"))
+        unless live.to_s.empty?
+          frame << "\n#{Render.c_bold("Live output (last 15 lines)")}\n#{Render.summary(live, 15)}\n"
+        end
+        _, loop_status = status_liveness(File.join(log_dir, "loop.pid"))
+        running = loop_status.start_with?("running")
+        frame << "\nloop not running — final state above.\n" unless running
+        if ansi
+          print "\e[H#{frame}\e[J"
+        else
+          print "\n#{frame}"
+        end
+        return 0 unless running
         sleep 2
       end
     rescue Interrupt
       0
+    ensure
+      print "\e[?25h" if Render.ansi_ok? # cursor back, even on interrupt
     end
 
     def status_report(dir, log_dir, log)
@@ -591,19 +608,25 @@ module Robur
     # text_delta fragments). ponytail: only \n, \t, \\ and \" are
     # unescaped from printf '%b' — full octal/hex escape support is not worth
     # it for a status preview line; widen if a real transcript needs it.
-    def status_doing_now(turn_out)
+    # The agent's live prose: joined text_deltas for the pi JSON stream,
+    # raw content otherwise. nil when there is nothing yet.
+    def turn_text(turn_out)
       return nil unless File.file?(turn_out) && !File.zero?(turn_out)
 
       content = File.read(turn_out)
       if content.byteslice(0, 32).to_s.start_with?('{"type":"session"')
-        joined = content.each_line.grep(/"type":"text_delta"/)
-                         .map { |l| l.sub(/.*"delta":"/, "").sub(/","partial.*/, "") }
-                         .join.gsub('\\"', '"')
-                         .gsub('\\n', "\n").gsub('\\t', "\t").gsub('\\\\', '\\')
-        Render.summary(joined, 1)
+        content.each_line.grep(/"type":"text_delta"/)
+                 .map { |l| l.sub(/.*"delta":"/, "").sub(/","partial.*/, "") }
+                 .join.gsub('\\"', '"')
+                 .gsub('\\n', "\n").gsub('\\t', "\t").gsub('\\\\', '\\')
       else
-        Render.summary(content, 1)
+        content
       end
+    end
+
+    def status_doing_now(turn_out)
+      t = turn_text(turn_out)
+      t && Render.summary(t, 1)
     end
 
     # stdout only, never the loop log; a no-op under QUIET=1.

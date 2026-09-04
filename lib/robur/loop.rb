@@ -154,6 +154,9 @@ module Robur
         # task block + last-turn note + RED verify tail) — the loop used to
         # send the literal string "turn". PROMPT_OVERRIDE (-p) still wins.
         prompt = conf["PROMPT_OVERRIDE"].to_s.empty? ? Prompt.for_turn(conf: conf, plan: plan, log_dir: log_dir) : conf["PROMPT_OVERRIDE"]
+        # Persist what the agent is being asked this turn — watch links it,
+        # and post-hoc debugging of a bad turn needs the exact prompt.
+        File.write(File.join(log_dir, "last_prompt.txt"), prompt)
         cmd += ["--no-session", "-p", prompt]
         result = Turn.run(cmd: cmd, turn_file: turn_out, chdir: dir,
                           turn_timeout: conf["TURN_TIMEOUT"].to_i,
