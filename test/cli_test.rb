@@ -86,7 +86,8 @@ class CliTest < Minitest::Test
     ENV["ROBUR_HOME"] = home
     log_dir = File.join(Robur::Paths.logs_dir, Robur::CLI.project_slug(repo))
     FileUtils.mkdir_p(log_dir)
-    File.write(File.join(log_dir, "loop.log"), "turn 1 | tier=build | model=zai/glm-5.3-flash\n")
+    File.write(File.join(log_dir, "loop.log"),
+                "[2026-09-04 10:47:15] turn 1 | tier=build | model=zai/glm-5.3-flash | thinking=off | task=T1 demo\n")
     out, = capture_io do
       assert_equal 0, Robur::CLI.cmd_watch(repo)
     end

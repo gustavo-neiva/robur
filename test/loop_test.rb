@@ -219,8 +219,7 @@ class LoopTest < Minitest::Test
   end
 
   def test_run_prints_turn_header_block
-    repo = make_repo
-    Robur::CLI.instance_variable_set(:@quiet, false)
+    repo = make_repo(extra_conf: 'QUIET="0"') # header is terminal-only; Loop.run re-reads QUIET from conf
     out, = capture_io do
       Robur::Loop.run(repo, sleep_it: ->(_s) {})
     end
@@ -229,6 +228,7 @@ class LoopTest < Minitest::Test
     assert_includes out, "stub/stub-1" # model is named per turn
   ensure
     Robur::CLI.instance_variable_set(:@quiet, nil)
+    Robur::CLI.instance_variable_set(:@loop_log, nil)
   end
 
   private
