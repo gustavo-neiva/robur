@@ -33,11 +33,12 @@ compatibility problem robur solves on its own side:
 - **ENV** — `ROBUR_*` is read first, `RATCHET_*` second; spawned turns get BOTH
   `ROBUR_LOOP` and `RATCHET_LOOP` exported, so a hook or agent keyed on either
   one still fires.
-- **`~/.robur/` has no symlink shim.** `Paths.home` simply keeps resolving to a
-  pre-existing `~/.ratchet/` — which is what this machine has today (`~/.robur`
-  does not exist). The global conf, logs and `metrics.tsv` therefore stay
-  exactly where `status.sh` already looks. Moving that directory is optional,
-  and is not part of any cutover step below.
+- **`~/.ratchet` is now a symlink to `~/.robur`.** The home migration ran
+  2026-09-02 (`migrate-state`): `~/.robur/` is the real dir holding the global
+  conf, `logs/` and `metrics.tsv`, and `~/.ratchet` points at it, so
+  `status.sh` and every other legacy reader resolve unchanged. `Paths.home`
+  prefers `$ROBUR_HOME`, then `$RATCHET_HOME`, then `~/.robur`, then a
+  pre-existing `~/.ratchet`.
 
 So the cutover is still **one symlink**, for one reason unchanged from the
 original inventory: every caller in the estate invokes the **command name
@@ -75,7 +76,7 @@ is additive and not part of the rollback path.
 **Ruby dependency.** The bash predecessor needed only bash 3.2; robur needs a
 Ruby that can run the stdlib-only implementation (`ruby 3.4.2` today, via asdf
 shims). The shims are already on the spawned-turn PATH —
-`~/.ratchet/conf:26` exports `$ASDF_DATA_DIR/shims` — but launchd invokes
+`~/.robur/conf:26` exports `$ASDF_DATA_DIR/shims` — but launchd invokes
 `money-loop.sh` through `/bin/bash` with launchd's own PATH, so **confirm
 `ratchet --version` works from a non-interactive shell** before signing off.
 This is the one new runtime dependency the cutover introduces.
@@ -101,11 +102,11 @@ staged in `MIGRATION-CUTOVER.md`:
   `exe/robur` reads its libs at startup, and `money-loop.sh:45-46` documents the
   same hazard for itself, so this is survivable — but observe it deliberately.
 
-## 3. VERIFY ONLY — `~/.ratchet/conf`
+## 3. VERIFY ONLY — `~/.robur/conf` (NOTIFY_CMD)
 
 | | |
 |---|---|
-| **File** | `~/.ratchet/conf:34` |
+| **File** | `~/.robur/conf:34` |
 | **Current** | `NOTIFY_CMD='/Users/gustavo-neiva/Code/gustavo-neiva/harbor/.venv/bin/harbor notify'` |
 | **Target** | unchanged |
 | **Revert** | `cp ~/.ratchet/conf.before ~/.ratchet/conf` (back it up first) |
@@ -113,10 +114,9 @@ staged in `MIGRATION-CUTOVER.md`:
 An absolute path into harbor's venv, not into `ratchet/`. robur bash-sources
 this file (`Config.load_global`) and passes `NOTIFY_CMD` through untouched.
 
-The path is still `~/.ratchet/conf` after the rename: `Paths.home` prefers
-`$ROBUR_HOME`, then `$RATCHET_HOME`, then `~/.robur`, then a pre-existing
-`~/.ratchet` — and `~/.robur` does not exist on this machine, so the last branch
-wins and nothing moves. `Paths.global_conf` is `<home>/conf`.
+The global conf is `~/.robur/conf` after the home migration (2026-09-02);
+`~/.ratchet` is a symlink to `~/.robur`, so anything still reading the legacy
+path resolves to the same file. `Paths.global_conf` is `<home>/conf`.
 
 **Do not add a trailing `"$1"`.** The loop appends the message itself
 (`Observability#notify_human`); adding one delivers the message twice and
@@ -201,10 +201,9 @@ Post-cutover checks: `/blocked` renders a human-blocked repo, and `:187`'s
 Grepped across `atlas/`, `harbor/`, `~/.zshrc`, `~/.zprofile`, `~/.zshenv`,
 `~/.ratchet/conf` and `~/Library/LaunchAgents/`: **no live override exists**,
 for either the legacy names or the new `ROBUR_*` ones. Both resolve to their
-defaults, which on this machine are the pre-existing `~/.ratchet` and
-`~/.ratchet/metrics.tsv` (see §3). The only uses are inside the repos' own test
-suites, which isolate them per-run and are not estate references. Nothing to
-move.
+defaults, which on this machine are `~/.robur` and `~/.robur/metrics.tsv`
+(see §3). The only uses are inside the repos' own test suites, which isolate
+them per-run and are not estate references. Nothing to move.
 
 ## 8. VERIFY ONLY — `metrics.tsv` column count
 
@@ -226,9 +225,9 @@ that display is byte-identical. The predecessor's `metrics_append` writes a
 fixed 12-field `printf` and reads the file never, so a rollback mid-week onto a
 file containing 15-column rows is safe in both directions.
 
-The file path is unchanged by the rename — `status.sh:42,53` reads
-`$HOME/.ratchet/metrics.tsv`, and `Paths.metrics_file` resolves to exactly that
-(§3).
+The file path is unchanged for consumers — `status.sh:42,53` reads
+`$HOME/.ratchet/metrics.tsv`, which resolves through the home symlink to
+`~/.robur/metrics.tsv` (§3).
 
 ⚠️ **One line in `MIGRATION-CUTOVER.md` is now stale because of this.** Its
 "After" checklist reads *"`~/.ratchet/metrics.tsv` gains rows with 12 fields in
@@ -267,7 +266,7 @@ override does either (§7), and no caller anywhere holds a filesystem path into
 |---|---|---|
 | 1 | `/usr/local/bin/ratchet` symlink | **EDIT** (the only one) |
 | 2 | `atlas/cycles.conf:27,29` | verify — human decision on unparking |
-| 3 | `~/.ratchet/conf:34` `NOTIFY_CMD` | verify — no trailing `"$1"`; path unmoved |
+| 3 | `~/.robur/conf` `NOTIFY_CMD` | verify — no trailing `"$1"`; home symlinked |
 | 4 | `com.gustavo.money-loop.plist` | verify — no edit, no reload |
 | 5 | `atlas/bin/money-loop.sh:120,184` | verify — moved by §1; ⚠️ `is_runnable()` sees only `.ratchet.conf` |
 | 6 | harbor `.ratchet/` state reads | verify — symlink covers it, no rewiring |
