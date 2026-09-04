@@ -7,10 +7,10 @@ require "tmpdir"
 
 class PromptTest < Minitest::Test
   CONF = { "STEP_TOKEN" => "STEP_T", "DONE_TOKEN" => "DONE_T" }.freeze
-  BASE = "One step of the tracker task, per this repo's AGENTS.md. Write changes to files; never paste file " \
-         "contents in your reply. Never edit .robur.conf (or legacy .ratchet.conf) or the AGENTS.md protocol " \
-         "markers — the loop reverts them. Step done: print STEP_T on its own line. No work left at all: " \
-         "print DONE_T on its own line."
+  BASE = "One step of the tracker task. If the task lacks repo-convention detail, read AGENTS.md first. Write " \
+         "changes to files; never paste file contents in your reply. Never edit .robur.conf (or legacy " \
+         ".ratchet.conf) or the AGENTS.md protocol markers — the loop reverts them. Step done: print STEP_T on " \
+         "its own line. No work left at all: print DONE_T on its own line."
 
   def plan_with(content)
     dir = Dir.mktmpdir

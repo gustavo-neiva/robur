@@ -20,10 +20,10 @@ module Robur
     end
 
     def self.base(conf)
-      "One step of the tracker task, per this repo's AGENTS.md. Write changes to files; never paste file " \
-        "contents in your reply. Never edit #{Paths::REPO_CONF} (or legacy #{Paths::LEGACY_REPO_CONF}) or the " \
-        "AGENTS.md protocol markers — the loop reverts them. Step done: print #{conf['STEP_TOKEN']} on its own " \
-        "line. No work left at all: print #{conf['DONE_TOKEN']} on its own line."
+      "One step of the tracker task. If the task lacks repo-convention detail, read AGENTS.md first. Write " \
+        "changes to files; never paste file contents in your reply. Never edit #{Paths::REPO_CONF} (or legacy " \
+        "#{Paths::LEGACY_REPO_CONF}) or the AGENTS.md protocol markers — the loop reverts them. Step done: " \
+        "print #{conf['STEP_TOKEN']} on its own line. No work left at all: print #{conf['DONE_TOKEN']} on its own line."
     end
 
     def self.task_section(conf, plan)

@@ -417,7 +417,7 @@ module Robur
       prompt = build_plan_prompt(tracker_path, tracker_file, conf["STEP_TOKEN"])
 
       emit.call("plan turn 1 | tier=#{tier} | model=#{model} | thinking=#{thinking}")
-      cmd = [conf["AGENT_CMD"], "--model", model] + Turn.mode_args(conf["AGENT_CMD"])
+      cmd = [conf["AGENT_CMD"], "--model", model] + Turn.mode_args(conf["AGENT_CMD"], kind: :plan)
       cmd += ["--thinking", thinking] unless thinking.to_s.empty?
       cmd += ["--no-session", "-p", prompt]
 

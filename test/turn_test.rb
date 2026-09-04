@@ -97,11 +97,16 @@ module Robur
       assert_equal "done", out
     end
 
-    def test_mode_args_stream_json_only_for_pi
-      assert_equal ["--mode", "json"], Turn.mode_args("pi")
-      assert_equal ["--mode", "json"], Turn.mode_args("/opt/homebrew/bin/pi")
+    def test_mode_args_context_profiles
+      bare = ["--mode", "json", "--no-skills", "--no-context-files"]
+      assert_equal bare, Turn.mode_args("pi")
+      assert_equal bare, Turn.mode_args("/opt/homebrew/bin/pi")
+      assert_equal bare, Turn.mode_args("pi", kind: :step)
+      assert_equal bare, Turn.mode_args("pi", kind: :unknown) # unknown kind falls back to step
+      assert_equal ["--mode", "json"], Turn.mode_args("pi", kind: :plan)
+      assert_equal ["--mode", "json", "--no-skills"], Turn.mode_args("pi", kind: :review)
       assert_equal [], Turn.mode_args("claude")
-      assert_equal [], Turn.mode_args("/path/to/fake-agent")
+      assert_equal [], Turn.mode_args("/path/to/fake-agent", kind: :plan)
       assert_equal true, Turn.pi_json?("pi")
       assert_equal false, Turn.pi_json?("claude")
     end

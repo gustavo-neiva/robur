@@ -85,10 +85,28 @@ module Robur
     # pi in -p mode buffers its ENTIRE output until exit — no liveness signal
     # for the watchdog, nothing live for `watch`, no token-seen early kill.
     # --mode json makes pi stream events to stdout as they happen (mirrors
-    # bash run-turn.sh:36-40). Only pi has this mode; other agents untouched.
+    # bash run-turn.sh:36-40). Only pi has these modes; other agents untouched.
     def self.pi_json?(agent_cmd) = File.basename(agent_cmd.to_s) == "pi"
 
-    def self.mode_args(agent_cmd) = pi_json?(agent_cmd) ? ["--mode", "json"] : []
+    # Context profiles per turn kind (measured prompt-side tokens/turn,
+    # 2026-09-04: full 18.5K / context-only 14.9K / bare 10.6K). Step turns
+    # run bare: the quoted task block is the spec, the gate enforces repo
+    # conventions, AGENTS.md is read on demand. Plan turns keep the full
+    # stack — PLAN.seed.md points the author at the plan-authoring skill.
+    # Review keeps AGENTS.md context (the repo's design decisions are the
+    # review criteria) but drops skills (personas are inlined in the
+    # REVIEW.prompt.md template).
+    CONTEXT_PROFILES = {
+      step:   ["--mode", "json", "--no-skills", "--no-context-files"],
+      plan:   ["--mode", "json"],
+      review: ["--mode", "json", "--no-skills"]
+    }.freeze
+
+    def self.mode_args(agent_cmd, kind: :step)
+      return [] unless pi_json?(agent_cmd)
+
+      CONTEXT_PROFILES.fetch(kind, CONTEXT_PROFILES[:step])
+    end
 
     # Scan the turn file (binary-safe) for any early-exit token, reading only
     # from byte offset `from` onward. The caller rewinds `from` by

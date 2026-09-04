@@ -855,7 +855,7 @@ module Robur
 
       Paths.loop_env_vars.each { |k| ENV[k] = "1" }
       turn_start = mono
-      cmd = [conf["AGENT_CMD"], "--model", model] + Turn.mode_args(conf["AGENT_CMD"])
+      cmd = [conf["AGENT_CMD"], "--model", model] + Turn.mode_args(conf["AGENT_CMD"], kind: :step)
       cmd += ["--thinking", thinking] unless thinking.to_s.empty?
       # P0 fix: REAL prompt, not the literal string "turn" (see Loop.run).
       prompt = conf["PROMPT_OVERRIDE"].to_s.empty? ? Robur::Prompt.for_turn(conf: conf, plan: plan, log_dir: log_dir) : conf["PROMPT_OVERRIDE"]

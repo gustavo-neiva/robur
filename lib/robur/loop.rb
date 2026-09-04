@@ -148,7 +148,7 @@ module Robur
 
         Paths.loop_env_vars.each { |k| ENV[k] = "1" }
         turn_start = CLI.mono
-        cmd = [conf["AGENT_CMD"], "--model", model] + Turn.mode_args(conf["AGENT_CMD"])
+        cmd = [conf["AGENT_CMD"], "--model", model] + Turn.mode_args(conf["AGENT_CMD"], kind: :step)
         cmd += ["--thinking", thinking] unless thinking.to_s.empty?
         # P0 fix (audit 2026-09-03): build the REAL per-turn prompt (base +
         # task block + last-turn note + RED verify tail) — the loop used to
@@ -606,7 +606,7 @@ module Robur
       # Every spawned turn gets the loop marker — review turns included.
       Paths.loop_env_vars.each { |k| ENV[k] = "1" }
 
-      cmd = [conf["AGENT_CMD"], "--model", review_model] + Turn.mode_args(conf["AGENT_CMD"])
+      cmd = [conf["AGENT_CMD"], "--model", review_model] + Turn.mode_args(conf["AGENT_CMD"], kind: :review)
       cmd += ["--thinking", thinking] unless thinking.to_s.empty?
       cmd += ["--no-session", "-p", prompt]
       result = Turn.run(cmd: cmd, turn_file: turn_out, chdir: dir,

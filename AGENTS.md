@@ -76,6 +76,15 @@ one back without reading why it exists.
   + `last_turn.note` + the RED verify tail. The task block is quoted IN the
   prompt — loop agents should not re-read the whole PLAN.md to find the current
   task.
+- **Context profiles**: step turns spawn pi bare (`--no-skills
+  --no-context-files`, ~10.6K vs 18.5K prompt-side tokens/turn, measured
+  2026-09-04) — the quoted task block is the spec, the gate enforces repo
+  conventions, and the prompt tells the agent to read AGENTS.md only when the
+  task lacks that detail. Plan turns run full context+skills (PLAN.seed.md
+  points the author at the plan-authoring skill); review keeps AGENTS.md
+  (design decisions are the review criteria) but drops skills (personas are
+  inlined in the template). If bare turns start red-gating on conventions, add
+  a `ctx` tracker tag before ever making step turns full again.
 - **ModelHealth**: ONE registry keyed by model id across all chains. Keying it
   by chain gave the same model two strike counters, which is the production
   infinite-spin. Includes hard-disable: 20 attempts, 0 wins → skipped forever,
