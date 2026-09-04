@@ -9,6 +9,24 @@ module Robur
   # Injected boundaries: filesystem, clock, subprocess, HTTP. Tests pass
   # doubles via `sys:`; defaults are the real implementations.
   module Sys
+    # Read a file as UTF-8 with invalid bytes replaced.
+    #
+    # EVERY read of a loop.log or a turn file must go through this. bash was
+    # byte-oriented and immune; Ruby raises `ArgumentError: invalid byte
+    # sequence in UTF-8` the moment a regex touches such a string, and real
+    # production logs DO contain invalid bytes (agents stream partial UTF-8
+    # sequences when a turn is killed mid-write). Measured against the real
+    # ~/.ratchet/logs/robur-271438/loop.log, this crashed `status`, `stats`
+    # and the ETA path outright.
+    #
+    # Missing/unreadable file -> nil, never a raise, so callers treat it as
+    # an absent section exactly like Prompt.read_scrubbed does.
+    def self.read_scrubbed(path)
+      File.read(path, mode: "rb").force_encoding("UTF-8").scrub
+    rescue StandardError
+      nil
+    end
+
     class Fs
       def read(path) = File.read(path)
 

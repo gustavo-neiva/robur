@@ -231,6 +231,11 @@ module Robur
         p.on("--watch") { o[:cmd] ||= "watch" }
         p.on("-v", "--verbose") { o["VERBOSE"] = "1" }
         p.on("-h", "--help") { usage; exit 0 }
+        # OptionParser defines --version (and -V) for free, printing its own
+        # "<prog>: version unknown". bash has no such flag and FATALs on it,
+        # so the freebie is a silent divergence in the unknown-option surface
+        # — take the name back and route it to the same die path.
+        p.on("--version") { raise OptionParser::InvalidOption, "--version" }
       end
       begin
         # parse! mutates: options are stripped, POSITIONALS are what's left.
@@ -422,7 +427,7 @@ module Robur
     def status_report(dir, log_dir, log)
       tracker = File.join(dir, Config.load(dir)[:values]["TRACKER_FILE"].to_s)
       turn_out = File.join(log_dir, "last_turn.out")
-      log_text = File.read(log)
+      log_text = Sys.read_scrubbed(log).to_s
 
       node, merge_pr, merge_since = status_node(log_text)
       review_cycle = (cur = State.read_milestone_cur(dir)) ? cur[2] : 0
@@ -609,7 +614,7 @@ module Robur
     def avg_turn_secs(log)
       return 0 unless File.file?(log)
 
-      vals = File.read(log).scan(/took=(\d+)s/).map { |m| m[0].to_i }
+      vals = Sys.read_scrubbed(log).to_s.scan(/took=(\d+)s/).map { |m| m[0].to_i }
       vals.empty? ? 0 : vals.sum / vals.size
     end
 

@@ -22,12 +22,44 @@ class PlanTest < Minitest::Test
     assert_equal 0, counts[:in_progress]
   end
 
+  # Built on a fixture tracker, NOT this repo's own PLAN.md: a tracker with
+  # every task done is a legitimate steady state (it is what `run`'s all-done
+  # fast path exists for), and this assertion is about task_block's shape, not
+  # about whether the project happens to have work left. Coupling it to the
+  # live tracker made the suite go red the moment the last box was ticked.
   def test_task_block_starts_at_current_task
-    block = own_plan.task_block
-    first = own_plan.next_task(:in_progress) || own_plan.next_task(:open)
-    assert block.start_with?("- ["), block
-    assert block.match?(/\A- \[[^\]]+\] #{Regexp.escape(first.id)}(\s|$)/)
-    refute block.include?("\n- [")
+    Dir.mktmpdir do |dir|
+      file = File.join(dir, "PLAN.md")
+      File.write(file, <<~PLAN)
+        # Plan
+
+        ## M1
+        - [x] T1.1 (trivial) already done
+        - [ ] T1.2 (normal) the current task
+            do: something
+        - [ ] T1.3 (normal) a later task
+      PLAN
+      plan = Robur::Plan.new(file)
+      block = plan.task_block
+      first = plan.next_task(:in_progress) || plan.next_task(:open)
+
+      assert_equal "T1.2", first.id
+      assert block.start_with?("- ["), block
+      assert block.match?(/\A- \[[^\]]+\] #{Regexp.escape(first.id)}(\s|$)/)
+      refute block.include?("\n- ["), "task_block must stop before the next task"
+    end
+  end
+
+  # The all-done steady state: no open or in-progress task -> no task block.
+  def test_task_block_is_nil_when_every_task_is_done
+    Dir.mktmpdir do |dir|
+      file = File.join(dir, "PLAN.md")
+      File.write(file, "# Plan\n\n## M1\n- [x] T1.1 (trivial) done\n")
+      plan = Robur::Plan.new(file)
+      assert_nil plan.next_task(:open)
+      assert_nil plan.next_task(:in_progress)
+      assert_nil plan.task_block
+    end
   end
 
   def test_class_marker

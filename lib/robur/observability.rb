@@ -206,7 +206,7 @@ module Robur
     # round-trips). Missing file -> all zeros, never raises.
     def self.turn_usage_detail(path)
       last = {}
-      File.foreach(path) do |line|
+      Sys.read_scrubbed(path).to_s.each_line do |line|
         ev = begin
           JSON.parse(line)
         rescue JSON::ParserError, ArgumentError
@@ -243,7 +243,7 @@ module Robur
 
       sum = 0
       count = 0
-      File.foreach(logfile) do |line|
+      Sys.read_scrubbed(logfile).to_s.each_line do |line|
         s = line[/took=(\d+)s/, 1]
         next unless s
 
@@ -306,7 +306,7 @@ module Robur
     def self.stats_from_events(path, cheap_model)
       m = blank_stats
       bench_ts = nil
-      File.foreach(path) do |line|
+      Sys.read_scrubbed(path).to_s.each_line do |line|
         ev = JSON.parse(line)
         ts = Time.strptime(ev["ts"], "%Y-%m-%d %H:%M:%S")
         case ev["kind"]
@@ -351,7 +351,7 @@ module Robur
       took_re = /turn \d+ end \| class=\S+ \| took=(\d+)s/
       bench_ts = nil
       cur_ts = nil
-      File.foreach(path) do |raw|
+      Sys.read_scrubbed(path).to_s.each_line do |raw|
         md = ts_re.match(raw.chomp)
         next unless md
 

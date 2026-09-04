@@ -2,6 +2,7 @@
 
 require_relative "test_helper"
 require "robur/observability"
+require "robur/cli"
 require "json"
 require "time"
 require "tmpdir"
@@ -331,6 +332,41 @@ module Robur
     end
 
     # stats stays byte-identical to bash; the source is a separate surface.
+    # Real production logs contain invalid UTF-8 (agents stream partial UTF-8
+    # when a turn is killed mid-write). bash was byte-oriented and immune;
+    # Ruby raises ArgumentError the moment a regex touches such a string.
+    # Measured against ~/.ratchet/logs/robur-271438/loop.log, this crashed
+    # `ratchet status`, `ratchet stats` and the ETA path outright — a
+    # cutover blocker, since both are on the CLI parity surface.
+    BAD_UTF8 = "[2026-09-01 00:00:00] turn 1 end | class=step | took=10s \xC3\x28 \xFF\xFE\n"
+
+    def test_log_readers_survive_invalid_utf8
+      Dir.mktmpdir do |dir|
+        log = File.join(dir, "loop.log")
+        File.binwrite(log, "[2026-09-01 00:00:00] --- turn 1 | model=acme/a ---\n" + BAD_UTF8)
+
+        assert_equal 10, Observability.avg_turn_secs(log)
+        assert_includes Observability.stats(dir, cheap_model: "acme/a"), "turns started         : 1"
+        assert_equal 10, Robur::CLI.avg_turn_secs(log)
+      end
+    end
+
+    def test_turn_usage_detail_survives_invalid_utf8
+      Dir.mktmpdir do |dir|
+        f = File.join(dir, "turn.out")
+        File.binwrite(f, "\xFF\xFE not json\n" +
+                         %({"usage":{"input":10,"output":2,"cacheRead":5,"cost":{"total":0.5}}}\n))
+        d = Observability.turn_usage_detail(f)
+        assert_equal 10, d[:input]
+        assert_equal 5, d[:cache_read]
+        assert_equal 1, d[:messages]
+      end
+    end
+
+    def test_read_scrubbed_returns_nil_rather_than_raising_on_a_missing_file
+      assert_nil Robur::Sys.read_scrubbed("/nonexistent/nope.log")
+    end
+
     def test_stats_source_names_the_adapter_without_touching_the_rendered_block
       Dir.mktmpdir do |dir|
         File.write(File.join(dir, "loop.log"), "")
