@@ -310,10 +310,11 @@ port must be provably identical before any live reference moves.
     do: run the parity gate and paste its verbatim output, the date, and the robur git sha into the Track B evidence block of `atlas/MIGRATION-CUTOVER.md`. Do not perform any rewiring and do not tick any checklist box — that document is human-owned.
     done: Given a green parity run, When this task completes, Then `atlas/MIGRATION-CUTOVER.md` contains the verbatim output under `## Track B — parity evidence` with a date and a sha, and every checklist box in that document is still unticked.
     files: ../atlas/MIGRATION-CUTOVER.md
-- [ ] T7.3 (normal, serial) the rewiring inventory
+- [x] T7.3 (normal, serial) the rewiring inventory
     do: produce `REWIRING.md` in this repo: every live reference to the bash ratchet that cutover must move, each with its file, line, current value, target value, and the exact revert. Cover at minimum the `ratchet` symlink on PATH, `atlas/cycles.conf` repo paths, `~/.ratchet/conf` `NOTIFY_CMD`, the launchd plist, `atlas/bin/money-loop.sh`'s `ratchet run` and `ratchet plan --auto` invocations, harbor's `/loop` and `/blocked` paths, and any `RATCHET_HOME` or `RATCHET_METRICS` override. Find them by grep, not from memory. Change nothing.
     done: Given the estate, When `REWIRING.md` is complete, Then every entry names a file and line that currently exists, each has a one-line revert, and re-running the same greps surfaces no reference absent from the document.
     files: REWIRING.md
+    note: done 2026-09-03. Inventory is 1 EDIT (the /usr/local/bin/ratchet symlink) + 7 VERIFY-ONLY entries; every caller invokes the bare command name, so the symlink moves all of them. harbor needs no rewiring (frozen .ratchet/ state reads only). No live RATCHET_HOME/RATCHET_METRICS override exists. All 21 file:line citations re-verified. Flags one stale line in the human-owned MIGRATION-CUTOVER.md checklist (metrics 12-vs-15 fields).
 - [ ] T7.4 (trivial, serial) M7 self-QA and Track B close
     do: final gate, then append the Track B close entry to `LEARNINGS.md`.
     done: `ruby -Ilib -e 'Dir["test/**/*_test.rb"].each{|f| require File.expand_path(f)}'` exits 0 AND `ruby test/differential/run.rb --suite parity` reports `0 diffs` AND `git -C ../ratchet status --porcelain` is empty, proving no task in this plan touched the read-only bash ratchet. PASS is all three.
