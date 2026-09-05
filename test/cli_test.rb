@@ -9,6 +9,18 @@ class CliTest < Minitest::Test
     [command, dir, idea, Robur::CLI.parse!(argv.dup, command, dir, idea)]
   end
 
+  # Isolated ROBUR_HOME + repo dir; paths must not hardcode .robur, so the
+  # tests point ROBUR_HOME at a tempdir like the watch tests do.
+  def in_temp_repo
+    home = Dir.mktmpdir("robur-home")
+    repo = Dir.mktmpdir("robur-repo")
+    old_home = ENV["ROBUR_HOME"]
+    ENV["ROBUR_HOME"] = home
+    yield repo
+  ensure
+    old_home ? ENV["ROBUR_HOME"] = old_home : ENV.delete("ROBUR_HOME")
+  end
+
   def test_pre_scan_finds_command_dir_idea_and_skips_flags
     command, dir, idea = Robur::CLI.pre_scan(["--models", "a/b,c/d", "once", "-d", "/tmp/x"])
     assert_equal "once", command
@@ -139,5 +151,27 @@ class CliTest < Minitest::Test
       %({"type":"message_update","usage":{},"assistantMessageEvent":{"type":"text_delta","contentIndex":1,"delta":" first"}})
     ].join("\n") + "\n")
     assert_equal "the first", Robur::CLI.turn_text(out)
+  end
+
+  # stop must work on a repo with no loop.log (unlike status/watch) and
+  # print the path it wrote.
+  def test_stop_writes_drain_without_loop_log
+    in_temp_repo do |repo|
+      out, = capture_io do
+        assert_equal 0, Robur::CLI.run(["stop", "-d", repo])
+      end
+      stop_file = Robur::Paths.stop_file(repo)
+      assert_equal "drain\n", File.read(stop_file)
+      assert_includes out, stop_file
+    end
+  end
+
+  def test_stop_now_writes_now_and_clear_removes_stop_file
+    in_temp_repo do |repo|
+      capture_io { assert_equal 0, Robur::CLI.run(["stop", "--now", "-d", repo]) }
+      assert_equal "now\n", File.read(Robur::Paths.stop_file(repo))
+      capture_io { assert_equal 0, Robur::CLI.run(["stop", "--clear", "-d", repo]) }
+      refute File.file?(Robur::Paths.stop_file(repo))
+    end
   end
 end

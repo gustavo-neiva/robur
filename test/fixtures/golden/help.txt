@@ -18,6 +18,8 @@ Commands:
   selftest         Verify detection + loop logic against fixtures (NO agent calls). Exits 0/1.
   stats   [REPO]  Parse this repo's loop.log and print the baseline metrics, then exit.
   watch   [REPO]  Live board in a 2nd terminal: refreshes step/%/milestones/model/ETA every 2s while `run` works.
+  stop    [REPO]  Signal a running loop to stop: bare = drain (after the current turn),
+                  --now = abort it mid-turn. --clear removes the request.
   models          Model config UX: list | add <provider/id> | remove <provider/id> |
                   thinking <level>. Flags: --tier models|plan|build|light (default:
                   models), --pos first|last|N, --repo (edit .robur.conf instead of

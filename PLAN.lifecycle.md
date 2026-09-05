@@ -410,7 +410,7 @@ immune to PID reuse.
       constraints: sleep_it stays injectable everywhere; do not change the
           ladder values or the poll and timeout defaults
 
-- [ ] T1.5 (normal) add the `robur stop` command
+- [x] T1.5 (normal) add the `robur stop` command
       touches: lib/robur/cli.rb, exe/robur, test/cli_test.rb
       do: In `lib/robur/cli.rb`, find the command dispatch `case` — the run of
           `when "doctor"` / `when "status"` / `when "watch"` / `when "run"`

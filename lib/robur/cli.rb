@@ -48,6 +48,8 @@ module Robur
         selftest         Verify detection + loop logic against fixtures (NO agent calls). Exits 0/1.
         stats   [REPO]  Parse this repo's loop.log and print the baseline metrics, then exit.
         watch   [REPO]  Live board in a 2nd terminal: refreshes step/%/milestones/model/ETA every 2s while `run` works.
+        stop    [REPO]  Signal a running loop to stop: bare = drain (after the current turn),
+                        --now = abort it mid-turn. --clear removes the request.
         models          Model config UX: list | add <provider/id> | remove <provider/id> |
                         thinking <level>. Flags: --tier models|plan|build|light (default:
                         models), --pos first|last|N, --repo (edit .robur.conf instead of
@@ -155,7 +157,7 @@ module Robur
       puts "Config:  repo #{Paths::REPO_CONF} (PARSED, never sourced)  >  #{conf_dir} (sourced)  >  defaults."
     end
 
-    COMMANDS = %w[init new plan doctor run once selftest stats watch status models fanout
+    COMMANDS = %w[init new plan doctor run once selftest stats watch status stop models fanout
                   fanout-clean migrate-state].freeze
 
     # Flags that swallow the NEXT argv item as their value. Only the tolerant
@@ -227,6 +229,8 @@ module Robur
         p.on("--cheap") { o["CHEAP_MODE"] = "1" }
         p.on("--auto") { o["AUTO_PLAN"] = "1" }
         p.on("--apply") { o["MIGRATE_APPLY"] = "1" }
+        p.on("--now") { o[:stop_now] = true }
+        p.on("--clear") { o[:clear_stop] = true }
         p.on("--quiet") { o["QUIET"] = "1"; o["STREAM_AGENT"] = "0" }
         p.on("--selftest") { o[:cmd] = "selftest" }
         p.on("--stats") { o[:cmd] = "stats" }
@@ -266,6 +270,8 @@ module Robur
       @overrides = parse!(argv, command, dir, idea)
       dir = @overrides.delete(:dir) || dir
       command = @overrides.delete(:cmd) || command
+      @stop_now = @overrides.delete(:stop_now)
+      @clear_stop = @overrides.delete(:clear_stop)
 
       case command
       when "doctor"
@@ -274,6 +280,8 @@ module Robur
       when "status"
         warn_conf_issues(dir || ".")
         cmd_status(dir)
+      when "stop"
+        cmd_stop(dir)
       when "watch"
         warn_conf_issues(dir || ".")
         cmd_watch(dir)
@@ -423,6 +431,23 @@ module Robur
     def cmd_doctor(dir)
       problems = Commands.doctor_report(dir, out: $stdout)
       exit problems
+    end
+
+    # Ask a running loop to stop by writing/clearing the stop file (Lifecycle
+    # polls it between turns; --now is seen mid-turn). Deliberately does NOT
+    # wire the loop log or load conf: one write, print, exit.
+    def cmd_stop(dir)
+      dir = File.expand_path(dir || Dir.pwd)
+      Paths.ensure_state_dir!(dir)
+      if @clear_stop
+        State.clear_stop(dir)
+        puts "stop cleared for #{dir}"
+      else
+        mode = @stop_now ? "now" : "drain"
+        State.write_stop(dir, mode)
+        puts "#{mode} requested: wrote #{Paths.stop_file(dir)}"
+      end
+      0
     end
 
     # One-shot snapshot of a running or finished loop, reading loop.log +
