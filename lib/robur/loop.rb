@@ -19,6 +19,7 @@ require "robur/repo"
 require "robur/sys"
 require "robur/state"
 require "robur/commands"
+require "robur/lifecycle"
 
 module Robur
   # The unattended run loop: one turn per cycle until the agent is done, the
@@ -86,9 +87,18 @@ module Robur
 
       # write PID file so `robur status` can check liveness.
       File.write(File.join(log_dir, "loop.pid"), "#{Process.pid}\n")
+      life = Robur::Lifecycle.new(dir).install!
+      # Clearing first means a stop file left over from a previous session
+      # cannot instantly kill a fresh run.
+      Robur::State.clear_stop(dir)
 
       begin
         loop do
+          if life.stop_requested?
+            emit "stop requested — finishing cleanly, no new turn will start."
+            stop_reason = "stopped"
+            break
+          end
           turn += 1
 
           # All-done fast path: no open/in-progress but has [x].

@@ -321,7 +321,7 @@ immune to PID reuse.
           the token-seen reap-grace behaviour; stop_check must default to nil so
           every existing caller keeps working
 
-- [ ] T1.2 (normal, serial) install Lifecycle in Loop.run and drain between turns
+- [x] T1.2 (normal, serial) install Lifecycle in Loop.run and drain between turns
       touches: lib/robur/loop.rb, test/loop_test.rb
       do: In `lib/robur/loop.rb`, find the line
           `File.write(File.join(log_dir, "loop.pid"), "#{Process.pid}\n")`.

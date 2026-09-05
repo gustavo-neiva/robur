@@ -277,6 +277,47 @@ class LoopTest < Minitest::Test
     assert_equal "done", File.read(Robur::Paths.state_file(repo, "stop_reason")).strip
   end
 
+  # T1.2: a stop file written BETWEEN two turns must stop the loop at the
+  # top of the next iteration — no new agent spawned, the supervisor-facing
+  # epilogue (stop_reason "stopped", metrics run row) still runs, exit 0.
+  def test_stop_file_between_turns_drains_without_starting_a_new_turn
+    repo = make_repo
+    spawn_count = 0
+    with_turn_run(lambda { |**kw, &blk|
+      spawn_count += 1
+      Robur::State.write_stop(repo, "drain") if spawn_count == 1
+      @turn_run_orig.call(**kw, &blk)
+    }) do
+      code = Robur::Loop.run(repo, sleep_it: ->(_s) {})
+      assert_equal 0, code
+    end
+    assert_equal 1, spawn_count, "a drain must not start a new turn"
+    assert_equal "stopped", File.read(Robur::Paths.state_file(repo, "stop_reason")).strip
+    run_rows = File.readlines(File.join(@home, "metrics.tsv"))
+                   .map { |l| l.chomp.split("\t", -1) }
+                   .select { |r| r[2] == "run" }
+    assert_equal 1, run_rows.size
+  end
+
+  # T1.2: a stop file left over from a PREVIOUS session is cleared at
+  # startup, so the first turn runs normally instead of being killed
+  # before it starts.
+  def test_stop_file_present_before_run_is_cleared_and_first_turn_runs
+    repo = make_repo
+    Robur::Paths.ensure_state_dir!(repo)
+    Robur::State.write_stop(repo, "drain")
+    spawn_count = 0
+    with_turn_run(lambda { |**kw, &blk|
+      spawn_count += 1
+      @turn_run_orig.call(**kw, &blk)
+    }) do
+      code = Robur::Loop.run(repo, sleep_it: ->(_s) {})
+      assert_equal 0, code
+    end
+    assert_nil Robur::State.read_stop(repo), "stale stop file must be cleared at startup"
+    assert_operator spawn_count, :>=, 1, "first turn must run normally"
+  end
+
   private
 
   # Replace Robur::Turn.run for the block; the original stays reachable as
