@@ -125,3 +125,10 @@ one back without reading why it exists.
 - **Milestone advance** needs the external supervisor (atlas `money-loop.sh`) to
   restart `run` after a milestone PR merges. That is correct by design — the
   loop does not resurrect itself.
+- **Concurrency isolation**: `CLI.project_slug` suffixes the repo basename with
+  a checksum of its absolute path, so each worktree gets its own log dir and
+  therefore its own `loop.pid`, stop file and lock. The flock is per state dir,
+  so N loops on N worktrees never contend, while two loops on ONE worktree are
+  refused. The stop file is per repo dir, which is why fanout writes one file
+  per worktree instead of broadcasting a signal — signalling the process group
+  would hit fanout itself.

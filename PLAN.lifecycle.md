@@ -576,7 +576,7 @@ immune to PID reuse.
           fail-toward-KEEP behaviour is unchanged — a stopped worktree with
           unpushed commits is kept, never removed
 
-- [ ] T3.2 (trivial) record the concurrency guarantees in AGENTS.md
+- [x] T3.2 (trivial) record the concurrency guarantees in AGENTS.md
       touches: AGENTS.md
       do: Add ONE bullet to the "Design decisions" list in AGENTS.md, in the
           same voice as the bullets already there, so a future turn does not
