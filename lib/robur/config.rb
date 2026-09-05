@@ -34,7 +34,7 @@ module Robur
       THINKING_PLAN THINKING_BUILD THINKING_LIGHT FANOUT REQUIRED_TOOLS REVIEW_MODELS
       THINKING_REVIEW AUTOPLAN_MODELS THINKING_AUTOPLAN
       MODEL_RANK MAX_REVIEW_CYCLES PR_CADENCE MERGE_POLL_SECS
-      MERGE_WAIT_TIMEOUT PR_SOFT_MAX_LINES PARALLEL FANOUT_MAX
+      MERGE_WAIT_TIMEOUT PR_SOFT_MAX_LINES PARALLEL FANOUT_MAX MAX_TASK_ATTEMPTS
     ].freeze
 
     NUMERIC_KEYS = %w[
@@ -42,7 +42,7 @@ module Robur
       HEARTBEAT COMMIT_EACH_TURN COMMIT_VERIFY_GATE PUSH_ON_DONE OPEN_PR APPROVE_UI
       RESUME_SESSION SANITIZE_THINKING QUIET STREAM_AGENT ROBUR_PROTOCOL RATCHET_PROTOCOL
       MAX_REVIEW_CYCLES MERGE_POLL_SECS MERGE_WAIT_TIMEOUT PR_SOFT_MAX_LINES PARALLEL
-      FANOUT_MAX
+      FANOUT_MAX MAX_TASK_ATTEMPTS
     ].freeze
 
     # Neutral built-in defaults, ported from ratchet/lib/common.sh. Each default
@@ -58,6 +58,13 @@ module Robur
       "POLL_INTERVAL" => "3",
       "MAX_TRANSIENT" => "3",
       "MAX_DONE_GATE_FAILS" => "3",
+      # Per-task attempt ceiling, for the life of ONE run, that nothing else
+      # (reset_all, the all-benched backoff ladder, a model-chain rotation)
+      # can clear. Production case (T7.1, 2026-09-02): MAX_TRANSIENT benches
+      # a model, the chain rotates, all-benched triggers the ladder,
+      # reset_all clears strikes, and the identical cycle restarts —
+      # 1,296 turns over 10 hours on ONE task, 1,099 of them "transient".
+      "MAX_TASK_ATTEMPTS" => "20",
       "PR_SOFT_MAX_LINES" => "400",
       "COOLDOWN" => "14400",
       "BOTH_WAIT" => "14400",

@@ -2,6 +2,7 @@
 
 require "test_helper"
 require "robur/loop"
+require "robur/cli"
 require "robur/paths"
 require "fileutils"
 require "json"
@@ -142,6 +143,77 @@ class LoopTest < Minitest::Test
       assert r["kind"], "record without kind: #{r.inspect}"
       assert_match(/\A\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\z/, r["ts"])
     end
+
+    # every record of this run carries the SAME run_id. (The "two sequential
+    # runs get distinct run_ids" half of this regression is covered at the
+    # Observability unit level — test/observability_test.rb
+    # test_two_sequential_runs_in_the_same_log_dir_get_distinct_run_ids —
+    # rather than by calling Loop.run twice into one repo here: loop.pid's
+    # flock is released by the KERNEL on process death (loop.rb:95), so two
+    # in-process Loop.run calls race the first call's file descriptor being
+    # GC'd and can spuriously trip the "another loop holds the lock" guard.)
+    run_ids = records.map { |r| r["run_id"] }
+    refute_nil run_ids.first
+    assert_equal 1, run_ids.uniq.size, "one run must not mix run_ids: #{run_ids}"
+  end
+
+  # `robur once` (cli.rb#run_once_loop) is the OTHER caller that builds an
+  # Observability and must leave the same structured trail behind — it had
+  # no test coverage at all before this.
+  def test_once_writes_structured_events_jsonl_alongside_loop_log
+    repo = make_repo
+    capture_io { assert_equal 0, Robur::CLI.run(["once", "-d", repo]) }
+
+    log_dir = File.join(@home, "logs", Robur::CLI.project_slug(repo))
+    events = File.readlines(File.join(log_dir, "events.jsonl")).map { |l| JSON.parse(l) }
+    kinds = events.map { |e| e["kind"] }
+    assert_includes kinds, "run_start"
+    assert_includes kinds, "turn_start"
+    assert_includes kinds, "turn_end"
+    assert_includes kinds, "run_end"
+
+    run_ids = events.map { |e| e["run_id"] }
+    refute_nil run_ids.first
+    assert_equal 1, run_ids.uniq.size, "one once-run must not mix run_ids: #{run_ids}"
+  ensure
+    Robur::CLI.instance_variable_set(:@quiet, nil)
+    Robur::CLI.instance_variable_set(:@loop_log, nil)
+  end
+
+  # Same regression as test_unexpected_exception_records_crashed_and_still_propagates,
+  # for `robur once`: run_once_loop shipped with NO epilogue at all, so a
+  # turn that raised (an agent crash, a bug in run_single_turn) left
+  # events.jsonl holding only run_start — indistinguishable from a run that
+  # never got past preflight. Audit finding: events.jsonl existed in only 2
+  # of 1250 production log dirs; an unguarded --once crash is one way that
+  # happens even after the file starts being written at all.
+  def test_once_unexpected_exception_records_crashed_and_still_propagates
+    repo = make_repo
+    error = assert_raises(RuntimeError) do
+      with_turn_run(->(**_kw) { raise "boom" }) do
+        capture_io { Robur::CLI.run(["once", "-d", repo]) }
+      end
+    end
+    assert_equal "boom", error.message
+    assert_equal "crashed\n", File.read(Robur::Paths.state_file(repo, "stop_reason"))
+
+    log_dir = File.join(@home, "logs", Robur::CLI.project_slug(repo))
+    events = File.readlines(File.join(log_dir, "events.jsonl")).map { |l| JSON.parse(l) }
+    kinds = events.map { |e| e["kind"] }
+    assert_includes kinds, "run_start"
+    assert_includes kinds, "stopped"
+    assert_includes kinds, "run_end"
+    stopped = events.find { |e| e["kind"] == "stopped" }
+    assert_equal "crashed", stopped["reason"]
+
+    run_rows = File.readlines(File.join(@home, "metrics.tsv"))
+                    .map { |l| l.chomp.split("\t", -1) }
+                    .select { |r| r[2] == "run" }
+    assert_equal 1, run_rows.size
+    assert_equal "crashed", run_rows[0][6]
+  ensure
+    Robur::CLI.instance_variable_set(:@quiet, nil)
+    Robur::CLI.instance_variable_set(:@loop_log, nil)
   end
 
   # The token-efficiency fields the metrics row cannot carry.
@@ -220,6 +292,73 @@ class LoopTest < Minitest::Test
     assert_equal [900, 3600, 14_400], Robur::Loop::BACKOFF_LADDER
     health.reset_all
     assert_equal "a", health.pick(%w[a b])
+  end
+
+  # T7.1 (b), isolated from benching (MAX_TRANSIENT set high so the model
+  # never benches): a task that never progresses must stop the run once
+  # attempts exceed MAX_TASK_ATTEMPTS rather than spin forever.
+  def test_task_attempt_ceiling_stops_a_transient_spin
+    repo = make_repo(extra_conf: %(MAX_TASK_ATTEMPTS="3"\nMAX_TRANSIENT="100"))
+    with_turn_run(lambda { |**kw, &_blk|
+      File.write(kw[:turn_file], "no recognized token, just noise\n")
+      system("true")
+      Robur::Turn::Result.new(status: $?, kill_reason: nil, elapsed: 0)
+    }) do
+      code = Robur::Loop.run(repo, sleep_it: ->(_s) {})
+      assert_equal 0, code
+    end
+
+    assert_equal "task_attempts_exceeded\n", File.read(Robur::Paths.state_file(repo, "stop_reason"))
+
+    log_dir = File.join(@home, "logs", Robur::CLI.project_slug(repo))
+    events = File.readlines(File.join(log_dir, "events.jsonl")).map { |l| JSON.parse(l) }
+    exceeded = events.find { |e| e["kind"] == "task_attempts_exceeded" }
+    refute_nil exceeded, "the ceiling must record why it stopped"
+    assert_equal "T1.1", exceeded["task"]
+    assert_equal 4, exceeded["attempts"] # ceiling 3, the 4th attempt trips it
+    assert_equal 3, exceeded["ceiling"]
+
+    log = File.read(File.join(log_dir, "loop.log"))
+    assert_includes log, "exceeded MAX_TASK_ATTEMPTS=3"
+  end
+
+  # T7.1 full repro, both halves of the fix together: MAX_TRANSIENT benches
+  # a model after one strike, the (single-model) chain goes all-benched, the
+  # backoff ladder fires, reset_all clears ModelHealth's strikes — and every
+  # one of those turns is ALSO runaway (harbor-872144: the flag alone
+  # changed nothing). The model must get struck for the runaway turns, and
+  # the loop must still stop once the ceiling is exceeded across bench
+  # cycles that reset_all cannot touch.
+  def test_runaway_strikes_the_model_and_the_ceiling_survives_reset_all
+    repo = make_repo(extra_conf: %(MAX_TASK_ATTEMPTS="1"\nMAX_TRANSIENT="1"\nCOOLDOWN="900"))
+    old_threshold = ENV["ROBUR_RUNAWAY_MESSAGES"]
+    ENV["ROBUR_RUNAWAY_MESSAGES"] = "1"
+    with_turn_run(lambda { |**kw, &_blk|
+      usage = JSON.generate({ "id" => "m1", "message" => { "usage" => { "input" => 1, "output" => 1, "cost" => { "total" => 0.0 } } } })
+      File.write(kw[:turn_file], "#{usage}\n")
+      system("true")
+      Robur::Turn::Result.new(status: $?, kill_reason: nil, elapsed: 0)
+    }) do
+      code = Robur::Loop.run(repo, sleep_it: ->(_s) {})
+      assert_equal 0, code
+    end
+
+    log_dir = File.join(@home, "logs", Robur::CLI.project_slug(repo))
+    events = File.readlines(File.join(log_dir, "events.jsonl")).map { |l| JSON.parse(l) }
+
+    strikes = events.select { |e| e["kind"] == "model_strike" && e["reason"] == "runaway" }
+    refute_empty strikes, "a runaway turn must strike the model"
+
+    exceeded = events.find { |e| e["kind"] == "task_attempts_exceeded" }
+    refute_nil exceeded, "reset_all must not let the runaway/bench/backoff cycle spin forever"
+    assert_equal "task_attempts_exceeded\n", File.read(Robur::Paths.state_file(repo, "stop_reason"))
+
+    log = File.read(File.join(log_dir, "loop.log"))
+    assert_includes log, "RUNAWAY: turn"
+    assert_includes log, "ALL models benched"
+    assert_includes log, "exceeded MAX_TASK_ATTEMPTS=1"
+  ensure
+    old_threshold ? ENV["ROBUR_RUNAWAY_MESSAGES"] = old_threshold : ENV.delete("ROBUR_RUNAWAY_MESSAGES")
   end
 
   # Backward compatibility: agents, hooks and wrapper scripts across the

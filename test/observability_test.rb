@@ -81,6 +81,60 @@ module Robur
       end
     end
 
+    # Log dirs are REUSED across runs (~/.robur/logs/<slug>/events.jsonl is
+    # one file for the life of the repo), so a consumer needs a run_id on
+    # EVERY record — including run_start/run_end — to tell two runs apart. A
+    # real production file held two separate run_start events with
+    # overlapping turn numbers before this existed.
+    def test_every_event_and_emit_event_record_carries_the_same_run_id
+      Dir.mktmpdir do |dir|
+        o = obs(dir)
+        o.emit(:run_start, repo: dir, session: "s", tracker: "PLAN.md", models: %w[m],
+               turn_timeout: 1, cooldown: 1, both_wait: 1, step_token: "S", done_token: "D",
+               agent_cmd: "a", thinking: "", verify_cmd: "", commit_each_turn: "1",
+               push_on_done: "0", open_pr: "0", log_dir: dir)
+        o.emit(:turn_start, turn: 1, model: "acme/a", tier: "build", thinking: "off", task: "T1")
+        o.emit_event(:tokens, input: 1, output: 1, cache_read: 0, cache_write: 0, cost: 0.0, messages: 1)
+        o.emit(:run_end, turns: 1)
+
+        records = File.readlines(File.join(dir, "events.jsonl")).map { |l| JSON.parse(l) }
+        run_ids = records.map { |r| r["run_id"] }
+        refute_nil run_ids.first
+        assert_equal 1, run_ids.uniq.size, "every record of one run must carry the same run_id: #{run_ids}"
+        assert_equal o.run_id, run_ids.first
+      end
+    end
+
+    # Two runs sharing the SAME reused log dir must be distinguishable.
+    def test_two_sequential_runs_in_the_same_log_dir_get_distinct_run_ids
+      Dir.mktmpdir do |dir|
+        first = obs(dir)
+        first.emit(:run_start, repo: dir, session: "s", tracker: "PLAN.md", models: %w[m],
+                   turn_timeout: 1, cooldown: 1, both_wait: 1, step_token: "S", done_token: "D",
+                   agent_cmd: "a", thinking: "", verify_cmd: "", commit_each_turn: "1",
+                   push_on_done: "0", open_pr: "0", log_dir: dir)
+        first.emit(:run_end, turns: 3)
+
+        second = obs(dir)
+        second.emit(:run_start, repo: dir, session: "s", tracker: "PLAN.md", models: %w[m],
+                    turn_timeout: 1, cooldown: 1, both_wait: 1, step_token: "S", done_token: "D",
+                    agent_cmd: "a", thinking: "", verify_cmd: "", commit_each_turn: "1",
+                    push_on_done: "0", open_pr: "0", log_dir: dir)
+        second.emit(:run_end, turns: 7)
+
+        refute_equal first.run_id, second.run_id
+
+        records = File.readlines(File.join(dir, "events.jsonl")).map { |l| JSON.parse(l) }
+        run_ids = records.map { |r| r["run_id"] }
+        assert_equal 2, run_ids.uniq.size
+        # the two run_start/run_end pairs are cleanly separable by run_id
+        first_run = records.select { |r| r["run_id"] == first.run_id }
+        second_run = records.select { |r| r["run_id"] == second.run_id }
+        assert_equal %w[run_start run_end], first_run.map { |r| r["kind"] }
+        assert_equal %w[run_start run_end], second_run.map { |r| r["kind"] }
+      end
+    end
+
     # Parity: bash observability.sh's _turn_usage on the same concatenated
     # stream of real pi events (the turn-usage fixtures).
     BASH_OBSERVABILITY = File.expand_path("../../ratchet/lib/observability.sh", __dir__)

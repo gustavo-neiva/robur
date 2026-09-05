@@ -866,28 +866,38 @@ module Robur
         die "another loop (pid #{holder}) holds the lock on #{pid_path}; refusing to run two loops on one tree."
       end
 
-      stop_reason = ""
+      # "crashed" is the epilogue's default, same as Loop.run's (loop.rb):
+      # if run_single_turn raises before reassigning it, the ensure below
+      # still reports something other than a lie of "" (empty).
+      stop_reason = "crashed"
       turn = 1
       last_model = "none"
 
-      # All-done fast path: no open/in-progress tasks but at least one [x].
-      if !plan.open? && !plan.in_progress? && plan.count(:done).positive?
-        emit "all #{conf["TRACKER_FILE"] || "PLAN.md"} tasks complete (#{plan.count(:done)} done) — no open work remains."
-        if commit_turn("final", last_model, conf, plan, dir).block_reason.nil?
-          emit "agent signaled #{conf["DONE_TOKEN"]} — all work complete."
+      begin
+        # All-done fast path: no open/in-progress tasks but at least one [x].
+        if !plan.open? && !plan.in_progress? && plan.count(:done).positive?
+          emit "all #{conf["TRACKER_FILE"] || "PLAN.md"} tasks complete (#{plan.count(:done)} done) — no open work remains."
+          if commit_turn("final", last_model, conf, plan, dir).block_reason.nil?
+            emit "agent signaled #{conf["DONE_TOKEN"]} — all work complete."
+          end
+          stop_reason = "done"
+        else
+          stop_reason, last_model = run_single_turn(dir, conf, plan, models, log_dir, turn_out,
+                                                    run_toks, run_start, turn, obs)
         end
-        stop_reason = "done"
-      else
-        stop_reason, last_model = run_single_turn(dir, conf, plan, models, log_dir, turn_out,
-                                                  run_toks, run_start, turn, obs)
+      ensure
+        # Epilogue on EVERY exit path, mirroring Loop.run's ensure (loop.rb):
+        # `once` had none, so a turn that raised (an agent crash, a bug in
+        # run_single_turn) left events.jsonl holding only run_start —
+        # indistinguishable from a run that never got past preflight.
+        obs.emit(:stopped, reason: stop_reason, turns: turn)
+        obs.emit(:run_end, turns: turn)
+        File.write(Paths.state_file(dir, "stop_reason"), "#{stop_reason}\n")
+        state = File.file?(Paths.state_file(dir, "last_task.state")) ? File.read(Paths.state_file(dir, "last_task.state")) : ""
+        taskid = state[/\A[^\t]*/].to_s
+        metrics_append(dir, "run", "-", "-", last_model, stop_reason, elapsed_int(run_start), taskid,
+                       run_toks[:in], run_toks[:out], format("%.6f", run_toks[:cost]))
       end
-
-      obs.emit(:run_end, turns: turn)
-      File.write(Paths.state_file(dir, "stop_reason"), "#{stop_reason}\n")
-      state = File.file?(Paths.state_file(dir, "last_task.state")) ? File.read(Paths.state_file(dir, "last_task.state")) : ""
-      taskid = state[/\A[^\t]*/].to_s
-      metrics_append(dir, "run", "-", "-", last_model, stop_reason, elapsed_int(run_start), taskid,
-                     run_toks[:in], run_toks[:out], format("%.6f", run_toks[:cost]))
       0 # exit code, not File.write's byte count
     end
 
