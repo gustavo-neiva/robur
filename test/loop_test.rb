@@ -79,6 +79,29 @@ class LoopTest < Minitest::Test
     git(repo, "log", "--format=%s")[0].lines.map(&:strip)
   end
 
+  # T2.2: a turn killed before its commit gate leaves files staged; the next
+  # run must NAME them in loop.log and leave them staged (no reset/checkout).
+  def test_unclean_start_reports_staged_files_and_leaves_them
+    repo = make_repo
+    File.write(File.join(repo, "leftover_a.txt"), "a")
+    File.write(File.join(repo, "leftover_b.txt"), "b")
+    git repo, "add", "leftover_a.txt", "leftover_b.txt"
+
+    code = Robur::Loop.run(repo, sleep_it: ->(_s) {})
+
+    assert_equal 0, code
+    log = File.read(File.join(@home, "logs", Robur::CLI.project_slug(repo), "loop.log"))
+    assert_match(/2 staged file/, log)
+    # still staged at report time (never reset): the first turn's commit gate
+    # ingests them, so they must appear in the T1.1 commit, not vanish.
+    t11_commit = git(repo, "log", "--format=%H %s")[0].lines.find { |l| l.include?("T1.1") }.split.first
+    stat = git(repo, "show", "--stat", "--format=", t11_commit)[0]
+    assert_includes stat, "leftover_a.txt"
+    assert_includes stat, "leftover_b.txt"
+    # first turn proceeded normally despite the staged leftovers
+    assert commits(repo).any? { |s| s.include?("T1.1") }
+  end
+
   def test_run_completes_three_tasks_then_stops_done
     repo = make_repo
     code = Robur::Loop.run(repo, sleep_it: ->(_s) {})

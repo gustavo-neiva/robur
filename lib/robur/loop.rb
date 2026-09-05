@@ -100,6 +100,8 @@ module Robur
         CLI.die "another loop (pid #{holder}) holds the lock on #{pid_path}; refusing to run two loops on one tree."
       end
 
+      report_unclean_start(dir, obs)
+
       begin
         loop do
           if life.stop_requested?
@@ -421,6 +423,19 @@ module Robur
       end
 
       stop_reason == "gate_red" || stop_reason == "human_blocked" ? 1 : 0
+    end
+
+    # Startup residue check: a turn SIGKILLed before its commit gate leaves
+    # files staged in the index. Report and LEAVE them — the next turn's
+    # commit gate runs VERIFY_CMD over exactly this staging area, which is
+    # the right owner of the keep/discard decision. Read-only.
+    def report_unclean_start(dir, obs)
+      staged, = Open3.capture3("git", "-C", dir, "diff", "--cached", "--name-only")
+      return if staged.strip.empty?
+
+      n = staged.lines.map(&:strip).reject(&:empty?).size
+      obs.emit_event(:recovered, staged_files: n)
+      emit "unclean start: recovered after a previous exit with #{n} staged file(s) — left staged for the next commit gate."
     end
 
     # Progress-guard :block_task — mark the tracker's current task BLOCKED

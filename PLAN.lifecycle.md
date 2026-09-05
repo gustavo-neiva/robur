@@ -489,7 +489,7 @@ immune to PID reuse.
           silently released; keep loop.pid's format as one pid on one line,
           because `status` parses it
 
-- [ ] T2.2 (normal, serial) report leftovers from an unclean previous exit
+- [x] T2.2 (normal, serial) report leftovers from an unclean previous exit
       touches: lib/robur/loop.rb, test/loop_test.rb
       do: The loop is already crash-tolerant at turn boundaries, because the
           tracker IS the state and a fresh run recomputes everything. Only one
