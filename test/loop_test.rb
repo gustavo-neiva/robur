@@ -299,6 +299,38 @@ class LoopTest < Minitest::Test
     assert_equal 1, run_rows.size
   end
 
+  # T1.3: a stop file containing "now" seen WHILE a turn is running makes
+  # the watchdog kill the agent child; the salvage arm commits any green
+  # work (one gate run), stops with reason "stopped", and — the whole point
+  # — never strikes/benches/records against the model's health.
+  def test_stop_file_mid_turn_aborts_without_punishing_the_model
+    repo = make_repo
+    spawn_count = 0
+    health = nil
+    with_turn_run(lambda { |**kw, &blk|
+      spawn_count += 1
+      Robur::State.write_stop(repo, "now") if spawn_count == 1
+      assert_kind_of Proc, kw[:stop_check], "loop must pass stop_check to Turn.run"
+      @turn_run_orig.call(**kw, &blk)
+    }) do
+      health = with_health_capture do
+        code = Robur::Loop.run(repo, sleep_it: ->(_s) {})
+        assert_equal 0, code
+      end
+    end
+    assert_equal 1, spawn_count, "killed turn must not be followed by a new spawn"
+    assert_equal "stopped", File.read(Robur::Paths.state_file(repo, "stop_reason")).strip
+    log = File.join(@home, "logs", Robur::CLI.project_slug(repo), "loop.log")
+    assert_equal 1, File.read(log).scan("stop requested mid-turn").size,
+                 "salvage arm must run exactly once"
+    # .robur state is staged, so the salvage gate runs VERIFY_CMD once.
+    assert_equal 1, File.read(log).scan("commit gate: running").size,
+                 "salvage arm must run the commit gate exactly once"
+    assert_equal 3, File.read(File.join(repo, "PLAN.md")).scan("- [ ]").size,
+                 "agent was killed mid-turn — no task may be ticked"
+    assert_equal({}, health.snapshot, "no strike, bench or record! may touch model health")
+  end
+
   # T1.2: a stop file left over from a PREVIOUS session is cleared at
   # startup, so the first turn runs normally instead of being killed
   # before it starts.
@@ -330,6 +362,22 @@ class LoopTest < Minitest::Test
   ensure
     Robur::Turn.singleton_class.send(:alias_method, :run, :turn_run_orig)
     Robur::Turn.singleton_class.send(:remove_method, :turn_run_orig)
+  end
+
+  # Capture the ModelHealth instance the loop builds (alias/restore of .new,
+  # same pattern as with_turn_run) so tests can assert its snapshot is
+  # unchanged after a run.
+  def with_health_capture
+    captured = nil
+    Robur::ModelHealth.singleton_class.send(:alias_method, :mh_new_orig, :new)
+    Robur::ModelHealth.singleton_class.send(:define_method, :new) do |*args, **kw, &blk|
+      captured = mh_new_orig(*args, **kw, &blk)
+    end
+    yield
+    captured
+  ensure
+    Robur::ModelHealth.singleton_class.send(:alias_method, :new, :mh_new_orig)
+    Robur::ModelHealth.singleton_class.send(:remove_method, :mh_new_orig)
   end
 
   def stub_notify(collector)

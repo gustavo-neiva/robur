@@ -351,7 +351,7 @@ immune to PID reuse.
       constraints: the word is exactly "stopped"; do not invent a new
           stop_reason value; do not change any other loop behaviour
 
-- [ ] T1.3 (hard, serial) abort mid-turn without punishing the model
+- [x] T1.3 (hard, serial) abort mid-turn without punishing the model
       touches: lib/robur/loop.rb, test/loop_test.rb
       do: In `lib/robur/loop.rb`, find the `result = Turn.run(cmd: cmd, ...)`
           call and add `stop_check: -> { life.level }` to its arguments, using

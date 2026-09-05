@@ -176,7 +176,14 @@ module Robur
                             turn_timeout: conf["TURN_TIMEOUT"].to_i,
                             stall_timeout: conf["STALL_TIMEOUT"].to_i,
                             poll_interval: (ENV["POLL_INTERVAL"] || conf["POLL_INTERVAL"] || 3).to_i,
-                            early_tokens: [conf["STEP_TOKEN"], conf["DONE_TOKEN"]])
+                            early_tokens: [conf["STEP_TOKEN"], conf["DONE_TOKEN"]],
+                            stop_check: -> { life.level })
+          if result.kill_reason == "stop-requested"
+            emit "stop requested mid-turn — salvaging green work and stopping."
+            commit_turn(turn, model, conf, plan, dir)
+            stop_reason = "stopped"
+            break
+          end
           status = result.kill_reason ? 128 + (result.status.termsig || 0) : result.status.exitstatus
           deadline = !result.kill_reason.nil? && result.kill_reason != "token-seen"
           klass = Classifier.classify(turn_out, step_token: conf["STEP_TOKEN"], done_token: conf["DONE_TOKEN"],
