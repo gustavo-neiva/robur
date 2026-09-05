@@ -239,7 +239,57 @@ class LoopTest < Minitest::Test
     Robur::CLI.instance_variable_set(:@loop_log, nil)
   end
 
+  # T0.4: an unexpected exception inside the turn loop must still leave the
+  # supervisor-facing epilogue behind (run_end event, stop_reason, metrics
+  # run row) and record the crash honestly, while the exception propagates.
+  def test_unexpected_exception_records_crashed_and_still_propagates
+    repo = make_repo
+    error = assert_raises(RuntimeError) do
+      with_turn_run(->(**_kw) { raise "boom" }) do
+        Robur::Loop.run(repo, sleep_it: ->(_s) {})
+      end
+    end
+    assert_equal "boom", error.message
+    assert_equal "crashed\n", File.read(Robur::Paths.state_file(repo, "stop_reason"))
+    run_rows = File.readlines(File.join(@home, "metrics.tsv"))
+                    .map { |l| l.chomp.split("\t", -1) }
+                    .select { |r| r[2] == "run" }
+    assert_equal 1, run_rows.size
+    assert_equal "crashed", run_rows[0][6]
+  end
+
+  # T0.4: a fresh run must clear a STALE verdict from an earlier run before
+  # the first turn is spawned — a SIGKILLed loop would otherwise leave the
+  # old word standing forever and the supervisor would skip a healthy repo.
+  def test_startup_overwrites_stale_stop_reason_with_running
+    repo = make_repo
+    Robur::Paths.ensure_state_dir!(repo)
+    File.write(Robur::Paths.state_file(repo, "stop_reason"), "human_blocked\n")
+    seen_at_first_turn = nil
+    with_turn_run(lambda { |**kw, &blk|
+      seen_at_first_turn ||= File.read(Robur::Paths.state_file(repo, "stop_reason")).strip
+      @turn_run_orig.call(**kw, &blk)
+    }) do
+      code = Robur::Loop.run(repo, sleep_it: ->(_s) {})
+      assert_equal 0, code
+    end
+    assert_equal "running", seen_at_first_turn
+    assert_equal "done", File.read(Robur::Paths.state_file(repo, "stop_reason")).strip
+  end
+
   private
+
+  # Replace Robur::Turn.run for the block; the original stays reachable as
+  # @turn_run_orig (same alias/restore pattern as stub_notify below).
+  def with_turn_run(replacement)
+    Robur::Turn.singleton_class.send(:alias_method, :turn_run_orig, :run)
+    @turn_run_orig = Robur::Turn.method(:turn_run_orig)
+    Robur::Turn.singleton_class.send(:define_method, :run) { |**kw, &blk| replacement.call(**kw, &blk) }
+    yield
+  ensure
+    Robur::Turn.singleton_class.send(:alias_method, :run, :turn_run_orig)
+    Robur::Turn.singleton_class.send(:remove_method, :turn_run_orig)
+  end
 
   def stub_notify(collector)
     Robur::Loop.singleton_class.send(:alias_method, :notify_human_orig, :notify_human)

@@ -247,7 +247,7 @@ immune to PID reuse.
       constraints: the trap block contains exactly one integer increment and
           nothing else; do not use Thread, Queue, or a self-pipe
 
-- [ ] T0.4 (normal, serial) make Loop.run's epilogue run on every exit path
+- [x] T0.4 (normal, serial) make Loop.run's epilogue run on every exit path
       touches: lib/robur/loop.rb, test/loop_test.rb
       do: In `lib/robur/loop.rb`, find the epilogue — the three consecutive
           statements starting with `obs.emit(:run_end, turns: turn)` and ending

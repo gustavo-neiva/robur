@@ -38,6 +38,9 @@ module Robur
       FileUtils.mkdir_p(log_dir)
       Paths.ensure_state_dir!(dir)
       File.write(Paths.state_file(dir, "last-log"), "#{log_dir}\n")
+      # A run is "running" from startup, so a SIGKILLed loop never leaves the
+      # PREVIOUS run's verdict standing for the external supervisor to read.
+      State.write_stop_reason(dir, "running")
       CLI.instance_variable_set(:@quiet, conf["QUIET"] == "1")
       CLI.instance_variable_set(:@loop_log, File.join(log_dir, "loop.log"))
 
@@ -52,7 +55,7 @@ module Robur
       last_model = "none"
       done_gate_fails = 0
       all_benched_count = 0
-      stop_reason = ""
+      stop_reason = "crashed"
       # Audit fix #1 (2026-09-03): ONE health registry keyed by MODEL id —
       # the old chain-keyed state gave a model in both a tier chain and flat
       # MODELS two independent strike counters (the production infinite-spin).
@@ -84,308 +87,314 @@ module Robur
       # write PID file so `robur status` can check liveness.
       File.write(File.join(log_dir, "loop.pid"), "#{Process.pid}\n")
 
-      loop do
-        turn += 1
+      begin
+        loop do
+          turn += 1
 
-        # All-done fast path: no open/in-progress but has [x].
-        if !plan.open? && !plan.in_progress? && plan.count(:done).positive?
-          emit "all #{conf["TRACKER_FILE"] || "PLAN.md"} tasks complete (#{plan.count(:done)} done) — no open work remains."
-          if commit_turn("final", last_model, conf, plan, dir).block_reason.nil?
-            emit "agent signaled #{conf["DONE_TOKEN"]} — all work complete."
-          else
-            emit "final commit gate RED — staged work left for human review."
+          # All-done fast path: no open/in-progress but has [x].
+          if !plan.open? && !plan.in_progress? && plan.count(:done).positive?
+            emit "all #{conf["TRACKER_FILE"] || "PLAN.md"} tasks complete (#{plan.count(:done)} done) — no open work remains."
+            if commit_turn("final", last_model, conf, plan, dir).block_reason.nil?
+              emit "agent signaled #{conf["DONE_TOKEN"]} — all work complete."
+            else
+              emit "final commit gate RED — staged work left for human review."
+            end
+            stop_reason = "done"
+            break
           end
-          stop_reason = "done"
-          break
-        end
 
-        # Tier routing (audit fix #1): pick through the ONE health registry,
-        # so bench/strike state follows the MODEL across tier and flat chains.
-        tag = plan.next_task(:in_progress)&.tags&.first || plan.next_task(:open)&.tags&.first
-        tier = Tier.from_tag(tag, cheap: conf["CHEAP_MODE"] == "1")
-        tier_chain = Tier.chain_for(tier, conf).to_s
-        tier_chain = flat.join(",") if tier_chain.empty?
-        models = tier_chain.split(",").reject(&:empty?)
-        model = health.pick(models)
-        if model.nil? && tier_chain != flat.join(",")
-          emit "tier (#{tier}) chain exhausted — falling back to MODELS for this turn."
-          model = health.pick(flat)
-        end
-        if model.nil?
-          # ALL models benched: ladder backoff, reset, retry. reset_all keeps
-          # attempts/wins, so hard-disabled models STAY disabled — the point.
-          all_benched_count += 1
-          backoff = BACKOFF_LADDER[all_benched_count - 1] || BACKOFF_LADDER.last
-          emit "ALL models benched (exhausted), attempt #{all_benched_count}. Sleeping #{backoff}s, then reset + retry."
-          sleep_it.call(backoff)
-          health.reset_all
-          next
-        end
+          # Tier routing (audit fix #1): pick through the ONE health registry,
+          # so bench/strike state follows the MODEL across tier and flat chains.
+          tag = plan.next_task(:in_progress)&.tags&.first || plan.next_task(:open)&.tags&.first
+          tier = Tier.from_tag(tag, cheap: conf["CHEAP_MODE"] == "1")
+          tier_chain = Tier.chain_for(tier, conf).to_s
+          tier_chain = flat.join(",") if tier_chain.empty?
+          models = tier_chain.split(",").reject(&:empty?)
+          model = health.pick(models)
+          if model.nil? && tier_chain != flat.join(",")
+            emit "tier (#{tier}) chain exhausted — falling back to MODELS for this turn."
+            model = health.pick(flat)
+          end
+          if model.nil?
+            # ALL models benched: ladder backoff, reset, retry. reset_all keeps
+            # attempts/wins, so hard-disabled models STAY disabled — the point.
+            all_benched_count += 1
+            backoff = BACKOFF_LADDER[all_benched_count - 1] || BACKOFF_LADDER.last
+            emit "ALL models benched (exhausted), attempt #{all_benched_count}. Sleeping #{backoff}s, then reset + retry."
+            sleep_it.call(backoff)
+            health.reset_all
+            next
+          end
 
-        last_model = model
-        thinking = Tier.thinking_for(tier, conf, model: model)
-        obs.emit_event(:model_selected, model: model, tier: tier, chain: tier_chain,
-                                           reason: "pos #{models.index(model) || flat.index(model)} of #{tier_chain}")
+          last_model = model
+          thinking = Tier.thinking_for(tier, conf, model: model)
+          obs.emit_event(:model_selected, model: model, tier: tier, chain: tier_chain,
+                                             reason: "pos #{models.index(model) || flat.index(model)} of #{tier_chain}")
 
-        task = plan.next_task(:in_progress) || plan.next_task(:open)
-        next_task_str = task ? "#{task.id} (#{task.tags.join(", ")}) #{task.text}" : ""
-        done_n = plan.count(:done)
-        open_n = plan.count(:open) + plan.count(:in_progress)
-        emit "tasks: #{done_n} done / #{done_n + open_n} total | next: #{next_task_str.slice(0, 60)}"
+          task = plan.next_task(:in_progress) || plan.next_task(:open)
+          next_task_str = task ? "#{task.id} (#{task.tags.join(", ")}) #{task.text}" : ""
+          done_n = plan.count(:done)
+          open_n = plan.count(:open) + plan.count(:in_progress)
+          emit "tasks: #{done_n} done / #{done_n + open_n} total | next: #{next_task_str.slice(0, 60)}"
 
-        # Live PM header — terminal only, never into loop.log (status_report
-        # greps that file; a status block in it would poison the parser).
-        unless CLI.quiet?
-          ms = plan.current_milestone || {}
-          $stdout.print Render.status_block(done_n, done_n + open_n,
-                                            ms[:name].to_s, ms[:done].to_i, ms[:total].to_i,
-                                            turn, tier, model,
-                                            task ? task.id : "?", (task ? task.text : next_task_str).to_s.slice(0, 70))
-          $stdout.flush
-        end
+          # Live PM header — terminal only, never into loop.log (status_report
+          # greps that file; a status block in it would poison the parser).
+          unless CLI.quiet?
+            ms = plan.current_milestone || {}
+            $stdout.print Render.status_block(done_n, done_n + open_n,
+                                              ms[:name].to_s, ms[:done].to_i, ms[:total].to_i,
+                                              turn, tier, model,
+                                              task ? task.id : "?", (task ? task.text : next_task_str).to_s.slice(0, 70))
+            $stdout.flush
+          end
 
-        obs.emit(:turn_start, turn: turn, model: model, tier: tier, thinking: thinking, task: next_task_str)
+          obs.emit(:turn_start, turn: turn, model: model, tier: tier, thinking: thinking, task: next_task_str)
 
-        Paths.loop_env_vars.each { |k| ENV[k] = "1" }
-        turn_start = CLI.mono
-        cmd = [conf["AGENT_CMD"], "--model", model] + Turn.mode_args(conf["AGENT_CMD"], kind: :step)
-        cmd += ["--thinking", thinking] unless thinking.to_s.empty?
-        # P0 fix (audit 2026-09-03): build the REAL per-turn prompt (base +
-        # task block + last-turn note + RED verify tail) — the loop used to
-        # send the literal string "turn". PROMPT_OVERRIDE (-p) still wins.
-        prompt = conf["PROMPT_OVERRIDE"].to_s.empty? ? Prompt.for_turn(conf: conf, plan: plan, log_dir: log_dir) : conf["PROMPT_OVERRIDE"]
-        # Persist what the agent is being asked this turn — watch links it,
-        # and post-hoc debugging of a bad turn needs the exact prompt.
-        File.write(File.join(log_dir, "last_prompt.txt"), prompt)
-        cmd += ["--no-session", "-p", prompt]
-        result = Turn.run(cmd: cmd, turn_file: turn_out, chdir: dir,
-                          turn_timeout: conf["TURN_TIMEOUT"].to_i,
-                          stall_timeout: conf["STALL_TIMEOUT"].to_i,
-                          poll_interval: (ENV["POLL_INTERVAL"] || conf["POLL_INTERVAL"] || 3).to_i,
-                          early_tokens: [conf["STEP_TOKEN"], conf["DONE_TOKEN"]])
-        status = result.kill_reason ? 128 + (result.status.termsig || 0) : result.status.exitstatus
-        deadline = !result.kill_reason.nil? && result.kill_reason != "token-seen"
-        klass = Classifier.classify(turn_out, step_token: conf["STEP_TOKEN"], done_token: conf["DONE_TOKEN"],
-                                             deadline: deadline, json: Turn.pi_json?(conf["AGENT_CMD"]), human_token: conf["HUMAN_TOKEN"])
-        took = CLI.elapsed_int(turn_start)
-        obs.emit(:turn_end, turn: turn, class: klass, took: took, exitcode: status, task: next_task_str.slice(0, 20))
+          Paths.loop_env_vars.each { |k| ENV[k] = "1" }
+          turn_start = CLI.mono
+          cmd = [conf["AGENT_CMD"], "--model", model] + Turn.mode_args(conf["AGENT_CMD"], kind: :step)
+          cmd += ["--thinking", thinking] unless thinking.to_s.empty?
+          # P0 fix (audit 2026-09-03): build the REAL per-turn prompt (base +
+          # task block + last-turn note + RED verify tail) — the loop used to
+          # send the literal string "turn". PROMPT_OVERRIDE (-p) still wins.
+          prompt = conf["PROMPT_OVERRIDE"].to_s.empty? ? Prompt.for_turn(conf: conf, plan: plan, log_dir: log_dir) : conf["PROMPT_OVERRIDE"]
+          # Persist what the agent is being asked this turn — watch links it,
+          # and post-hoc debugging of a bad turn needs the exact prompt.
+          File.write(File.join(log_dir, "last_prompt.txt"), prompt)
+          cmd += ["--no-session", "-p", prompt]
+          result = Turn.run(cmd: cmd, turn_file: turn_out, chdir: dir,
+                            turn_timeout: conf["TURN_TIMEOUT"].to_i,
+                            stall_timeout: conf["STALL_TIMEOUT"].to_i,
+                            poll_interval: (ENV["POLL_INTERVAL"] || conf["POLL_INTERVAL"] || 3).to_i,
+                            early_tokens: [conf["STEP_TOKEN"], conf["DONE_TOKEN"]])
+          status = result.kill_reason ? 128 + (result.status.termsig || 0) : result.status.exitstatus
+          deadline = !result.kill_reason.nil? && result.kill_reason != "token-seen"
+          klass = Classifier.classify(turn_out, step_token: conf["STEP_TOKEN"], done_token: conf["DONE_TOKEN"],
+                                               deadline: deadline, json: Turn.pi_json?(conf["AGENT_CMD"]), human_token: conf["HUMAN_TOKEN"])
+          took = CLI.elapsed_int(turn_start)
+          obs.emit(:turn_end, turn: turn, class: klass, took: took, exitcode: status, task: next_task_str.slice(0, 20))
 
-        # tin is cache-inclusive (audit fix #4): input + cache_read +
-        # cache_write. Counting only fresh input under-reported the real
-        # spend by 50-100x once prompt caching was in play.
-        detail = Observability.turn_usage_detail(turn_out)
-        tin = detail[:input] + detail[:cache_read] + detail[:cache_write]
-        tout = detail[:output]
-        cost = format("%.6f", detail[:cost])
-        CLI.metrics_append(dir, "turn", turn, tier, model, klass, took, task ? task.id : "?", tin, tout, cost,
-                           usage: detail)
-        run_toks[:in] += tin
-        run_toks[:out] += tout
-        run_toks[:cost] += detail[:cost]
-        # fresh_in/tin/runaway ride on the event so token efficiency is
-        # queryable from events.jsonl without recomputing it from the file.
-        runaway = Observability.runaway?(detail)
-        obs.emit_event(:tokens, input: detail[:input], output: detail[:output],
-                          cache_read: detail[:cache_read], cache_write: detail[:cache_write],
-                          fresh_in: detail[:input] + detail[:cache_write], tin: tin,
-                          cost: detail[:cost], messages: detail[:messages], runaway: runaway)
-        if runaway
-          emit "turn #{turn}: #{detail[:messages]} agent round-trips (>= #{Observability.runaway_messages}) " \
-               "for #{tout} output tokens — runaway tool loop; see #{turn_out}."
-        end
+          # tin is cache-inclusive (audit fix #4): input + cache_read +
+          # cache_write. Counting only fresh input under-reported the real
+          # spend by 50-100x once prompt caching was in play.
+          detail = Observability.turn_usage_detail(turn_out)
+          tin = detail[:input] + detail[:cache_read] + detail[:cache_write]
+          tout = detail[:output]
+          cost = format("%.6f", detail[:cost])
+          CLI.metrics_append(dir, "turn", turn, tier, model, klass, took, task ? task.id : "?", tin, tout, cost,
+                             usage: detail)
+          run_toks[:in] += tin
+          run_toks[:out] += tout
+          run_toks[:cost] += detail[:cost]
+          # fresh_in/tin/runaway ride on the event so token efficiency is
+          # queryable from events.jsonl without recomputing it from the file.
+          runaway = Observability.runaway?(detail)
+          obs.emit_event(:tokens, input: detail[:input], output: detail[:output],
+                            cache_read: detail[:cache_read], cache_write: detail[:cache_write],
+                            fresh_in: detail[:input] + detail[:cache_write], tin: tin,
+                            cost: detail[:cost], messages: detail[:messages], runaway: runaway)
+          if runaway
+            emit "turn #{turn}: #{detail[:messages]} agent round-trips (>= #{Observability.runaway_messages}) " \
+                 "for #{tout} output tokens — runaway tool loop; see #{turn_out}."
+          end
 
-        Paths.ensure_state_dir!(dir)
-        File.write(Paths.state_file(dir, "last_task.state"), "#{task ? task.id : "?"}\t#{klass}\n")
+          Paths.ensure_state_dir!(dir)
+          File.write(Paths.state_file(dir, "last_task.state"), "#{task ? task.id : "?"}\t#{klass}\n")
 
-        if !ENV.fetch("SUMMARY_LINES", "4").to_i.zero? && File.exist?(turn_out) && !File.zero?(turn_out)
-          emit "--- summary ---"
-          lines = File.read(turn_out).lines.reject { |l| l =~ /^[[:space:]]*$/ }
-          lines.last(ENV.fetch("SUMMARY_LINES", "4").to_i).each { |l| CLI.flow(l) }
-          emit "---"
-        end
+          if !ENV.fetch("SUMMARY_LINES", "4").to_i.zero? && File.exist?(turn_out) && !File.zero?(turn_out)
+            emit "--- summary ---"
+            lines = File.read(turn_out).lines.reject { |l| l =~ /^[[:space:]]*$/ }
+            lines.last(ENV.fetch("SUMMARY_LINES", "4").to_i).each { |l| CLI.flow(l) }
+            emit "---"
+          end
 
-        # sanity-gate BEFORE the case: done-with-open-tasks is mid-work.
-        # Setting the status inside a `done` arm would never re-dispatch, and
-        # the loop would exit with open tasks — downgrade here instead.
-        if klass == :done && (plan.open? || plan.in_progress?)
-          emit "agent printed #{conf["DONE_TOKEN"]} but open tasks remain — treating as step and continuing."
-          klass = :step
-        end
+          # sanity-gate BEFORE the case: done-with-open-tasks is mid-work.
+          # Setting the status inside a `done` arm would never re-dispatch, and
+          # the loop would exit with open tasks — downgrade here instead.
+          if klass == :done && (plan.open? || plan.in_progress?)
+            emit "agent printed #{conf["DONE_TOKEN"]} but open tasks remain — treating as step and continuing."
+            klass = :step
+          end
 
-        commit_result = commit_turn(turn, model, conf, plan, dir)
-        obs.emit_event(:gate_result,
-                       status: commit_result.committed ? "green" : commit_result.block_reason ? "red" : "skipped",
-                       reason: commit_result.block_reason || (commit_result.committed ? "committed" : "no-op"))
-        health.record!(model, klass)
+          commit_result = commit_turn(turn, model, conf, plan, dir)
+          obs.emit_event(:gate_result,
+                         status: commit_result.committed ? "green" : commit_result.block_reason ? "red" : "skipped",
+                         reason: commit_result.block_reason || (commit_result.committed ? "committed" : "no-op"))
+          health.record!(model, klass)
 
-        # No-progress detector (audit fix #2): every path records here, before
-        # the classification arms below break/next.
-        note_written = false
-        case guard.record(committed: commit_result.committed)
-        when :bench
-          health.bench!(model)
-          obs.emit_event(:model_benched, model: model, seconds: conf["COOLDOWN"].to_i,
-                                          reason: "progress stalled #{guard.stalls} turns")
-          emit "no progress for #{guard.stalls} turns — benching #{model}; switching model."
-        when :inject_context
-          obs.emit_event(:progress_stall, stalls: guard.stalls, action: "context injected into next prompt")
-          stall_msg = "No progress in #{guard.stalls} turns: the tracker did not change and nothing committed. " \
-                      "Re-read the current task in #{conf["TRACKER_FILE"] || "PLAN.md"}, change your approach, " \
-                      "and write the changes to files. If the task is truly blocked, print #{conf["HUMAN_TOKEN"]} " \
-                      "instead of repeating the same step."
-          write_note(log_dir, commit_result.committed, stall_msg)
-          note_written = true
-          emit "no progress for #{guard.stalls} turns — context injected into the next turn's prompt."
-        when :block_task
-          obs.emit_event(:task_blocked, task: task ? task.id : "?", stalls: guard.stalls)
-          block_current_task(dir, conf, task, guard.stalls)
-          emit "task #{task ? task.id : "?"} BLOCKED after #{guard.stalls} no-progress turns — advancing to the next task."
-        when :stop
-          obs.emit_event(:progress_stall, stalls: guard.stalls, action: "loop stopped")
-          emit "no progress for #{guard.stalls} turns — STOPPING (progress_stalled)."
-          notify_human "#{File.basename(dir)}: no progress for #{guard.stalls} turns on task #{task ? task.id : "?"} — loop stopped for human review."
-          stop_reason = "progress_stalled"
-          break
-        end
+          # No-progress detector (audit fix #2): every path records here, before
+          # the classification arms below break/next.
+          note_written = false
+          case guard.record(committed: commit_result.committed)
+          when :bench
+            health.bench!(model)
+            obs.emit_event(:model_benched, model: model, seconds: conf["COOLDOWN"].to_i,
+                                            reason: "progress stalled #{guard.stalls} turns")
+            emit "no progress for #{guard.stalls} turns — benching #{model}; switching model."
+          when :inject_context
+            obs.emit_event(:progress_stall, stalls: guard.stalls, action: "context injected into next prompt")
+            stall_msg = "No progress in #{guard.stalls} turns: the tracker did not change and nothing committed. " \
+                        "Re-read the current task in #{conf["TRACKER_FILE"] || "PLAN.md"}, change your approach, " \
+                        "and write the changes to files. If the task is truly blocked, print #{conf["HUMAN_TOKEN"]} " \
+                        "instead of repeating the same step."
+            write_note(log_dir, commit_result.committed, stall_msg)
+            note_written = true
+            emit "no progress for #{guard.stalls} turns — context injected into the next turn's prompt."
+          when :block_task
+            obs.emit_event(:task_blocked, task: task ? task.id : "?", stalls: guard.stalls)
+            block_current_task(dir, conf, task, guard.stalls)
+            emit "task #{task ? task.id : "?"} BLOCKED after #{guard.stalls} no-progress turns — advancing to the next task."
+          when :stop
+            obs.emit_event(:progress_stall, stalls: guard.stalls, action: "loop stopped")
+            emit "no progress for #{guard.stalls} turns — STOPPING (progress_stalled)."
+            notify_human "#{File.basename(dir)}: no progress for #{guard.stalls} turns on task #{task ? task.id : "?"} — loop stopped for human review."
+            stop_reason = "progress_stalled"
+            break
+          end
 
-        dirty = File.directory?(File.join(dir, ".git")) &&
-                !Open3.capture3("git", "-C", dir, "status", "--porcelain")[0].empty?
+          dirty = File.directory?(File.join(dir, ".git")) &&
+                  !Open3.capture3("git", "-C", dir, "status", "--porcelain")[0].empty?
 
-        case klass
-        when :done
-          if commit_result.block_reason
-            done_gate_fails += 1
-            emit "DONE turn was RED at commit gate — treating as repair-needed, not complete (#{done_gate_fails}/#{conf["MAX_DONE_GATE_FAILS"]})."
-            if done_gate_fails >= conf["MAX_DONE_GATE_FAILS"].to_i
-              emit "ALL_DONE but commit gate stayed RED for #{conf["MAX_DONE_GATE_FAILS"]} turns — STOPPING for human review."
-              notify_human "#{File.basename(dir)}: gate RED after ALL_DONE (#{conf["MAX_DONE_GATE_FAILS"]} turns) — needs human review."
-              stop_reason = "gate_red"
+          case klass
+          when :done
+            if commit_result.block_reason
+              done_gate_fails += 1
+              emit "DONE turn was RED at commit gate — treating as repair-needed, not complete (#{done_gate_fails}/#{conf["MAX_DONE_GATE_FAILS"]})."
+              if done_gate_fails >= conf["MAX_DONE_GATE_FAILS"].to_i
+                emit "ALL_DONE but commit gate stayed RED for #{conf["MAX_DONE_GATE_FAILS"]} turns — STOPPING for human review."
+                notify_human "#{File.basename(dir)}: gate RED after ALL_DONE (#{conf["MAX_DONE_GATE_FAILS"]} turns) — needs human review."
+                stop_reason = "gate_red"
+                break
+              end
+              sleep_it.call(conf["SHORT_SLEEP"].to_i)
+              next
+            end
+            done_gate_fails = 0
+            emit "agent signaled #{conf["DONE_TOKEN"]} — all work complete."
+            emit "final model used: #{model}"
+            stop_reason = "done"
+            break
+          when :human
+            if dirty && commit_result.committed
+              emit "salvaged green work before human-gate stop"
+            end
+            emit "agent signaled #{conf["HUMAN_TOKEN"]} — needs a human decision; stopping this repo."
+            emit "HUMAN NEEDED: #{plan.human_block_brief(task ? task.id : "?", next_task_str)}"
+            stop_reason = "human_blocked"
+            break
+          when :step
+            if commit_result.block_reason
+              emit "step turn RED at commit gate — next turn will repair. Sleeping #{conf["SHORT_SLEEP"]}s."
+              sleep_it.call(conf["SHORT_SLEEP"].to_i)
+              next
+            end
+            emit "step complete (#{conf["STEP_TOKEN"]}). Sleeping #{conf["SHORT_SLEEP"]}s."
+            if once
+              stop_reason = "once"
+              emit "--once: stopping after one step."
               break
             end
             sleep_it.call(conf["SHORT_SLEEP"].to_i)
-            next
-          end
-          done_gate_fails = 0
-          emit "agent signaled #{conf["DONE_TOKEN"]} — all work complete."
-          emit "final model used: #{model}"
-          stop_reason = "done"
-          break
-        when :human
-          if dirty && commit_result.committed
-            emit "salvaged green work before human-gate stop"
-          end
-          emit "agent signaled #{conf["HUMAN_TOKEN"]} — needs a human decision; stopping this repo."
-          emit "HUMAN NEEDED: #{plan.human_block_brief(task ? task.id : "?", next_task_str)}"
-          stop_reason = "human_blocked"
-          break
-        when :step
-          if commit_result.block_reason
-            emit "step turn RED at commit gate — next turn will repair. Sleeping #{conf["SHORT_SLEEP"]}s."
-            sleep_it.call(conf["SHORT_SLEEP"].to_i)
-            next
-          end
-          emit "step complete (#{conf["STEP_TOKEN"]}). Sleeping #{conf["SHORT_SLEEP"]}s."
-          if once
-            stop_reason = "once"
-            emit "--once: stopping after one step."
-            break
-          end
-          sleep_it.call(conf["SHORT_SLEEP"].to_i)
-        when :exhausted
-          why = took < 15 ? " — instant-quota, model was already dry" : ""
-          emit "model #{model} EXHAUSTED (quota/rate-limit#{why}). Benching #{conf["COOLDOWN"]}s; switching."
-          obs.emit_event(:model_benched, model: model, seconds: conf["COOLDOWN"].to_i, reason: "exhausted")
-          health.bench!(model)
-          if once
-            stop_reason = "once"
-            emit "--once: stopping."
-            break
-          end
-          sleep_it.call(conf["SHORT_SLEEP"].to_i)
-        when :hard
-          benched = health.strike!(model)
-          emit "model #{model} HARD ERROR (auth/not-found/bad-request). See #{turn_out}"
-          emit "benching #{model} after #{conf["MAX_TRANSIENT"]} hard errors — likely a config issue." if benched
-          if once
-            stop_reason = "once"
-            emit "--once: stopping."
-            break
-          end
-          sleep_it.call(conf["SHORT_SLEEP"].to_i)
-        when :timeout
-          if dirty && commit_result.committed
-            emit "turn killed (timeout) but tree was green — salvaged work as a commit; continuing."
+          when :exhausted
+            why = took < 15 ? " — instant-quota, model was already dry" : ""
+            emit "model #{model} EXHAUSTED (quota/rate-limit#{why}). Benching #{conf["COOLDOWN"]}s; switching."
+            obs.emit_event(:model_benched, model: model, seconds: conf["COOLDOWN"].to_i, reason: "exhausted")
+            health.bench!(model)
             if once
               stop_reason = "once"
               emit "--once: stopping."
               break
             end
             sleep_it.call(conf["SHORT_SLEEP"].to_i)
-            next
+          when :hard
+            benched = health.strike!(model)
+            emit "model #{model} HARD ERROR (auth/not-found/bad-request). See #{turn_out}"
+            emit "benching #{model} after #{conf["MAX_TRANSIENT"]} hard errors — likely a config issue." if benched
+            if once
+              stop_reason = "once"
+              emit "--once: stopping."
+              break
+            end
+            sleep_it.call(conf["SHORT_SLEEP"].to_i)
+          when :timeout
+            if dirty && commit_result.committed
+              emit "turn killed (timeout) but tree was green — salvaged work as a commit; continuing."
+              if once
+                stop_reason = "once"
+                emit "--once: stopping."
+                break
+              end
+              sleep_it.call(conf["SHORT_SLEEP"].to_i)
+              next
+            end
+            benched = health.strike!(model)
+            emit "model #{model} TIMEOUT (#{result.kill_reason}, no token/error). strike; backing off #{conf["SHORT_SLEEP"]}s."
+            emit "benching #{model} after #{conf["MAX_TRANSIENT"]} timeouts." if benched
+            if once
+              stop_reason = "once"
+              emit "--once: stopping."
+              break
+            end
+            sleep_it.call(conf["SHORT_SLEEP"].to_i)
+          when :empty
+            # Exit-0-no-output (audit fix #3): NOT a strike — bench immediately.
+            # 1,574 production turns like this hid inside :transient, retried forever.
+            health.bench!(model)
+            obs.emit_event(:model_benched, model: model, seconds: conf["COOLDOWN"].to_i, reason: "empty output")
+            emit "model #{model} EMPTY OUTPUT (exit 0, nothing said) — benching #{conf["COOLDOWN"]}s, no strike."
+            if once
+              stop_reason = "once"
+              emit "--once: stopping."
+              break
+            end
+            sleep_it.call(conf["SHORT_SLEEP"].to_i)
+          else # :transient
+            benched = health.strike!(model)
+            emit "model #{model} transient failure. strike; backing off #{conf["SHORT_SLEEP"]}s."
+            emit "benching #{model} after #{conf["MAX_TRANSIENT"]} transient failures." if benched
+            if once
+              stop_reason = "once"
+              emit "--once: stopping."
+              break
+            end
+            sleep_it.call(conf["SHORT_SLEEP"].to_i)
           end
-          benched = health.strike!(model)
-          emit "model #{model} TIMEOUT (#{result.kill_reason}, no token/error). strike; backing off #{conf["SHORT_SLEEP"]}s."
-          emit "benching #{model} after #{conf["MAX_TRANSIENT"]} timeouts." if benched
-          if once
-            stop_reason = "once"
-            emit "--once: stopping."
-            break
-          end
-          sleep_it.call(conf["SHORT_SLEEP"].to_i)
-        when :empty
-          # Exit-0-no-output (audit fix #3): NOT a strike — bench immediately.
-          # 1,574 production turns like this hid inside :transient, retried forever.
-          health.bench!(model)
-          obs.emit_event(:model_benched, model: model, seconds: conf["COOLDOWN"].to_i, reason: "empty output")
-          emit "model #{model} EMPTY OUTPUT (exit 0, nothing said) — benching #{conf["COOLDOWN"]}s, no strike."
-          if once
-            stop_reason = "once"
-            emit "--once: stopping."
-            break
-          end
-          sleep_it.call(conf["SHORT_SLEEP"].to_i)
-        else # :transient
-          benched = health.strike!(model)
-          emit "model #{model} transient failure. strike; backing off #{conf["SHORT_SLEEP"]}s."
-          emit "benching #{model} after #{conf["MAX_TRANSIENT"]} transient failures." if benched
-          if once
-            stop_reason = "once"
-            emit "--once: stopping."
-            break
-          end
-          sleep_it.call(conf["SHORT_SLEEP"].to_i)
-        end
 
-        # Milestone-complete detection + bounded review turn
-        # (PR_CADENCE=milestone only). Reached ONLY on the common tail -- the
-        # `done`/`human` branches `break` and the RED-gate-repair branches
-        # `next` above, so neither reaches this block.
-        if commit_result.committed && (conf["PR_CADENCE"] || "done") == "milestone"
-          action = milestone_complete_check(dir, conf, plan, thinking, flat, turn_out, log_dir, sleep_it: sleep_it)
-          if action == :review_exceeded
-            stop_reason = "review_exceeded"
-            break
+          # Milestone-complete detection + bounded review turn
+          # (PR_CADENCE=milestone only). Reached ONLY on the common tail -- the
+          # `done`/`human` branches `break` and the RED-gate-repair branches
+          # `next` above, so neither reaches this block.
+          if commit_result.committed && (conf["PR_CADENCE"] || "done") == "milestone"
+            action = milestone_complete_check(dir, conf, plan, thinking, flat, turn_out, log_dir, sleep_it: sleep_it)
+            if action == :review_exceeded
+              stop_reason = "review_exceeded"
+              break
+            end
           end
-        end
 
-        # last-turn note for the next turn's prompt (skipped when the
-        # progress guard already wrote the stall context this turn)
-        unless note_written
-          if commit_result.committed
-            changed = Open3.capture3("git", "-C", dir, "diff", "HEAD~1", "--name-only")[0]
-                         .lines.first(5).map(&:strip).join(",")
-            write_note(log_dir, commit_result.committed, "Last turn changed: #{changed}")
-          else
-            write_note(log_dir, commit_result.committed, "Last turn: gate RED, left staged.")
+          # last-turn note for the next turn's prompt (skipped when the
+          # progress guard already wrote the stall context this turn)
+          unless note_written
+            if commit_result.committed
+              changed = Open3.capture3("git", "-C", dir, "diff", "HEAD~1", "--name-only")[0]
+                           .lines.first(5).map(&:strip).join(",")
+              write_note(log_dir, commit_result.committed, "Last turn changed: #{changed}")
+            else
+              write_note(log_dir, commit_result.committed, "Last turn: gate RED, left staged.")
+            end
           end
         end
+      ensure
+        # Epilogue on EVERY exit path — this is the only thing the external
+        # supervisor reads; before the ensure it was skipped whenever the
+        # turn loop raised instead of falling out normally.
+        obs.emit(:run_end, turns: turn)
+        File.write(Paths.state_file(dir, "stop_reason"), "#{stop_reason}\n")
+        state = File.file?(Paths.state_file(dir, "last_task.state")) ? File.read(Paths.state_file(dir, "last_task.state")) : ""
+        CLI.metrics_append(dir, "run", "-", "-", last_model, stop_reason, CLI.elapsed_int(run_start),
+                           state[/\A[^\t]*/].to_s, run_toks[:in], run_toks[:out], format("%.6f", run_toks[:cost]))
       end
 
-      obs.emit(:run_end, turns: turn)
-      File.write(Paths.state_file(dir, "stop_reason"), "#{stop_reason}\n")
-      state = File.file?(Paths.state_file(dir, "last_task.state")) ? File.read(Paths.state_file(dir, "last_task.state")) : ""
-      CLI.metrics_append(dir, "run", "-", "-", last_model, stop_reason, CLI.elapsed_int(run_start),
-                         state[/\A[^\t]*/].to_s, run_toks[:in], run_toks[:out], format("%.6f", run_toks[:cost]))
       stop_reason == "gate_red" || stop_reason == "human_blocked" ? 1 : 0
     end
 
