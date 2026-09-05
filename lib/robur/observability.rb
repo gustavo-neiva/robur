@@ -3,6 +3,7 @@
 require "json"
 require "fileutils"
 require "time"
+require "securerandom"
 require_relative "sys"
 require_relative "paths"
 
@@ -97,10 +98,23 @@ module Robur
       detail[:messages].to_i >= runaway_messages
     end
 
-    def initialize(dir, clock: Sys::Clock.new)
+    attr_reader :run_id
+
+    # log dirs are REUSED across runs (~/.robur/logs/<slug>/events.jsonl
+    # outlives any one `robur run`), so two runs logged to the same file are
+    # otherwise indistinguishable: a real production events.jsonl held two
+    # separate run_start records with overlapping turn numbers. run_id is
+    # generated fresh per Observability instance (i.e. per run) and stamped
+    # on every event below; a consumer groups by it instead of guessing at
+    # record boundaries. Format is deliberately readable (slug-epoch-pid) but
+    # the trailing hex is what actually guarantees uniqueness — two runs
+    # started in the same wall-clock second by the same pid (in-process
+    # tests, a fast restart) must not collide.
+    def initialize(dir, clock: Sys::Clock.new, run_id: nil)
       @loop_log = File.join(dir, "loop.log")
       @events_log = File.join(dir, "events.jsonl")
       @clock = clock
+      @run_id = run_id || "#{File.basename(dir)}-#{Time.now.to_i}-#{Process.pid}-#{SecureRandom.hex(4)}"
     end
 
     # emit(:turn_start, turn: 3, model: "m", tier: "build", thinking: "off", task: "T1")
@@ -110,7 +124,7 @@ module Robur
       lines = RENDER.fetch(kind).call(fields)
       ts = @clock.now.strftime("%Y-%m-%d %H:%M:%S")
       append(@loop_log, lines.map { |l| "[#{ts}] #{l}" }.join("\n") + "\n")
-      append(@events_log, JSON.generate({ kind: kind.to_s, ts: ts }.merge(fields)) + "\n")
+      append(@events_log, JSON.generate({ kind: kind.to_s, ts: ts, run_id: @run_id }.merge(fields)) + "\n")
       Event.new(kind: kind, ts: ts, fields: fields)
     end
 
@@ -119,7 +133,7 @@ module Robur
     # "v": 1 so a future field rename can be detected downstream.
     def emit_event(kind, **fields)
       ts = @clock.now.strftime("%Y-%m-%d %H:%M:%S")
-      append(@events_log, JSON.generate({ kind: kind.to_s, ts: ts, v: 1 }.merge(fields)) + "\n")
+      append(@events_log, JSON.generate({ kind: kind.to_s, ts: ts, run_id: @run_id, v: 1 }.merge(fields)) + "\n")
       Event.new(kind: kind, ts: ts, fields: fields)
     end
 

@@ -142,6 +142,18 @@ class LoopTest < Minitest::Test
       assert r["kind"], "record without kind: #{r.inspect}"
       assert_match(/\A\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\z/, r["ts"])
     end
+
+    # every record of this run carries the SAME run_id. (The "two sequential
+    # runs get distinct run_ids" half of this regression is covered at the
+    # Observability unit level — test/observability_test.rb
+    # test_two_sequential_runs_in_the_same_log_dir_get_distinct_run_ids —
+    # rather than by calling Loop.run twice into one repo here: loop.pid's
+    # flock is released by the KERNEL on process death (loop.rb:95), so two
+    # in-process Loop.run calls race the first call's file descriptor being
+    # GC'd and can spuriously trip the "another loop holds the lock" guard.)
+    run_ids = records.map { |r| r["run_id"] }
+    refute_nil run_ids.first
+    assert_equal 1, run_ids.uniq.size, "one run must not mix run_ids: #{run_ids}"
   end
 
   # The token-efficiency fields the metrics row cannot carry.
