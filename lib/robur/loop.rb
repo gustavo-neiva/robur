@@ -92,8 +92,13 @@ module Robur
 
       milestone_branch_lifecycle(dir, conf, plan)
 
-      # write PID file so `robur status` can check liveness.
-      File.write(File.join(log_dir, "loop.pid"), "#{Process.pid}\n")
+      # flock loop.pid so two loops cannot share one tree (the kernel releases
+      # the lock on process death, so it cannot go stale like a PID file).
+      pid_path = File.join(log_dir, "loop.pid")
+      unless life.acquire_lock!(pid_path)
+        holder = File.read(pid_path).to_i
+        CLI.die "another loop (pid #{holder}) holds the lock on #{pid_path}; refusing to run two loops on one tree."
+      end
 
       begin
         loop do

@@ -852,8 +852,16 @@ module Robur
                commit_each_turn: conf["COMMIT_EACH_TURN"], push_on_done: conf["PUSH_ON_DONE"],
                open_pr: conf["OPEN_PR"], log_dir: log_dir)
 
-      # write PID file so `robur status` can check liveness.
-      File.write(File.join(log_dir, "loop.pid"), "#{Process.pid}\n")
+      # flock loop.pid so two loops cannot share one tree (the kernel releases
+      # the lock on process death, so it cannot go stale like a PID file).
+      # `lock` stays referenced for the method's lifetime; if it were GCed the
+      # fd would close and the lock would silently release.
+      lock = Robur::Lifecycle.new(dir)
+      pid_path = File.join(log_dir, "loop.pid")
+      unless lock.acquire_lock!(pid_path)
+        holder = File.read(pid_path).to_i
+        die "another loop (pid #{holder}) holds the lock on #{pid_path}; refusing to run two loops on one tree."
+      end
 
       stop_reason = ""
       turn = 1

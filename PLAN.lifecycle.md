@@ -452,7 +452,7 @@ immune to PID reuse.
 
 ## Milestone 2 — one loop per tree, and honest recovery
 
-- [ ] T2.1 (normal, serial) flock loop.pid so two loops cannot share one tree
+- [x] T2.1 (normal, serial) flock loop.pid so two loops cannot share one tree
       touches: lib/robur/lifecycle.rb, lib/robur/loop.rb, lib/robur/cli.rb, test/lifecycle_test.rb
       do: Two `robur run` processes on one worktree means two agents editing one
           tree — the worst failure available here — and nothing prevents it

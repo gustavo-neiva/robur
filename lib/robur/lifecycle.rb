@@ -25,6 +25,15 @@ module Robur
       self
     end
 
+    def acquire_lock!(pid_path)
+      @lock = File.open(pid_path, File::RDWR | File::CREAT)
+      return false unless @lock.flock(File::LOCK_EX | File::LOCK_NB)
+      @lock.truncate(0)
+      @lock.write("#{Process.pid}\n")
+      @lock.flush
+      true
+    end
+
     def sleep(seconds, sleep_it: Kernel.method(:sleep))
       remaining = seconds.to_f
       start = level

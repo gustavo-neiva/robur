@@ -82,4 +82,44 @@ class LifecycleTest < Minitest::Test
       assert_equal [1.0, 1.0, 1.0], slices
     end
   end
+
+  def spawn_lock_holder(pid_path)
+    pid = spawn("ruby", "-e",
+                "File.open(ARGV[0], File::RDWR|File::CREAT) { |f| f.flock(File::LOCK_EX); f.truncate(0); f.puts(Process.pid); f.flush; sleep 30 }",
+                pid_path)
+    100.times do
+      probe = File.open(pid_path, File::RDWR | File::CREAT)
+      held = !probe.flock(File::LOCK_EX | File::LOCK_NB)
+      probe.close
+      return pid if held
+      sleep 0.05
+    end
+    flunk "lock holder never acquired the lock"
+  end
+
+  def test_acquire_lock_returns_false_while_holder_alive
+    Dir.mktmpdir do |d|
+      pid_path = File.join(d, "loop.pid")
+      holder = spawn_lock_holder(pid_path)
+      begin
+        refute Robur::Lifecycle.new(d).acquire_lock!(pid_path)
+        assert_equal holder, File.read(pid_path).to_i
+      ensure
+        Process.kill("KILL", holder)
+        Process.wait(holder)
+      end
+    end
+  end
+
+  def test_acquire_lock_succeeds_after_holder_is_sigkilled
+    Dir.mktmpdir do |d|
+      pid_path = File.join(d, "loop.pid")
+      holder = spawn_lock_holder(pid_path)
+      Process.kill("KILL", holder)
+      Process.wait(holder)
+      lc = Robur::Lifecycle.new(d)
+      assert lc.acquire_lock!(pid_path)
+      assert_equal Process.pid, File.read(pid_path).to_i
+    end
+  end
 end
