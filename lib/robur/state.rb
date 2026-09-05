@@ -22,6 +22,21 @@ module Robur
       write_line(repo_dir, "stop_reason", reason)
     end
 
+    # stop file: signals the loop to halt; the mode word says why.
+    def read_stop(repo_dir)
+      first_line(repo_dir, "stop")
+    end
+
+    def write_stop(repo_dir, mode)
+      write_line(repo_dir, "stop", mode)
+    end
+
+    def clear_stop(repo_dir)
+      File.unlink(state_path(repo_dir, "stop"))
+    rescue StandardError
+      nil
+    end
+
     # loop-backoff: "count<TAB>until_epoch" (atlas/bin/money-loop.sh bump_backoff).
     def read_loop_backoff(repo_dir)
       count, until_epoch = tab_fields(repo_dir, "loop-backoff", 2)

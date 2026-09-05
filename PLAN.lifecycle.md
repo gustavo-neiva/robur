@@ -124,7 +124,7 @@ immune to PID reuse.
 
 > Nothing in later milestones works until this is green.
 
-- [ ] T0.1 (trivial, serial) add the stop-file name and its State accessors
+- [x] T0.1 (trivial, serial) add the stop-file name and its State accessors
       touches: lib/robur/paths.rb, lib/robur/state.rb, test/state_test.rb
       do: `Robur::Paths` is the only place an on-disk name may be written. In
           `lib/robur/paths.rb`, next to the existing `def state_file(repo_dir, name)`,

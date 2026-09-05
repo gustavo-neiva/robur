@@ -73,6 +73,10 @@ module Robur
 
     def state_file(repo_dir, name) = File.join(state_dir(repo_dir), name)
 
+    # No legacy `.ratchet` twin needed: `ensure_state_dir!` already leaves
+    # `.ratchet` as a symlink to `.robur`, so external readers follow it.
+    def stop_file(repo_dir) = state_file(repo_dir, "stop")
+
     # Create the state dir and leave the legacy name pointing at it. The
     # symlink is what keeps atlas and harbor working across the rename.
     def ensure_state_dir!(repo_dir)

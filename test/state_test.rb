@@ -33,6 +33,7 @@ class StateTest < Minitest::Test
 
   def test_read_tolerates_missing_files
     Dir.mktmpdir do |d|
+      assert_nil Robur::State.read_stop(d)
       assert_nil Robur::State.read_stop_reason(d)
       assert_nil Robur::State.read_loop_backoff(d)
       assert_nil Robur::State.read_last_task(d)
@@ -49,6 +50,19 @@ class StateTest < Minitest::Test
       File.write(file_where_dir_should_be, "not a directory")
       assert_nil Robur::State.write_stop_reason(d, "done")
       refute File.directory?(file_where_dir_should_be)
+    end
+  end
+
+  def test_stop_round_trip
+    Dir.mktmpdir do |d|
+      assert_nil Robur::State.read_stop(d)
+
+      Robur::State.write_stop(d, "now")
+      assert_equal "now", Robur::State.read_stop(d)
+      assert_equal "stop", File.basename(Robur::Paths.stop_file(d))
+
+      Robur::State.clear_stop(d)
+      assert_nil Robur::State.read_stop(d)
     end
   end
 
