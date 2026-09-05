@@ -563,6 +563,9 @@ module Robur
       out << "ETA: #{eta_str}\n"
       doing_now = status_doing_now(turn_out)
       out << "\nDoing: #{doing_now}\n" if doing_now && !doing_now.empty?
+      if (s = State.read_stop(dir))
+        loop_status += s.match?(/\A(now|abort)/) ? " (aborting)" : " (draining)"
+      end
       out << (loop_status.start_with?("running") ? "\nLoop: #{Render.c_green(loop_status)}\n" : "\nLoop: #{Render.c_dim(loop_status)}\n")
       out << "Log: #{log}\n"
       out
