@@ -206,7 +206,7 @@ immune to PID reuse.
       verify: ruby -Ilib -e 'Dir["test/**/*_test.rb"].each{|f| require File.expand_path(f)}'
       constraints: stdlib only; do NOT add signal handling or sleep in this task
 
-- [ ] T0.3 (normal, serial) give Lifecycle a signal trap and an interruptible sleep
+- [x] T0.3 (normal, serial) give Lifecycle a signal trap and an interruptible sleep
       touches: lib/robur/lifecycle.rb, test/lifecycle_test.rb
       do: Add exactly two methods to the `Robur::Lifecycle` class from T0.2,
           copying the snippet below. `install!` traps INT and TERM; the block
