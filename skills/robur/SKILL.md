@@ -65,6 +65,15 @@ robur stats <repo>                             # success rate, failure classes, 
 | `progress_stalled` | 15 turns with no commit and no tracker change | The task is too big or impossible. Split it. |
 | `review_exceeded` | Milestone review cycles exhausted | Read the review turn output. |
 
+## Stopping a loop
+
+`robur stop` writes `.robur/stop` and the running loop's `Lifecycle` reads it between polls. Four behaviours:
+
+- **`robur stop` (drain)** — the loop finishes the current turn, commits if the gate is green, writes `stop_reason` `"stopped"` and exits 0. No new turn starts.
+- **`robur stop --now`** — aborts the in-flight turn (the child agent is killed) but the loop still exits cleanly.
+- **`robur stop --clear`** — deletes the stop file, cancelling a pending stop before the loop reads it.
+- **Second Ctrl-C** — one INT/TERM raises the drain level; a second signal escalates a drain to an abort (same as `--now`).
+
 ### "The loop is stuck / spinning"
 
 robur defines progress as *a commit or a tracker change*. Without either it escalates: **3** turns → bench the model and switch; **6** → inject a "change your approach" note; **10** → mark the task `[x] … — BLOCKED by progress guard` and advance; **15** → stop.

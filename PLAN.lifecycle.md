@@ -625,7 +625,7 @@ immune to PID reuse.
       constraints: do NOT reword any existing RENDER line — the `stats` command
           has a legacy adapter that parses those exact strings
 
-- [ ] T4.2 (trivial) document the stop contract for operators
+- [x] T4.2 (trivial) document the stop contract for operators
       touches: skills/robur/SKILL.md, LEARNINGS.md
       do: Add a short "Stopping a loop" section to `skills/robur/SKILL.md`,
           which is what an agent reads to operate the loop. Document the four
