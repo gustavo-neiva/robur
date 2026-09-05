@@ -289,7 +289,7 @@ immune to PID reuse.
 
 ## Milestone 1 — graceful stop (serial: these tasks all edit loop.rb)
 
-- [ ] T1.1 (normal, serial) Turn.run ends the turn when an abort is requested
+- [x] T1.1 (normal, serial) Turn.run ends the turn when an abort is requested
       touches: lib/robur/turn.rb, test/turn_test.rb
       do: In `lib/robur/turn.rb`, `Turn.run`'s poll loop already checks several
           end conditions and already kills the child correctly. Add ONE more.

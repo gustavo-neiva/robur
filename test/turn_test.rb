@@ -114,6 +114,32 @@ module Robur
       assert_equal 9, result.status.termsig
     end
 
+    # Level 2 (abort) ends the turn; the kill tail makes it TERM-then-KILL,
+    # so the reaped status is a signal, not a clean exit.
+    def test_stop_check_level_2_aborts_the_turn
+      start = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      result = Turn.run(
+        cmd: [RbConfig.ruby, "-e", "sleep 30"],
+        turn_file: File.join(Dir.mktmpdir, "turn.out"),
+        turn_timeout: 30, stall_timeout: 30, poll_interval: 0.05,
+        stop_check: -> { 2 }
+      )
+      elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - start
+      assert_equal "stop-requested", result.kill_reason
+      assert_operator elapsed, :<, 5 # ended long before the 30s deadline
+      assert_predicate result.status, :signaled?
+    end
+
+    # Level 1 is drain: the current turn finishes normally.
+    def test_stop_check_level_1_lets_the_turn_finish
+      result, out = run_turn(
+        [RbConfig.ruby, "-e", "print 'done'"],
+        turn_timeout: 2, stall_timeout: 2, poll: 0.2
+      )
+      assert_nil result.kill_reason
+      assert_equal "done", out
+    end
+
     def test_normal_completion
       result, out = run_turn([RbConfig.ruby, "-e", "print 'done'; exit 7"])
       assert_nil result.kill_reason

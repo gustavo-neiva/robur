@@ -16,7 +16,8 @@ module Robur
     # is hours of wall-clock across a run).
     # early_tokens: array of tokens (step/done) that end the turn early.
     def self.run(cmd:, turn_file:, turn_timeout:, stall_timeout:, poll_interval:,
-                 chdir: nil, proc: Sys::Proc.new, clock: Sys::Clock.new, early_tokens: nil)
+                 chdir: nil, proc: Sys::Proc.new, clock: Sys::Clock.new, early_tokens: nil,
+                 stop_check: nil)
       File.open(turn_file, "w") do |f|
         # The turn runs with the repo as cwd: an agent started elsewhere
         # edits the wrong tree and the loop never makes progress.
@@ -61,6 +62,11 @@ module Robur
           end
           if now - start >= turn_timeout
             reason = "deadline-#{turn_timeout}s"
+            detected = now
+            break
+          end
+          if stop_check && stop_check.call >= 2
+            reason = "stop-requested"
             detected = now
             break
           end
