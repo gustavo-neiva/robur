@@ -512,7 +512,7 @@ immune to PID reuse.
       constraints: absolutely no git reset, checkout, stash or clean anywhere in
           this task — read-only with respect to the working tree and the index
 
-- [ ] T2.3 (trivial) show the stop state in `robur status`
+- [x] T2.3 (trivial) show the stop state in `robur status`
       touches: lib/robur/cli.rb, test/cli_test.rb
       do: In `lib/robur/cli.rb`, `status_report` builds a line beginning
           `out << (loop_status.start_with?("running") ? ...` from

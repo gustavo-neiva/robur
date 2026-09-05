@@ -174,4 +174,19 @@ class CliTest < Minitest::Test
       refute File.file?(Robur::Paths.stop_file(repo))
     end
   end
+
+  def test_status_shows_draining_when_stop_file_pending
+    in_temp_repo do |repo|
+      log_dir = File.join(Robur::Paths.logs_dir, Robur::CLI.project_slug(repo))
+      FileUtils.mkdir_p(log_dir)
+      File.write(File.join(log_dir, "loop.log"), "")
+      File.write(File.join(log_dir, "loop.pid"), "#{Process.pid}\n")
+      Robur::Paths.ensure_state_dir!(repo)
+      Robur::State.write_stop(repo, "drain")
+      out, = capture_io do
+        assert_equal 0, Robur::CLI.cmd_status(repo)
+      end
+      assert_includes out, "running (pid #{Process.pid}) (draining)"
+    end
+  end
 end
