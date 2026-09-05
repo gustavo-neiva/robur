@@ -18,6 +18,7 @@ require "robur/commit_gate"
 require "robur/render"
 require "robur/observability"
 require "robur/state"
+require "robur/lifecycle"
 require "robur/commands"
 require "robur/models_cmd"
 

@@ -161,7 +161,7 @@ immune to PID reuse.
       constraints: do not touch Config::ALLOWLIST; do not add a legacy .ratchet
           name for the stop file
 
-- [ ] T0.2 (normal, serial) add Robur::Lifecycle with the stop level
+- [x] T0.2 (normal, serial) add Robur::Lifecycle with the stop level
       touches: lib/robur/lifecycle.rb, lib/robur/cli.rb, exe/robur, test/lifecycle_test.rb
       do: Create the NEW file `lib/robur/lifecycle.rb` containing exactly the
           snippet below and nothing more — signals and interruptible sleep are

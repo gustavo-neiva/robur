@@ -18,6 +18,7 @@ $LOAD_PATH.unshift(lib) unless $LOAD_PATH.include?(lib)
 require "robur"
 require "robur/paths"
 require "robur/migrate"
+require "robur/lifecycle"
 require "robur/cli"
 require "robur/config"
 require "robur/prompt"
