@@ -80,17 +80,20 @@ module Robur
                commit_each_turn: conf["COMMIT_EACH_TURN"], push_on_done: conf["PUSH_ON_DONE"],
                open_pr: conf["OPEN_PR"], log_dir: log_dir)
 
-      exit_code = auto_plan_pr0(dir, conf, plan, turn_out, File.join(log_dir, "loop.log"), sleep_it: sleep_it)
+      # Life is installed BEFORE auto_plan_pr0 so its wait_for_merge poll
+      # (poll_secs default 300, timeout 3 days) is interruptible too (T1.4).
+      life = Robur::Lifecycle.new(dir).install!
+      # Clearing first means a stop file left over from a previous session
+      # cannot instantly kill a fresh run.
+      Robur::State.clear_stop(dir)
+
+      exit_code = auto_plan_pr0(dir, conf, plan, turn_out, File.join(log_dir, "loop.log"), sleep_it: sleep_it, life: life)
       return exit_code if exit_code
 
       milestone_branch_lifecycle(dir, conf, plan)
 
       # write PID file so `robur status` can check liveness.
       File.write(File.join(log_dir, "loop.pid"), "#{Process.pid}\n")
-      life = Robur::Lifecycle.new(dir).install!
-      # Clearing first means a stop file left over from a previous session
-      # cannot instantly kill a fresh run.
-      Robur::State.clear_stop(dir)
 
       begin
         loop do
@@ -131,7 +134,7 @@ module Robur
             all_benched_count += 1
             backoff = BACKOFF_LADDER[all_benched_count - 1] || BACKOFF_LADDER.last
             emit "ALL models benched (exhausted), attempt #{all_benched_count}. Sleeping #{backoff}s, then reset + retry."
-            sleep_it.call(backoff)
+            life.sleep(backoff, sleep_it: sleep_it)
             health.reset_all
             next
           end
@@ -283,7 +286,7 @@ module Robur
                 stop_reason = "gate_red"
                 break
               end
-              sleep_it.call(conf["SHORT_SLEEP"].to_i)
+              life.sleep(conf["SHORT_SLEEP"].to_i, sleep_it: sleep_it)
               next
             end
             done_gate_fails = 0
@@ -302,7 +305,7 @@ module Robur
           when :step
             if commit_result.block_reason
               emit "step turn RED at commit gate — next turn will repair. Sleeping #{conf["SHORT_SLEEP"]}s."
-              sleep_it.call(conf["SHORT_SLEEP"].to_i)
+              life.sleep(conf["SHORT_SLEEP"].to_i, sleep_it: sleep_it)
               next
             end
             emit "step complete (#{conf["STEP_TOKEN"]}). Sleeping #{conf["SHORT_SLEEP"]}s."
@@ -311,7 +314,7 @@ module Robur
               emit "--once: stopping after one step."
               break
             end
-            sleep_it.call(conf["SHORT_SLEEP"].to_i)
+            life.sleep(conf["SHORT_SLEEP"].to_i, sleep_it: sleep_it)
           when :exhausted
             why = took < 15 ? " — instant-quota, model was already dry" : ""
             emit "model #{model} EXHAUSTED (quota/rate-limit#{why}). Benching #{conf["COOLDOWN"]}s; switching."
@@ -322,7 +325,7 @@ module Robur
               emit "--once: stopping."
               break
             end
-            sleep_it.call(conf["SHORT_SLEEP"].to_i)
+            life.sleep(conf["SHORT_SLEEP"].to_i, sleep_it: sleep_it)
           when :hard
             benched = health.strike!(model)
             emit "model #{model} HARD ERROR (auth/not-found/bad-request). See #{turn_out}"
@@ -332,7 +335,7 @@ module Robur
               emit "--once: stopping."
               break
             end
-            sleep_it.call(conf["SHORT_SLEEP"].to_i)
+            life.sleep(conf["SHORT_SLEEP"].to_i, sleep_it: sleep_it)
           when :timeout
             if dirty && commit_result.committed
               emit "turn killed (timeout) but tree was green — salvaged work as a commit; continuing."
@@ -341,7 +344,7 @@ module Robur
                 emit "--once: stopping."
                 break
               end
-              sleep_it.call(conf["SHORT_SLEEP"].to_i)
+              life.sleep(conf["SHORT_SLEEP"].to_i, sleep_it: sleep_it)
               next
             end
             benched = health.strike!(model)
@@ -352,7 +355,7 @@ module Robur
               emit "--once: stopping."
               break
             end
-            sleep_it.call(conf["SHORT_SLEEP"].to_i)
+            life.sleep(conf["SHORT_SLEEP"].to_i, sleep_it: sleep_it)
           when :empty
             # Exit-0-no-output (audit fix #3): NOT a strike — bench immediately.
             # 1,574 production turns like this hid inside :transient, retried forever.
@@ -364,7 +367,7 @@ module Robur
               emit "--once: stopping."
               break
             end
-            sleep_it.call(conf["SHORT_SLEEP"].to_i)
+            life.sleep(conf["SHORT_SLEEP"].to_i, sleep_it: sleep_it)
           else # :transient
             benched = health.strike!(model)
             emit "model #{model} transient failure. strike; backing off #{conf["SHORT_SLEEP"]}s."
@@ -374,7 +377,7 @@ module Robur
               emit "--once: stopping."
               break
             end
-            sleep_it.call(conf["SHORT_SLEEP"].to_i)
+            life.sleep(conf["SHORT_SLEEP"].to_i, sleep_it: sleep_it)
           end
 
           # Milestone-complete detection + bounded review turn
@@ -382,7 +385,7 @@ module Robur
           # `done`/`human` branches `break` and the RED-gate-repair branches
           # `next` above, so neither reaches this block.
           if commit_result.committed && (conf["PR_CADENCE"] || "done") == "milestone"
-            action = milestone_complete_check(dir, conf, plan, thinking, flat, turn_out, log_dir, sleep_it: sleep_it)
+            action = milestone_complete_check(dir, conf, plan, thinking, flat, turn_out, log_dir, sleep_it: sleep_it, life: life)
             if action == :review_exceeded
               stop_reason = "review_exceeded"
               break
@@ -475,7 +478,7 @@ module Robur
     # process exit code (1 or 2) when the caller must stop immediately — a
     # stop here skips the pid-file write, the turn loop, and the run-end
     # epilogue entirely.
-    def auto_plan_pr0(dir, conf, plan, turn_out, log_path, repo: Repo.new(dir), sys: Sys::Proc.new, sleep_it: Kernel.method(:sleep))
+    def auto_plan_pr0(dir, conf, plan, turn_out, log_path, repo: Repo.new(dir), sys: Sys::Proc.new, sleep_it: Kernel.method(:sleep), life: nil)
       return nil unless (conf["PR_CADENCE"] || "done") == "milestone"
       return nil if plan.ready?
 
@@ -511,7 +514,7 @@ module Robur
         return 2
       end
 
-      rc = wait_for_merge(Paths.plan_branch, dir, conf, repo: repo, sys: sys, sleep_it: sleep_it)
+      rc = wait_for_merge(Paths.plan_branch, dir, conf, repo: repo, sys: sys, sleep_it: sleep_it, life: life)
       if rc != 0
         emit "auto-plan: merge wait failed or PR closed — stopping."
         return 1
@@ -557,7 +560,7 @@ module Robur
     # dir's milestone.cur. Returns :review_exceeded when MAX_REVIEW_CYCLES
     # is hit (the caller stops the loop), nil otherwise.
     def milestone_complete_check(dir, conf, plan, thinking, flat, turn_out, log_dir,
-                                 repo: Repo.new(dir), sys: Sys::Proc.new, sleep_it: Kernel.method(:sleep))
+                                 repo: Repo.new(dir), sys: Sys::Proc.new, sleep_it: Kernel.method(:sleep), life: nil)
       stored = State.read_milestone_cur(dir)
       return nil unless stored
 
@@ -574,7 +577,7 @@ module Robur
       when "pass"
         emit "review-pass | m=#{stored_mname}"
         State.write_milestone_cur(dir, stored_mname, base_sha, cycle_count, 0)
-        open_milestone_pr(stored_mname, base_sha, dir, conf, plan, File.join(log_dir, "loop.log"), repo: repo, sys: sys, sleep_it: sleep_it)
+        open_milestone_pr(stored_mname, base_sha, dir, conf, plan, File.join(log_dir, "loop.log"), repo: repo, sys: sys, sleep_it: sleep_it, life: life)
         nil
       when "fail"
         emit "review-fail | m=#{stored_mname} | cycle=#{cycle_count + 1}"
@@ -594,7 +597,7 @@ module Robur
         if review_errors >= 2
           emit "  review turn errors twice — proceeding (broken reviewer must not wedge pipeline)."
           State.write_milestone_cur(dir, stored_mname, base_sha, cycle_count, 0)
-          open_milestone_pr(stored_mname, base_sha, dir, conf, plan, File.join(log_dir, "loop.log"), repo: repo, sys: sys, sleep_it: sleep_it)
+          open_milestone_pr(stored_mname, base_sha, dir, conf, plan, File.join(log_dir, "loop.log"), repo: repo, sys: sys, sleep_it: sleep_it, life: life)
         end
         nil
       end
@@ -652,12 +655,14 @@ module Robur
 
     # BRANCH DIR CONF -> poll the PR until merged/closed/timeout. Returns
     # 0=merged+ff'd, 1=closed, 2=manual mode (no gh/origin, or gh pr view
-    # failed), 3=timeout. Emits the frozen
+    # failed), 3=timeout, 4=stop requested (checked at the top of every poll,
+    # so a stop never waits out the full poll interval). Callers treat any
+    # nonzero as "did not merge". Emits the frozen
     # `merge-wait | pr=<branch> | state=<state>` line on state changes only.
     # MERGE_POLL_SECS/MERGE_WAIT_TIMEOUT are resolved inline here rather than
     # as Config defaults: this is their only call site, and a global default
     # would imply they apply to turns that never poll a PR.
-    def wait_for_merge(branch, dir, conf, repo: Repo.new(dir), sys: Sys::Proc.new, sleep_it: Kernel.method(:sleep))
+    def wait_for_merge(branch, dir, conf, repo: Repo.new(dir), sys: Sys::Proc.new, sleep_it: Kernel.method(:sleep), life: nil)
       unless CLI.on_path?("gh")
         notify_human "merge the PR: gh not found, manual mode"
         return 2
@@ -673,6 +678,8 @@ module Robur
       prev_state = ""
       elapsed = 0
       loop do
+        return 4 if life&.stop_requested?
+
         state = pr_state(sys, branch)
         if state.nil?
           notify_human "merge the PR: gh pr view failed"
@@ -699,7 +706,7 @@ module Robur
           emit "merge-wait timeout: #{timeout}s elapsed, stopping cleanly."
           return 3
         end
-        sleep_it.call(poll_secs)
+        life ? life.sleep(poll_secs, sleep_it: sleep_it) : sleep_it.call(poll_secs)
         elapsed += poll_secs
       end
     end
@@ -722,7 +729,7 @@ module Robur
     # NAME BASE_SHA -> push milestone branch, open PR, wait_for_merge. Returns 0=PR opened+wait_for_merge's
     # result, 1=push or `gh pr create` failed, 2=no gh/origin (manual PR).
     def open_milestone_pr(mname, base_sha, dir, conf, plan, log_path,
-                          repo: Repo.new(dir), sys: Sys::Proc.new, sleep_it: Kernel.method(:sleep))
+                          repo: Repo.new(dir), sys: Sys::Proc.new, sleep_it: Kernel.method(:sleep), life: nil)
       current_branch = repo.current_branch || "HEAD"
       emit "pushing milestone branch #{current_branch} ..."
       unless repo.push
@@ -756,7 +763,7 @@ module Robur
         return 1
       end
       emit "PR opened."
-      wait_for_merge(current_branch, dir, conf, repo: repo, sys: sys, sleep_it: sleep_it)
+      wait_for_merge(current_branch, dir, conf, repo: repo, sys: sys, sleep_it: sleep_it, life: life)
     end
 
     # git diff --shortstat -> total changed lines (insertions + deletions).

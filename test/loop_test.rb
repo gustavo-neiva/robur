@@ -350,6 +350,71 @@ class LoopTest < Minitest::Test
     assert_operator spawn_count, :>=, 1, "first turn must run normally"
   end
 
+  # T1.4: the all-models-benched backoff (BACKOFF_LADDER up to 14400s) must
+  # not sit on a stop request — a stop file arriving mid-sleep interrupts
+  # within one second and the loop drains with stop_reason "stopped".
+  def test_stop_file_interrupts_all_benched_backoff
+    repo = make_repo
+    # Empty-output agent: :empty benches the model immediately, so turn 2
+    # hits the all-benched ladder backoff (900s on rung 1).
+    agent = File.join(repo, "empty-agent")
+    File.write(agent, "#!/bin/sh\nexit 0\n")
+    FileUtils.chmod(0o755, agent)
+    conf = File.join(repo, Robur::Paths::REPO_CONF)
+    File.write(conf, File.read(conf).sub(AGENT, agent))
+
+    slept = []
+    sleep_it = lambda do |s|
+      slept << s
+      # SHORT_SLEEP=0 never reaches sleep_it (life.sleep(0) is a no-op), so
+      # the first >=1s slice IS the first ladder rung — write the stop there.
+      Robur::State.write_stop(repo, "drain") if s >= 1
+    end
+    code = Robur::Loop.run(repo, sleep_it: sleep_it)
+
+    assert_equal 0, code
+    assert_equal "stopped", File.read(Robur::Paths.state_file(repo, "stop_reason")).strip
+    assert_equal [1], slept, "backoff must be sliced at 1s and abandoned on the first slice, not slept whole"
+    log = File.join(@home, "logs", Robur::CLI.project_slug(repo), "loop.log")
+    assert_includes File.read(log), "ALL models benched"
+  end
+
+  # T1.4: wait_for_merge polls with poll_secs defaulting to 300 — a stop
+  # request must return 4 at the top of the next poll check, never after
+  # waiting out a full interval.
+  def test_wait_for_merge_returns_4_when_stop_requested
+    dir = Dir.mktmpdir
+    Robur::Paths.ensure_state_dir!(dir)
+    life = Robur::Lifecycle.new(dir).install!
+    repo = Object.new
+    repo.define_singleton_method(:remote?) { |_name| true }
+    repo.define_singleton_method(:default_branch) { "main" }
+    polls = 0
+    slept = []
+    pr = lambda do |_sys, _branch|
+      polls += 1
+      "OPEN"
+    end
+    stop_it = ->(s) {
+      slept << s
+      # The stop arrives DURING the first 1s slice of the 300s poll sleep.
+      Robur::State.write_stop(dir, "drain") if s >= 1
+    }
+    stub_notify([]) do
+      with_smethod_stub(Robur::CLI, :on_path?, ->(_cmd) { true }) do
+        with_smethod_stub(Robur::Loop, :pr_state, pr) do
+          rc = Robur::Loop.wait_for_merge("b", dir, {}, repo: repo, sys: nil,
+                                          sleep_it: stop_it, life: life)
+          assert_equal 4, rc
+        end
+      end
+    end
+    assert_equal 1, polls, "stop must be honored before the second poll"
+    assert_equal [1], slept, "poll sleep must be sliced at 1s, not the full 300s interval"
+  ensure
+    FileUtils.rm_rf(dir)
+  end
+
   private
 
   # Replace Robur::Turn.run for the block; the original stays reachable as
@@ -378,6 +443,18 @@ class LoopTest < Minitest::Test
   ensure
     Robur::ModelHealth.singleton_class.send(:alias_method, :new, :mh_new_orig)
     Robur::ModelHealth.singleton_class.send(:remove_method, :mh_new_orig)
+  end
+
+  # Alias/restore a module (singleton) method — same pattern as stub_notify,
+  # for module_function-style methods like CLI.on_path? and Loop.pr_state.
+  def with_smethod_stub(owner, name, replacement)
+    backup = "#{name}_t14_orig".to_sym
+    owner.singleton_class.send(:alias_method, backup, name)
+    owner.singleton_class.send(:define_method, name) { |*args, **kw, &blk| replacement.call(*args, **kw, &blk) }
+    yield
+  ensure
+    owner.singleton_class.send(:alias_method, name, backup)
+    owner.singleton_class.send(:remove_method, backup)
   end
 
   def stub_notify(collector)

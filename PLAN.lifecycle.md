@@ -382,7 +382,7 @@ immune to PID reuse.
       constraints: no strike, no bench, no health.record!, no guard.record on
           this path; place the block before `status =` so no classification runs
 
-- [ ] T1.4 (normal, serial) make every long wait interruptible
+- [x] T1.4 (normal, serial) make every long wait interruptible
       touches: lib/robur/loop.rb, test/loop_test.rb
       do: Three places in `lib/robur/loop.rb` wait long enough to sit on a stop
           request: the `sleep_it.call(backoff)` after the all-models-benched
