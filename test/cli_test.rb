@@ -127,4 +127,17 @@ class CliTest < Minitest::Test
     assert_operator rows, :>=, 10
     assert_operator cols, :>=, 40
   end
+
+  # The live pi stream ends a text_delta line with a bare `}}` (no
+  # `"partial":` key): `..."delta":"the"}}`. The extractor must not leak
+  # that suffix into the watch board.
+  def test_turn_text_extracts_delta_with_bare_brace_suffix
+    out = File.join(Dir.mktmpdir("robur-turn"), "last_turn.out")
+    File.write(out, [
+      %({"type":"session","version":3,"cwd":"/tmp"}),
+      %({"type":"message_update","usage":{},"assistantMessageEvent":{"type":"text_delta","contentIndex":1,"delta":"the"}}),
+      %({"type":"message_update","usage":{},"assistantMessageEvent":{"type":"text_delta","contentIndex":1,"delta":" first"}})
+    ].join("\n") + "\n")
+    assert_equal "the first", Robur::CLI.turn_text(out)
+  end
 end

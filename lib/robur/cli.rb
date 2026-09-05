@@ -485,7 +485,10 @@ module Robur
         lines = frame.lines
         lines = lines.first(rows - 1) if lines.size > rows - 1 # whole-line trim keeps ANSI intact
         if ansi
-          print "\e[H#{lines.join}\e[J"
+          # \e[K per line: \e[J alone only erases AFTER the final cursor
+          # position, so any row that got shorter between frames kept its
+          # stale tail ("running7s", "(thinking=)ff)=)").
+          print "\e[H#{lines.map { |l| "#{l.chomp}\e[K" }.join("\n")}\e[J"
         else
           print "\n#{lines.join}"
         end
@@ -645,7 +648,7 @@ module Robur
       end
       if content.byteslice(0, 32).to_s.start_with?('{"type":"session"')
         content.each_line.grep(/"type":"text_delta"/)
-                 .map { |l| l.sub(/.*"delta":"/, "").sub(/","partial.*/, "").chomp }
+                 .map { |l| l[/"delta":"((?:[^"\\]|\\.)*)"/, 1].to_s } # tolerates both the ","partial": suffix and a bare }}
                  .join.gsub('\\"', '"')
                  .gsub('\\n', "\n").gsub('\\t', "\t").gsub('\\\\', '\\')
       else
