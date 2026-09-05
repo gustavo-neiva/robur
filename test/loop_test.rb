@@ -2,6 +2,7 @@
 
 require "test_helper"
 require "robur/loop"
+require "robur/cli"
 require "robur/paths"
 require "fileutils"
 require "json"
@@ -154,6 +155,65 @@ class LoopTest < Minitest::Test
     run_ids = records.map { |r| r["run_id"] }
     refute_nil run_ids.first
     assert_equal 1, run_ids.uniq.size, "one run must not mix run_ids: #{run_ids}"
+  end
+
+  # `robur once` (cli.rb#run_once_loop) is the OTHER caller that builds an
+  # Observability and must leave the same structured trail behind — it had
+  # no test coverage at all before this.
+  def test_once_writes_structured_events_jsonl_alongside_loop_log
+    repo = make_repo
+    capture_io { assert_equal 0, Robur::CLI.run(["once", "-d", repo]) }
+
+    log_dir = File.join(@home, "logs", Robur::CLI.project_slug(repo))
+    events = File.readlines(File.join(log_dir, "events.jsonl")).map { |l| JSON.parse(l) }
+    kinds = events.map { |e| e["kind"] }
+    assert_includes kinds, "run_start"
+    assert_includes kinds, "turn_start"
+    assert_includes kinds, "turn_end"
+    assert_includes kinds, "run_end"
+
+    run_ids = events.map { |e| e["run_id"] }
+    refute_nil run_ids.first
+    assert_equal 1, run_ids.uniq.size, "one once-run must not mix run_ids: #{run_ids}"
+  ensure
+    Robur::CLI.instance_variable_set(:@quiet, nil)
+    Robur::CLI.instance_variable_set(:@loop_log, nil)
+  end
+
+  # Same regression as test_unexpected_exception_records_crashed_and_still_propagates,
+  # for `robur once`: run_once_loop shipped with NO epilogue at all, so a
+  # turn that raised (an agent crash, a bug in run_single_turn) left
+  # events.jsonl holding only run_start — indistinguishable from a run that
+  # never got past preflight. Audit finding: events.jsonl existed in only 2
+  # of 1250 production log dirs; an unguarded --once crash is one way that
+  # happens even after the file starts being written at all.
+  def test_once_unexpected_exception_records_crashed_and_still_propagates
+    repo = make_repo
+    error = assert_raises(RuntimeError) do
+      with_turn_run(->(**_kw) { raise "boom" }) do
+        capture_io { Robur::CLI.run(["once", "-d", repo]) }
+      end
+    end
+    assert_equal "boom", error.message
+    assert_equal "crashed\n", File.read(Robur::Paths.state_file(repo, "stop_reason"))
+
+    log_dir = File.join(@home, "logs", Robur::CLI.project_slug(repo))
+    events = File.readlines(File.join(log_dir, "events.jsonl")).map { |l| JSON.parse(l) }
+    kinds = events.map { |e| e["kind"] }
+    assert_includes kinds, "run_start"
+    assert_includes kinds, "stopped"
+    assert_includes kinds, "run_end"
+    stopped = events.find { |e| e["kind"] == "stopped" }
+    assert_equal "crashed", stopped["reason"]
+
+    run_rows = File.readlines(File.join(@home, "metrics.tsv"))
+                    .map { |l| l.chomp.split("\t", -1) }
+                    .select { |r| r[2] == "run" }
+    assert_equal 1, run_rows.size
+    assert_equal "crashed", run_rows[0][6]
+  ensure
+    Robur::CLI.instance_variable_set(:@quiet, nil)
+    Robur::CLI.instance_variable_set(:@loop_log, nil)
   end
 
   # The token-efficiency fields the metrics row cannot carry.
