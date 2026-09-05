@@ -229,5 +229,18 @@ module Robur
       assert_includes prompt, "PLAN-drafting turn (robur plan), not implementation"
       refute_includes prompt, "KTLO"
     end
+
+    # doctor used to hardcode the PLAN.md/TODO.md/TASKS.md autodetect list, so a
+    # repo whose conf pointed the loop at another tracker got a green report
+    # about a file the loop never reads.
+    def test_doctor_honours_tracker_file_from_conf
+      File.write(File.join(@dir, "PLAN.md"), "- [x] T1.1 (trivial) done\n")
+      File.write(File.join(@dir, "OTHER.md"), "- [ ] T9.9 (trivial) still open\n")
+      File.write(File.join(@dir, Paths::REPO_CONF), "TRACKER_FILE=OTHER.md\nVERIFY_CMD=true\n")
+      out = StringIO.new
+      Commands.doctor_report(@dir, out: out)
+      assert_includes out.string, "OTHER.md"
+      refute_includes out.string, "tracker 'PLAN.md'"
+    end
   end
 end

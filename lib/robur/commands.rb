@@ -201,7 +201,12 @@ module Robur
         pr_ok.call("protocol delivery: harness-prompt (loop briefs its own turns)")
       end
 
-      tr = %w[PLAN.md TODO.md TASKS.md].find { |f| File.file?(File.join(dir, f)) }
+      # TRACKER_FILE first, autodetect only as the fallback: doctor used to
+      # hardcode the autodetect list, so a repo whose conf pointed the loop at
+      # another tracker got a green report about a file the loop never reads.
+      tr = conf_values["TRACKER_FILE"].to_s
+      tr = %w[PLAN.md TODO.md TASKS.md].find { |f| File.file?(File.join(dir, f)) } if tr.empty?
+      tr = nil unless tr && File.file?(File.join(dir, tr))
       if tr
         plan = Plan.new(File.join(dir, tr))
         content = File.read(File.join(dir, tr))
