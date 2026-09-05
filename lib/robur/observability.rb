@@ -33,6 +33,9 @@ module Robur
       },
       stop: ->(f) { ["robur END after #{f[:turns]} turn(s)."] },
       run_end: ->(f) { ["robur END after #{f[:turns]} turn(s)."] },
+      stop_requested: ->(f) { ["  stop requested (#{f[:source]}, level #{f[:level]})"] },
+      stopped: ->(f) { ["  stopped: #{f[:reason]} after #{f[:turns]} turn(s)"] },
+      recovered: ->(f) { ["  recovered: #{f[:staged_files]} file(s) left staged by a previous run"] },
       human: ->(f) { ["HUMAN NEEDED: #{f[:msg]}"] },
       # run_start reproduces Loop.run's startup banner verbatim (loop.rb:61-75).
       # session is the full "name (resume=x)" string; commit/push/pr render

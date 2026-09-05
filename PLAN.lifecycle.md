@@ -601,7 +601,7 @@ immune to PID reuse.
 
 ## Milestone 4 — make it legible
 
-- [ ] T4.1 (normal) structured lifecycle events
+- [x] T4.1 (normal) structured lifecycle events
       touches: lib/robur/observability.rb, lib/robur/loop.rb, test/observability_test.rb
       do: loop.log is a RENDERING of events.jsonl, never free-form prose parsed
           back with regexes, so each lifecycle transition must be an event

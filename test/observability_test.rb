@@ -3,11 +3,15 @@
 require_relative "test_helper"
 require "robur/observability"
 require "robur/cli"
+require "robur/loop"
+require "robur/turn"
+require "robur/state"
 require "json"
 require "time"
 require "tmpdir"
 require "shellwords"
 require "fileutils"
+require "open3"
 
 module Robur
   class ObservabilityTest < Minitest::Test
@@ -529,6 +533,70 @@ module Robur
       Dir.mktmpdir do |dir|
         assert_raises(RuntimeError) { Observability.stats(dir) }
       end
+    end
+
+    # T4.1: a stop-file drain must be an EVENT first — events.jsonl carries a
+    # stop_requested record and a stopped record naming reason "stopped", and
+    # loop.log shows one rendered human line for each (loop.log is a
+    # RENDERING of events.jsonl, never free-form prose).
+    def test_stop_file_run_emits_stop_requested_and_stopped_events
+      home = Dir.mktmpdir("robur-home")
+      old_home = ENV[Robur::Paths::HOME_ENV]
+      ENV[Robur::Paths::HOME_ENV] = home
+      repo = Dir.mktmpdir
+      File.write(File.join(repo, "PLAN.md"), "- [ ] T1 (trivial) only task\n")
+      File.write(File.join(repo, Robur::Paths::REPO_CONF), <<~CONF)
+        MODELS="stub/stub-1"
+        AGENT_CMD="stub-agent"
+        VERIFY_CMD="true"
+        TURN_TIMEOUT="30"
+        SHORT_SLEEP="0"
+        COMMIT_EACH_TURN="1"
+      CONF
+      Open3.capture3("git", "-C", repo, "init", "-q")
+      Open3.capture3("git", "-C", repo, "-c", "user.name=t", "-c", "user.email=t@e.c",
+                     "-c", "commit.gpgsign=false", "add", "-A")
+      Open3.capture3("git", "-C", repo, "-c", "user.name=t", "-c", "user.email=t@e.c",
+                     "-c", "commit.gpgsign=false", "commit", "-q", "-m", "seed")
+      Open3.capture3("git", "-C", repo, "reset", "-q", "--", Robur::Paths::REPO_CONF)
+
+      # Stop "drain" (level 1) arrives DURING turn 1 (startup clears any
+      # pre-existing stop file), so the top-of-loop check fires for turn 2.
+      Robur::Turn.singleton_class.send(:alias_method, :t41_run_orig, :run)
+      Robur::Turn.singleton_class.send(:define_method, :run) do |**kw|
+        Robur::State.write_stop(repo, "drain")
+        File.write(kw[:turn_file], "STEP_COMPLETE\n")
+        system("true")
+        Robur::Turn::Result.new(status: $?, kill_reason: nil, elapsed: 0)
+      end
+      code = nil
+      begin
+        capture_io { code = Robur::Loop.run(repo, sleep_it: ->(_s) {}) }
+      ensure
+        Robur::Turn.singleton_class.send(:alias_method, :run, :t41_run_orig)
+        Robur::Turn.singleton_class.send(:remove_method, :t41_run_orig)
+      end
+
+      assert_equal 0, code
+      log_dir = File.join(home, "logs", Robur::CLI.project_slug(repo))
+      events = File.readlines(File.join(log_dir, "events.jsonl")).map { |l| JSON.parse(l) }
+      sr = events.find { |e| e["kind"] == "stop_requested" }
+      sp = events.find { |e| e["kind"] == "stopped" }
+      refute_nil sr, "stop_requested record missing from events.jsonl"
+      assert_equal "stop file", sr["source"]
+      assert_equal 1, sr["level"]
+      refute_nil sp, "stopped record missing from events.jsonl"
+      assert_equal "stopped", sp["reason"]
+      assert_equal 1, sp["turns"]
+      log = File.read(File.join(log_dir, "loop.log"))
+      assert_includes log, "  stop requested (stop file, level 1)"
+      assert_includes log, "  stopped: stopped after 1 turn(s)"
+    ensure
+      old_home ? ENV[Robur::Paths::HOME_ENV] = old_home : ENV.delete(Robur::Paths::HOME_ENV)
+      Robur::CLI.instance_variable_set(:@loop_log, nil)
+      Robur::CLI.instance_variable_set(:@quiet, nil)
+      FileUtils.rm_rf(home)
+      FileUtils.rm_rf(repo)
     end
   end
 end

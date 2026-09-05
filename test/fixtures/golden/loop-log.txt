@@ -38,4 +38,5 @@ STEP_COMPLETE
 [<timestamp>] all PLAN.md tasks complete (2 done) — no open work remains.
 [<timestamp>]   nothing staged to commit (idempotent turn).
 [<timestamp>] agent signaled ALL_DONE — all work complete.
+[<timestamp>]   stopped: done after 3 turn(s)
 [<timestamp>] robur END after 3 turn(s).

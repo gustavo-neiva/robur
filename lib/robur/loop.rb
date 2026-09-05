@@ -106,6 +106,7 @@ module Robur
         loop do
           if life.stop_requested?
             emit "stop requested — finishing cleanly, no new turn will start."
+            obs.emit(:stop_requested, source: "stop file", level: life.level)
             stop_reason = "stopped"
             break
           end
@@ -190,6 +191,7 @@ module Robur
                             stop_check: -> { life.level })
           if result.kill_reason == "stop-requested"
             emit "stop requested mid-turn — salvaging green work and stopping."
+            obs.emit(:stop_requested, source: "mid-turn watchdog", level: life.level)
             commit_turn(turn, model, conf, plan, dir)
             stop_reason = "stopped"
             break
@@ -415,6 +417,7 @@ module Robur
         # Epilogue on EVERY exit path — this is the only thing the external
         # supervisor reads; before the ensure it was skipped whenever the
         # turn loop raised instead of falling out normally.
+        obs.emit(:stopped, reason: stop_reason, turns: turn)
         obs.emit(:run_end, turns: turn)
         File.write(Paths.state_file(dir, "stop_reason"), "#{stop_reason}\n")
         state = File.file?(Paths.state_file(dir, "last_task.state")) ? File.read(Paths.state_file(dir, "last_task.state")) : ""
@@ -434,7 +437,7 @@ module Robur
       return if staged.strip.empty?
 
       n = staged.lines.map(&:strip).reject(&:empty?).size
-      obs.emit_event(:recovered, staged_files: n)
+      obs.emit(:recovered, staged_files: n)
       emit "unclean start: recovered after a previous exit with #{n} staged file(s) — left staged for the next commit gate."
     end
 
