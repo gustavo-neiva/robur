@@ -27,6 +27,7 @@ require "robur/config"
 require "robur/prompt"
 require "robur/model_health"
 require "robur/progress_guard"
+require "robur/task_attempts"
 require "robur/observability"
 
 exit(Robur::CLI.run(ARGV) || 0)

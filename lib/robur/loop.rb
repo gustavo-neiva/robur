@@ -9,6 +9,7 @@ require "robur/tier"
 require "robur/prompt"
 require "robur/model_health"
 require "robur/progress_guard"
+require "robur/task_attempts"
 require "robur/render"
 require "robur/observability"
 require "robur/turn"
@@ -63,6 +64,11 @@ module Robur
       health = ModelHealth.new(conf, max_transient: conf["MAX_TRANSIENT"].to_i)
       # Audit fix #2: no-progress detector over tracker mtime + commits.
       guard = ProgressGuard.new(File.join(dir, conf["TRACKER_FILE"] || "PLAN.md"))
+      # T7.1 fix: a per-task attempt ceiling reset_all cannot clear (see
+      # TaskAttempts) — the all-benched/backoff/reset_all cycle above is
+      # exactly what made ProgressGuard's OWN counter non-monotonic in
+      # production (an occasional committed turn reset its stall count).
+      task_attempts = TaskAttempts.new(conf["MAX_TASK_ATTEMPTS"].to_i)
       obs = Observability.new(log_dir)
 
       emit = ->(m) { CLI.emit(m) }
@@ -154,6 +160,24 @@ module Robur
 
           task = plan.next_task(:in_progress) || plan.next_task(:open)
           next_task_str = task ? "#{task.id} (#{task.tags.join(", ")}) #{task.text}" : ""
+
+          # T7.1 fix: this ceiling counts every turn actually dispatched
+          # against a task, for the life of the run — model rotation, the
+          # all-benched backoff ladder and its reset_all do not clear it.
+          # Checked BEFORE spawning the turn, so the ceiling-exceeding
+          # attempt itself costs nothing.
+          if task && task_attempts.attempt!(task.id)
+            emit "task #{task.id} exceeded MAX_TASK_ATTEMPTS=#{conf["MAX_TASK_ATTEMPTS"]} " \
+                 "(#{task_attempts.count(task.id)} attempts this run) — STOPPING rather than spinning."
+            obs.emit_event(:task_attempts_exceeded, task: task.id,
+                                                      attempts: task_attempts.count(task.id),
+                                                      ceiling: conf["MAX_TASK_ATTEMPTS"].to_i)
+            notify_human "#{File.basename(dir)}: task #{task.id} exceeded #{conf["MAX_TASK_ATTEMPTS"]} attempts " \
+                         "this run — loop stopped rather than spin (bench/rotate/all-benched/reset_all cycle?)."
+            stop_reason = "task_attempts_exceeded"
+            break
+          end
+
           done_n = plan.count(:done)
           open_n = plan.count(:open) + plan.count(:in_progress)
           emit "tasks: #{done_n} done / #{done_n + open_n} total | next: #{next_task_str.slice(0, 60)}"
@@ -222,10 +246,6 @@ module Robur
                             cache_read: detail[:cache_read], cache_write: detail[:cache_write],
                             fresh_in: detail[:input] + detail[:cache_write], tin: tin,
                             cost: detail[:cost], messages: detail[:messages], runaway: runaway)
-          if runaway
-            emit "turn #{turn}: #{detail[:messages]} agent round-trips (>= #{Observability.runaway_messages}) " \
-                 "for #{tout} output tokens — runaway tool loop; see #{turn_out}."
-          end
 
           Paths.ensure_state_dir!(dir)
           File.write(Paths.state_file(dir, "last_task.state"), "#{task ? task.id : "?"}\t#{klass}\n")
@@ -250,6 +270,24 @@ module Robur
                          status: commit_result.committed ? "green" : commit_result.block_reason ? "red" : "skipped",
                          reason: commit_result.block_reason || (commit_result.committed ? "committed" : "no-op"))
           health.record!(model, klass)
+
+          # The flag alone changed nothing (harbor-872144: turn 1 logged
+          # messages=3170/runaway=true and the loop ran 51 more turns without
+          # reacting). Strike AFTER record! so a same-turn :step/:done win
+          # cannot silently wipe the strike back to zero — a step that only
+          # got there via 3000+ round-trips is still a model worth
+          # distrusting, not a clean win. Unconditional: a turn that is ALSO
+          # :hard/:timeout/:transient (which strike on their own below) gets
+          # struck twice, which is correct — failed AND wasteful is worse
+          # than either alone.
+          if runaway
+            runaway_benched = health.strike!(model)
+            emit "RUNAWAY: turn #{turn} made #{detail[:messages]} agent round-trips " \
+                 "(>= #{Observability.runaway_messages}) for #{tout} output tokens — " \
+                 "striking #{model}#{runaway_benched ? " (benched)" : ""}. See #{turn_out}."
+            obs.emit_event(:model_strike, model: model, reason: "runaway",
+                                            messages: detail[:messages], benched: runaway_benched)
+          end
 
           # No-progress detector (audit fix #2): every path records here, before
           # the classification arms below break/next.

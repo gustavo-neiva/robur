@@ -117,6 +117,11 @@ DONE_TOKEN=ALL_DONE
 # that provider's models. Provider = model's leading path segment, upper-cased.
 #COOLDOWN_ZAI=3600
 #HEARTBEAT=15
+# Per-task attempt ceiling, for the life of ONE run, that reset_all cannot
+# clear (unlike MAX_TRANSIENT strikes). Guards against the all-benched
+# backoff ladder resetting strikes and restarting the identical cycle on the
+# same task forever. Default: 20.
+#MAX_TASK_ATTEMPTS=20
 
 # Operational knobs are ENVIRONMENT variables, not keys here: the allowlist
 # above is a contract `robur doctor` rejects unknown keys against, so anything

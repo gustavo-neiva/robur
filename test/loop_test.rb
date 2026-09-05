@@ -294,6 +294,73 @@ class LoopTest < Minitest::Test
     assert_equal "a", health.pick(%w[a b])
   end
 
+  # T7.1 (b), isolated from benching (MAX_TRANSIENT set high so the model
+  # never benches): a task that never progresses must stop the run once
+  # attempts exceed MAX_TASK_ATTEMPTS rather than spin forever.
+  def test_task_attempt_ceiling_stops_a_transient_spin
+    repo = make_repo(extra_conf: %(MAX_TASK_ATTEMPTS="3"\nMAX_TRANSIENT="100"))
+    with_turn_run(lambda { |**kw, &_blk|
+      File.write(kw[:turn_file], "no recognized token, just noise\n")
+      system("true")
+      Robur::Turn::Result.new(status: $?, kill_reason: nil, elapsed: 0)
+    }) do
+      code = Robur::Loop.run(repo, sleep_it: ->(_s) {})
+      assert_equal 0, code
+    end
+
+    assert_equal "task_attempts_exceeded\n", File.read(Robur::Paths.state_file(repo, "stop_reason"))
+
+    log_dir = File.join(@home, "logs", Robur::CLI.project_slug(repo))
+    events = File.readlines(File.join(log_dir, "events.jsonl")).map { |l| JSON.parse(l) }
+    exceeded = events.find { |e| e["kind"] == "task_attempts_exceeded" }
+    refute_nil exceeded, "the ceiling must record why it stopped"
+    assert_equal "T1.1", exceeded["task"]
+    assert_equal 4, exceeded["attempts"] # ceiling 3, the 4th attempt trips it
+    assert_equal 3, exceeded["ceiling"]
+
+    log = File.read(File.join(log_dir, "loop.log"))
+    assert_includes log, "exceeded MAX_TASK_ATTEMPTS=3"
+  end
+
+  # T7.1 full repro, both halves of the fix together: MAX_TRANSIENT benches
+  # a model after one strike, the (single-model) chain goes all-benched, the
+  # backoff ladder fires, reset_all clears ModelHealth's strikes — and every
+  # one of those turns is ALSO runaway (harbor-872144: the flag alone
+  # changed nothing). The model must get struck for the runaway turns, and
+  # the loop must still stop once the ceiling is exceeded across bench
+  # cycles that reset_all cannot touch.
+  def test_runaway_strikes_the_model_and_the_ceiling_survives_reset_all
+    repo = make_repo(extra_conf: %(MAX_TASK_ATTEMPTS="1"\nMAX_TRANSIENT="1"\nCOOLDOWN="900"))
+    old_threshold = ENV["ROBUR_RUNAWAY_MESSAGES"]
+    ENV["ROBUR_RUNAWAY_MESSAGES"] = "1"
+    with_turn_run(lambda { |**kw, &_blk|
+      usage = JSON.generate({ "id" => "m1", "message" => { "usage" => { "input" => 1, "output" => 1, "cost" => { "total" => 0.0 } } } })
+      File.write(kw[:turn_file], "#{usage}\n")
+      system("true")
+      Robur::Turn::Result.new(status: $?, kill_reason: nil, elapsed: 0)
+    }) do
+      code = Robur::Loop.run(repo, sleep_it: ->(_s) {})
+      assert_equal 0, code
+    end
+
+    log_dir = File.join(@home, "logs", Robur::CLI.project_slug(repo))
+    events = File.readlines(File.join(log_dir, "events.jsonl")).map { |l| JSON.parse(l) }
+
+    strikes = events.select { |e| e["kind"] == "model_strike" && e["reason"] == "runaway" }
+    refute_empty strikes, "a runaway turn must strike the model"
+
+    exceeded = events.find { |e| e["kind"] == "task_attempts_exceeded" }
+    refute_nil exceeded, "reset_all must not let the runaway/bench/backoff cycle spin forever"
+    assert_equal "task_attempts_exceeded\n", File.read(Robur::Paths.state_file(repo, "stop_reason"))
+
+    log = File.read(File.join(log_dir, "loop.log"))
+    assert_includes log, "RUNAWAY: turn"
+    assert_includes log, "ALL models benched"
+    assert_includes log, "exceeded MAX_TASK_ATTEMPTS=1"
+  ensure
+    old_threshold ? ENV["ROBUR_RUNAWAY_MESSAGES"] = old_threshold : ENV.delete("ROBUR_RUNAWAY_MESSAGES")
+  end
+
   # Backward compatibility: agents, hooks and wrapper scripts across the
   # estate branch on RATCHET_LOOP to tell "inside a loop turn" from "a human
   # typing". Both names are exported for every spawned turn so neither an
