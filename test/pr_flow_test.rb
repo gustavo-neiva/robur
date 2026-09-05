@@ -810,6 +810,40 @@ module Robur
       FileUtils.remove_entry(dir) if dir
     end
 
+    def test_fanout_drains_children_on_stop_without_signaling
+      with_gh_on_path
+      dir = Dir.mktmpdir
+      File.write(File.join(dir, "PLAN.md"), <<~PLAN)
+        ## Milestone A
+        - [ ] T1 (independent) a
+        ## Milestone B
+        - [ ] T2 (independent) b
+        ## Milestone C
+        - [ ] T3 (independent) c
+      PLAN
+      Robur::State.write_stop(dir, "drain")
+      repo = FakeRepo.new
+      launched = []
+      wt_paths = []
+      result = Dir.chdir(dir) do
+        Loop.fanout(dir, { "PARALLEL" => "1", "TRACKER_FILE" => "PLAN.md", "FANOUT_MAX" => "4" },
+                   repo: repo, sleep_it: ->(_s) {},
+                   launch: lambda { |wt_path|
+                     launched << wt_path
+                     wt_paths << File.expand_path(wt_path, dir)
+                     launched.length
+                   })
+      end
+      assert_equal 0, result
+      assert_equal 3, launched.length
+      wt_paths.each { |p| assert_equal "drain", Robur::State.read_stop(p) }
+      assert(log_lines.any? { |l| l.include?("stop requested") && l.include?("wrote drain to 3 worktree(s)") })
+      assert(log_lines.any? { |l| l.include?("fanout complete") })
+    ensure
+      wt_paths&.each { |p| FileUtils.remove_entry(p) if File.directory?(p) }
+      FileUtils.remove_entry(dir) if dir
+    end
+
     # --- fanout_clean -------------------------------------------------------
     # Mirrors bash selftest suite 37's fail-toward-KEEP scenarios.
 

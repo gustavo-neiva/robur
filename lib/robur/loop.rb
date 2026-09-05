@@ -835,6 +835,8 @@ module Robur
 
       emit "robur fanout: #{dir}"
 
+      life = Robur::Lifecycle.new(dir).install!
+
       tracker_file = conf["TRACKER_FILE"]
       tracker_file = Commands.detect_tracker_file(dir) if tracker_file.to_s.empty?
       tracker_file = "PLAN.md" if tracker_file.to_s.empty?
@@ -900,7 +902,22 @@ module Robur
       end
 
       emit "  waiting for all loops to complete"
-      pids.each { |pid| wait_pid.call(pid) unless reaped[pid] }
+      notified = false
+      remaining = pids.reject { |pid| reaped[pid] }
+      until remaining.empty?
+        if life.stop_requested? && !notified
+          mode = life.abort? ? "now" : "drain"
+          pairs.each { |wt_path, _b| Robur::State.write_stop(wt_path, mode) }
+          emit "  stop requested — wrote #{mode} to #{pairs.size} worktree(s)"
+          notified = true
+        end
+        remaining.reject! do |pid|
+          Process.waitpid(pid, Process::WNOHANG)
+        rescue Errno::ECHILD
+          true
+        end
+        life.sleep(1, sleep_it: sleep_it) unless remaining.empty?
+      end
       emit "  all loops complete"
 
       fanout_clean(dir, repo: repo)

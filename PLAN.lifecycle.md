@@ -537,7 +537,7 @@ immune to PID reuse.
 
 ## Milestone 3 — many loops at once
 
-- [ ] T3.1 (hard, serial) fanout drains its children instead of orphaning them
+- [x] T3.1 (hard, serial) fanout drains its children instead of orphaning them
       touches: lib/robur/loop.rb, test/loop_test.rb
       do: `Loop.fanout` launches up to FANOUT_MAX `robur run` children with
           `Process.spawn(..., chdir: wt_path)` and then blocks in the loop that
