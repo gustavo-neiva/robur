@@ -103,6 +103,25 @@ class LoopTest < Minitest::Test
     assert commits(repo).any? { |s| s.include?("T1.1") }
   end
 
+  # Quota kill mid-task: the partial work must survive uncommitted in the
+  # tree, and last_turn.note must tell the next turn (next model, maybe next
+  # RUN) the dirty tree is WIP to continue — not broken code to revert.
+  def test_exhausted_turn_saves_partial_work_and_notes_quota_kill
+    repo = make_repo(extra_conf: "VERIFY_CMD=\"false\"")
+    ENV["FAKE_AGENT_MODE"] = "quota"
+
+    code = Robur::Loop.run(repo, once: true, sleep_it: ->(_s) {})
+
+    assert_equal 0, code
+    assert_equal "partial work\n", File.read(File.join(repo, "partial_work.txt"))
+    refute commits(repo).any? { |s| s.include?("T1.1") }
+    note = File.read(File.join(@home, "logs", Robur::CLI.project_slug(repo), "last_turn.note"))
+    assert_match(/quota\/rate-limit/, note)
+    assert_match(/partial work/, note)
+  ensure
+    ENV.delete("FAKE_AGENT_MODE")
+  end
+
   def test_run_completes_three_tasks_then_stops_done
     repo = make_repo
     code = Robur::Loop.run(repo, sleep_it: ->(_s) {})

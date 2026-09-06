@@ -26,6 +26,14 @@ PLAN="${TRACKER_FILE:-PLAN.md}"
 [ -n "${RATCHET_FANOUT:-}" ] && echo "RATCHET_FANOUT=$RATCHET_FANOUT" >&2
 [ -n "${RATCHET_SCOUT_MODELS:-}" ] && echo "RATCHET_SCOUT_MODELS=$RATCHET_SCOUT_MODELS" >&2
 
+# FAKE_AGENT_MODE=quota: simulate a provider quota kill mid-task — leave
+# partial work in the tree, emit a 429, exit non-zero (loop_test).
+if [ "${FAKE_AGENT_MODE:-}" = "quota" ]; then
+  echo "partial work" > partial_work.txt
+  echo "request failed: HTTP 429"
+  exit 1
+fi
+
 python3 - "$PLAN" "$STEP" "$DONE" <<'PY'
 import sys, re
 plan, step, done = sys.argv[1], sys.argv[2], sys.argv[3]

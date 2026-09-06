@@ -367,6 +367,18 @@ module Robur
             emit "model #{model} EXHAUSTED (quota/rate-limit#{why}). Benching #{conf["COOLDOWN"]}s; switching."
             obs.emit_event(:model_benched, model: model, seconds: conf["COOLDOWN"].to_i, reason: "exhausted")
             health.bench!(model)
+            # A quota kill mid-task leaves the turn's partial work uncommitted
+            # in the tree. Name it for the next turn (another model, maybe
+            # another RUN): the default note reads "gate RED, left staged",
+            # which a fresh model reads as broken code to revert — reverting
+            # throws away everything the killed turn already spent.
+            if dirty && !commit_result.committed
+              write_note(log_dir, false,
+                         "Previous turn was KILLED by quota/rate-limit mid-task. The uncommitted changes " \
+                         "in the working tree are its partial work — continue and repair them, do NOT revert.")
+              note_written = true
+              emit "partial work left in tree — noted as quota-kill WIP for the next turn."
+            end
             if once
               stop_reason = "once"
               emit "--once: stopping."
