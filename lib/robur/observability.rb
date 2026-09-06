@@ -222,6 +222,11 @@ module Robur
           next
         end
         msg = ev["message"] || {}
+        # message_update chunks are token-level stream deltas: zai floods
+        # ~14k of them per turn carrying zero-usage and no id, each a
+        # phantom "round-trip" (real usage lands on message_end/turn_end).
+        next if ev["type"] == "message_update"
+
         u = ev["usage"] || msg["usage"]
         next if u.nil?
 

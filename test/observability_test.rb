@@ -231,6 +231,27 @@ module Robur
       end
     end
 
+    def test_turn_usage_detail_ignores_message_update_stream_chunks
+      Dir.mktmpdir do |dir|
+        path = File.join(dir, "turn.jsonl")
+        # production shape: per token a message_update with zero usage and no
+        # id; the real usage lands once on message_end/turn_end.
+        File.open(path, "w") do |f|
+          500.times { |i| f.puts JSON.generate("type" => "message_update", "message" =>
+            { "role" => "assistant", "content" => [{ "type" => "text", "text" => "chunk#{i}" }],
+              "usage" => { "input" => 0, "output" => 0, "cacheRead" => 0, "cacheWrite" => 0 } }) }
+          f.puts JSON.generate("type" => "turn_end", "message" =>
+            { "role" => "assistant", "responseId" => "r1",
+              "usage" => { "input" => 10, "output" => 170, "cacheRead" => 100, "cacheWrite" => 0,
+                           "cost" => { "total" => 0.001 } } })
+        end
+
+        d = Observability.turn_usage_detail(path)
+        assert_equal 1, d[:messages]
+        assert_equal 170, d[:output]
+      end
+    end
+
     def test_turn_usage_detail_on_absent_file_is_all_zeros_without_raising
       d = Observability.turn_usage_detail("/nonexistent/turn.jsonl")
       assert_equal({ input: 0, output: 0, cache_read: 0, cache_write: 0,
