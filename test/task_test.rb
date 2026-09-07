@@ -30,6 +30,14 @@ class TaskTest < Minitest::Test
     assert_equal :in_progress, Robur::Task.parse("- [IN PROGRESS] T1 x").status
     assert_equal :done, Robur::Task.parse("- [x] T1 x").status
     assert_equal :done, Robur::Task.parse("- [X] T1 x").status
+    assert_equal :parked, Robur::Task.parse("- [HUMAN] T1 x").status
+  end
+
+  def test_human_parked_task_parses_id_tags_and_text
+    t = Robur::Task.parse("- [HUMAN] T8.4 (trivial) anchor real balances — PARKED, needs human: current balance?")
+    assert_equal :parked, t.status
+    assert_equal "T8.4", t.id
+    assert_equal ["trivial"], t.tags
   end
 
   def test_regression_tracker_145_greedy_paren_retag

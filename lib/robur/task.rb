@@ -5,8 +5,8 @@ module Robur
   #   "- [ ] T1.2 (normal, serial) title"
   class Task
     ID_RE = /\A([A-Z]+(?:\d+(?:\.\d+)?|-[\w-]+))\z/
-    STATUS_RE = /\A\s*-\s+\[( |x|X)\]\s*/ # leading checkbox
-    MARKER_RE = /\A\s*-\s+\[( |x|X|)\]\s*|\A\s*-\s+\[IN PROGRESS\]\s*/
+    STATUS_RE = /\A\s*-\s+\[( |x|X|HUMAN)\]\s*/ # leading checkbox
+    MARKER_RE = /\A\s*-\s+\[( |x|X|)\]\s*|\A\s*-\s+\[IN PROGRESS\]\s*|\A\s*-\s+\[HUMAN\]\s*/
 
     attr_reader :status, :id, :tags, :text, :lineno
 
@@ -26,9 +26,9 @@ module Robur
     private
 
     def parse(line)
-      return [nil, nil, [], line] unless (m = line.match(/\A\s*-\s+\[( |x|X|IN PROGRESS)\]\s*/))
+      return [nil, nil, [], line] unless (m = line.match(/\A\s*-\s+\[( |x|X|IN PROGRESS|HUMAN)\]\s*/))
 
-      status = { " " => :open, "x" => :done, "X" => :done, "IN PROGRESS" => :in_progress }[m[1]]
+      status = { " " => :open, "x" => :done, "X" => :done, "IN PROGRESS" => :in_progress, "HUMAN" => :parked }[m[1]]
       rest = m.post_match
 
       id = "?"

@@ -8,12 +8,13 @@ module Robur
     STEP = "STEP_COMPLETE"
     DONE = "ALL_DONE"
     HUMAN = "HUMAN_BLOCKED"
+    PARK = "HUMAN_PARKED"
 
-    def classify(str, json: false, deadline: false, human_token: HUMAN)
+    def classify(str, json: false, deadline: false, human_token: HUMAN, park_token: PARK)
       f = File.join(Dir.mktmpdir, "turn.out")
       File.write(f, str)
       Classifier.classify(f, step_token: STEP, done_token: DONE,
-                          deadline: deadline, json: json, human_token: human_token).to_s
+                          deadline: deadline, json: json, human_token: human_token, park_token: park_token).to_s
     end
 
     # Suite-1 parity with bash classify_turn (text mode).
@@ -62,6 +63,29 @@ module Robur
       str = %({"type":"message","message":{"content":[{"type":"text","text":"#{HUMAN} is the token"}]}}\n) +
             %({"type":"text_end","text":"working on it"})
       assert_equal "transient", classify(str, json: true)
+    end
+
+    def test_park_token_text_mode
+      assert_equal "human_park", classify("working...\n#{PARK} which account balance?")
+    end
+
+    def test_park_token_ordered_after_done_and_human
+      assert_equal "done", classify("#{PARK} q?\n#{DONE}")
+      assert_equal "human", classify("#{PARK} q?\n#{HUMAN}")
+    end
+
+    def test_park_token_json_prose_does_not_false_fire
+      str = %({"type":"message","message":{"content":[{"type":"text","text":"the base prompt mentions #{PARK} <question>"}]}}\n) +
+            %({"type":"text_end","text":"working on it"})
+      assert_equal "transient", classify(str, json: true)
+    end
+
+    def test_park_token_json_assistant_text_fires
+      assert_equal "human_park", classify(%({"type":"text_end","text":"#{PARK} which account balance?"}), json: true)
+    end
+
+    def test_park_token_nil_never_fires
+      assert_equal "transient", classify("#{PARK} q?", park_token: nil)
     end
 
     def test_deadline_timeout

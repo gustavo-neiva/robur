@@ -346,6 +346,56 @@ class LoopTest < Minitest::Test
     repo
   end
 
+  # HUMAN_PARK_TOKEN: unlike HUMAN_BLOCKED, this must NOT stop the repo — it
+  # parks the current task and the loop keeps going. Parks T1.1 on the first
+  # turn (leaves it untouched), then falls through to the real fake-agent
+  # once T1.1 is no longer `[ ]` so T1.2/T1.3 finish normally.
+  def human_park_repo
+    repo = make_repo
+    agent = File.join(repo, "human-park-agent")
+    File.write(agent, <<~SH)
+      #!/bin/bash
+      if grep -q '\\[ \\] T1\\.1' PLAN.md; then
+        echo "HUMAN_PARKED which account has the real balance?"
+      else
+        exec #{AGENT} "$@"
+      fi
+    SH
+    FileUtils.chmod(0o755, agent)
+    conf = File.join(repo, Robur::Paths::REPO_CONF)
+    File.write(conf, File.read(conf).sub(AGENT, agent))
+    repo
+  end
+
+  def test_human_park_parks_task_and_continues_to_done
+    repo = human_park_repo
+    notified = []
+    stub_notify(notified) { Robur::Loop.run(repo, sleep_it: ->(_s) {}) }
+
+    assert_equal "done\n", File.read(Robur::Paths.state_file(repo, "stop_reason"))
+    plan = Robur::Plan.new(File.join(repo, "PLAN.md"))
+    assert_equal :parked, plan.next_task(:parked).status
+    assert_equal "T1.1", plan.next_task(:parked).id
+    refute plan.open?, "the parked task must not be picked up as open again"
+    assert_includes commits(repo), "loop(robur): task T1.1 PARKED \u2014 needs human"
+    assert notified.any? { |m| m.include?("T1.1") && m.include?("account has the real balance") },
+           "the park must notify with the task and the extracted question, got #{notified.inspect}"
+  end
+
+  def test_park_current_task_writes_human_marker_and_commits
+    repo = make_repo
+    conf = Robur::Config.load(repo, {}).values
+    task = Robur::Plan.new(File.join(repo, "PLAN.md")).next_task(:open)
+
+    Robur::Loop.park_current_task(repo, conf, task, "which account balance?")
+
+    line = File.readlines(File.join(repo, "PLAN.md"))[task.lineno - 1]
+    assert_match(/\A- \[HUMAN\] T1\.1/, line)
+    assert_includes line, "PARKED, needs human: which account balance?"
+    assert_equal :parked, Robur::Plan.new(File.join(repo, "PLAN.md")).next_task(:parked).status
+    assert_includes commits(repo), "loop(robur): task T1.1 PARKED \u2014 needs human"
+  end
+
   def test_all_benched_backoff_ladder
     conf = { "COOLDOWN" => "100", "MAX_TRANSIENT" => "3", "SHORT_SLEEP" => "0" }
     health = Robur::ModelHealth.new(conf)

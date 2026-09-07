@@ -442,8 +442,10 @@ module Robur
       step_token = conf["STEP_TOKEN"].to_s.empty? ? Config::DEFAULTS["STEP_TOKEN"] : conf["STEP_TOKEN"]
       done_token = conf["DONE_TOKEN"].to_s.empty? ? Config::DEFAULTS["DONE_TOKEN"] : conf["DONE_TOKEN"]
       human_token = conf["HUMAN_TOKEN"].to_s.empty? ? Config::DEFAULTS["HUMAN_TOKEN"] : conf["HUMAN_TOKEN"]
+      park_token = conf["HUMAN_PARK_TOKEN"].to_s.empty? ? Config::DEFAULTS["HUMAN_PARK_TOKEN"] : conf["HUMAN_PARK_TOKEN"]
       klass = Classifier.classify(turn_out, step_token: step_token, done_token: done_token,
-                                           deadline: deadline, json: Turn.pi_json?(conf["AGENT_CMD"]), human_token: human_token)
+                                           deadline: deadline, json: Turn.pi_json?(conf["AGENT_CMD"]), human_token: human_token,
+                                           park_token: park_token)
       emit.call("plan turn 1 end | class=#{klass} | took=#{took}s")
 
       if !ENV.fetch("SUMMARY_LINES", "4").to_i.zero? && File.exist?(turn_out) && !File.zero?(turn_out)
