@@ -216,7 +216,7 @@ module Robur
           if result.kill_reason == "stop-requested"
             emit "stop requested mid-turn — salvaging green work and stopping."
             obs.emit(:stop_requested, source: "mid-turn watchdog", level: life.level)
-            commit_turn(turn, model, conf, plan, dir)
+            commit_turn(turn, model, conf, plan, dir, task)
             stop_reason = "stopped"
             break
           end
@@ -266,7 +266,7 @@ module Robur
             klass = :step
           end
 
-          commit_result = commit_turn(turn, model, conf, plan, dir)
+          commit_result = commit_turn(turn, model, conf, plan, dir, task)
           obs.emit_event(:gate_result,
                          status: commit_result.committed ? "green" : commit_result.block_reason ? "red" : "skipped",
                          reason: commit_result.block_reason || (commit_result.committed ? "committed" : "no-op"))
@@ -459,6 +459,14 @@ module Robur
             life.sleep(conf["SHORT_SLEEP"].to_i, sleep_it: sleep_it)
           end
 
+          # Changelog archive. Runs BEFORE the milestone check on purpose: the
+          # archive commit then lands on the milestone branch and ships inside
+          # that milestone's own PR, instead of arriving on the default branch
+          # after the merge. Removing a finished section cannot change the
+          # check's verdict -- current_milestone already skipped it, having no
+          # open tasks.
+          archive_completed_milestone(dir, conf, plan) if commit_result.committed
+
           # Milestone-complete detection + bounded review turn
           # (PR_CADENCE=milestone only). Reached ONLY on the common tail -- the
           # `done`/`human` branches `break` and the RED-gate-repair branches
@@ -583,8 +591,8 @@ module Robur
       CLI.emit(msg)
     end
 
-    def commit_turn(turn, model, conf, plan, dir)
-      CLI.commit_turn(turn, model, conf, plan, dir)
+    def commit_turn(turn, model, conf, plan, dir, task = nil)
+      CLI.commit_turn(turn, model, conf, plan, dir, task)
     end
 
     # Auto-plan PR #0 (PR_CADENCE=milestone only, and only when the tracker
@@ -717,6 +725,47 @@ module Robur
         end
         nil
       end
+    end
+
+    # Move every finished milestone from the tracker into CHANGELOG.md and
+    # commit both files. Deterministic and model-free: the entries come from
+    # the plan's own task titles and `do:` prose, joined by task id to the
+    # commits since the previous archive.
+    #
+    # The range anchor is the last commit that touched CHANGELOG.md, so no new
+    # state file is needed and this works under every PR_CADENCE. only_last is
+    # true on the loop path (see Plan#archive_completed_milestones); `robur
+    # changelog` passes false for a one-off backfill.
+    def archive_completed_milestone(dir, conf, plan, only_last: true, repo: Repo.new(dir))
+      since = repo.last_commit_touching(Plan::CHANGELOG_FILE)
+      # No anchor yet (nothing has ever been archived): `HEAD` still lists the
+      # whole history for the commit join, but it is NOT a diff range —
+      # `git diff --shortstat HEAD` would report the working tree, not the
+      # milestone — so the stat is omitted rather than wrong.
+      range = since ? "#{since}..HEAD" : "HEAD"
+      names = plan.archive_completed_milestones(commits: repo.log_subjects(range),
+                                                stat: since && changed_lines_note(repo.shortstat(range)),
+                                                only_last: only_last)
+      return names if names.empty?
+
+      emit "changelog | archived #{names.join(", ")}"
+      return names unless File.directory?(File.join(dir, ".git"))
+
+      repo.add(conf["TRACKER_FILE"] || "PLAN.md")
+      repo.add(Plan::CHANGELOG_FILE)
+      return names if repo.staged_files.empty?
+
+      repo.commit("docs(#{Paths::COMMIT_SCOPE}): changelog for #{names.join(", ")}")
+      names
+    end
+
+    # "+412/-88" from a `git diff --shortstat`, or nil when it counted nothing.
+    def changed_lines_note(text)
+      ins = text.to_s[/(\d+) insertions?\(\+\)/, 1].to_i
+      del = text.to_s[/(\d+) deletions?\(-\)/, 1].to_i
+      return nil if (ins + del).zero?
+
+      "+#{ins}/-#{del}"
     end
 
     # Commit the tracker if the review turn injected fix tasks into it.

@@ -106,6 +106,45 @@ Outcome classes: `step` / `done` (success), `exhausted` (quota — benched, no s
 
 Health is tracked **per model id across every chain**, so a model in both a tier chain and the flat chain shares one strike counter. A model with 20 attempts and 0 wins is hard-disabled permanently and survives a reset — if a model has silently stopped being used, that is why. `hard` almost always means config: check the id with `robur models list`.
 
+## The changelog
+
+When every task in a `## ` milestone is `[x]`, the loop moves that section out
+of the tracker into `CHANGELOG.md` and commits both files
+(`docs(robur): changelog for <milestone>`). Deterministic Ruby, no model call:
+entries come from the task titles, the first sentence of each `do:` field, and
+the commit whose subject carries the task id. The range is anchored on the last
+commit that touched `CHANGELOG.md`, so there is no state file to corrupt.
+
+The loop takes **one** milestone per turn. A repo adopting robur with a long
+finished backlog is swept deliberately, by a human:
+
+```sh
+robur changelog <repo>   # archive EVERY finished milestone, once
+```
+
+Run that before the first `robur run` on such a repo; it also establishes the
+anchor commit that bounds every later archive.
+
+### Commit subjects come from the tracker
+
+robur composes each commit from the task line — the agent never writes one. A
+task's kind tag becomes the subject prefix:
+
+```
+- [ ] T4.1 (normal, feat) emit lifecycle events for stop and recovery
+        ↓
+feat(robur): T4.1 emit lifecycle events for stop and recovery
+```
+
+The kind (`feat|fix|perf|refactor|docs|test|chore`) is required and must never
+be the FIRST tag — tier routing reads only the first. A task with no kind still
+runs, under `auto(robur):`.
+
+**Repos planned before this rule keep working**, ungrouped, under the legacy
+prefix. Sweeping them is a plan edit — add a kind tag to the open tasks — and
+can be done per repo, whenever each is next touched. Nothing breaks in the
+meantime.
+
 ## Configuration
 
 Two files, and the distinction is a security boundary, not a convention:

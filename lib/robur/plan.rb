@@ -13,10 +13,21 @@ module Robur
     HEADING = /\A#+ /
     SKIP_HEADING = /done|checklist/
 
+    # Where finished milestones go. Hardcoded, not a conf key: Config::ALLOWLIST
+    # is a frozen contract, and this is a value that never varies per repo.
+    CHANGELOG_FILE = "CHANGELOG.md"
+    CHANGELOG_TITLE = "# Changelog"
+
+    # Task-block field labels, used to bound the `do:` prose when mining a
+    # one-sentence changelog description.
+    BLOCK_FIELDS = %w[touches do snippet accept verify constraints].freeze
+
     def initialize(path, proc: Sys::Proc.new)
       @path = path
       @proc = proc
     end
+
+    def changelog_path = File.join(File.dirname(@path), CHANGELOG_FILE)
 
     def next_task(kind = :open)
       each_task(kind) { |t| return t }
@@ -34,6 +45,7 @@ module Robur
     def count(kind)
       n = 0
       each_task(kind) { n += 1 }
+      n += archived_done_count if kind == :done
       n
     end
 
@@ -44,25 +56,40 @@ module Robur
     # [x] tasks under the named `## ` milestone, in `[x] text` form — only
     # the leading dash is stripped, the checkbox is kept. The literal `-` is
     # required: a bare `[x]` with no dash does not count.
+    #
+    # Scans the tracker AND the changelog: once a milestone is archived its
+    # section no longer exists in the tracker, and the milestone PR body is
+    # built from this method AFTER the archive runs. Keeping the `- [x]` form
+    # in the changelog is what makes one scan serve both files.
     def milestone_completed_list(mname)
-      sec = sections.find { |name, _| name == mname }
+      sec = sections(all_lines + changelog_lines).find { |name, _| name == mname }
       return [] unless sec
 
       sec[1].select { |l| l =~ /^[[:space:]]*-[[:space:]]*\[x\]/ }
             .map { |l| l.sub(/^[[:space:]]*-?[[:space:]]*/, "").gsub("**", "") }
     end
 
-    # Best-effort: the [x] line newly staged this turn, else the newest [x]
-    # in the file (tracker_completed_subject).
-    def completed_subject
+    # The Task this turn completed, or nil. Precedence is deliberate:
+    #
+    #   1. the [x] line newly STAGED this turn — hard evidence of what was
+    #      actually ticked, so it outranks what the loop handed out;
+    #   2. `dispatched`, the task the loop selected for this turn;
+    #   3. the newest [x] anywhere in the file.
+    #
+    # (3) alone used to be the whole fallback, and it is a guess: a turn that
+    # staged no tracker diff commits under an unrelated task's title. That is
+    # cosmetic for a commit and corrupting for a changelog, which joins
+    # entries to commits by task id — so (2) was inserted ahead of it.
+    def completed_task(dispatched = nil)
       line = staged_done_line
-      line ||= done_lines.last
-      return "step" unless line
+      if line
+        task = Task.parse(line.sub(/\A\+/, ""))
+        return task if task.task?
+      end
+      return dispatched if dispatched
 
-      line.sub(/\A\+[[:space:]]*-?[[:space:]]*\[x\][[:space:]]*/, "")
-          .sub(/\A[[:space:]]*-?[[:space:]]*\[x\][[:space:]]*/, "")
-          .gsub("**", "")
-          .slice(0, 100)
+      last = done_lines.last
+      last.nil? ? nil : Task.parse(last)
     end
 
     # "name\tdone\ttotal" per `## ` section (tracker_milestones). Plain
@@ -168,7 +195,164 @@ module Robur
       all_lines[0]&.match(/<!--\s*class:\s*(\w+)\s*-->/)&.send(:[], 1)
     end
 
+    # Move every finished `## ` milestone out of the tracker and into
+    # CHANGELOG.md, newest first. Returns the archived section names.
+    #
+    # "Finished" is purely structural and needs no state file: a section with
+    # at least one task line and no `[ ]`, `[IN PROGRESS]` or `[HUMAN]` left.
+    # The section is DELETED from the tracker as it is written out, so a
+    # second call is a no-op and the operation is idempotent by construction.
+    #
+    # only_last archives at most the newest finished section. That is the loop
+    # default on purpose: a repo adopting this feature mid-flight would
+    # otherwise have its entire finished backlog swept into the changelog in
+    # one turn. `robur changelog` passes false to do exactly that, once,
+    # deliberately.
+    #
+    # commits are [short_sha, subject] pairs covering the range since the last
+    # archive; each is joined to a task by the id its subject carries. Commits
+    # matching no task (hand-written fixes, merges) are listed separately —
+    # they are invisible to the tracker and are most of what a reader wants.
+    def archive_completed_milestones(commits: [], stat: nil, only_last: true, now: Time.now)
+      return [] unless File.exist?(@path)
+
+      lines = all_lines
+      finished = section_ranges(lines).select { |name, s, e| archivable?(name, lines[s...e]) }
+      finished = finished.last(1) if only_last
+      return [] if finished.empty?
+
+      entries = finished.map { |name, s, e| render_entry(name, lines[s...e], commits, stat, now) }
+      prepend_changelog(entries.reverse)
+
+      cut = finished.map { |_n, s, e| (s...e) }
+      kept = lines.each_with_index.reject { |_l, i| cut.any? { |r| r.cover?(i) } }.map(&:first)
+      File.write(@path, "#{kept.join("\n").rstrip}\n")
+      @cache_stamp = nil
+      finished.map(&:first)
+    end
+
     private
+
+    # [[name, start_index, end_index_exclusive], ...] for every `## ` section.
+    # start_index is the heading line itself, so cutting a range removes the
+    # heading with its body.
+    def section_ranges(lines)
+      starts = lines.each_index.select { |i| lines[i] =~ /^## / }
+      starts.each_with_index.map do |s, n|
+        [lines[s].sub(/^## /, ""), s, starts[n + 1] || lines.size]
+      end
+    end
+
+    # A section is archivable when it holds real tasks and none of them are
+    # still open. The done/checklist heading skip is reused from the task
+    # scan so "## Definition of done" is never mistaken for a milestone.
+    def archivable?(name, body)
+      return false if name.to_s.downcase =~ SKIP_HEADING
+
+      tasks = body.grep(TASK_LINE)
+      return false if tasks.empty?
+
+      tasks.none? { |l| l =~ /\A[[:space:]]*-?[[:space:]]*\[( |IN PROGRESS|HUMAN)\]/ }
+    end
+
+    # Groups a section body into [task_line, indented_body_lines] pairs.
+    def task_groups(body)
+      groups = []
+      body.each do |line|
+        if line =~ TASK_LINE
+          groups << [line, []]
+        elsif !groups.empty? && line !~ HEADING
+          groups.last[1] << line
+        end
+      end
+      groups
+    end
+
+    # First sentence of the task block's `do:` field — the description the
+    # planner already wrote, reused verbatim so the changelog needs no model.
+    def do_summary(block)
+      text = block.join(" ")[/(?:\A|\s)do:\s*(.+)/m, 1]
+      return nil if text.nil?
+
+      text = text.split(/\s(?:#{BLOCK_FIELDS.join("|")}):\s/).first.to_s.squeeze(" ").strip
+      sentence = text[/\A.*?[.!?](?=\s|\z)/] || text
+      sentence.empty? ? nil : sentence
+    end
+
+    # One `## <name>` changelog section. The task lines keep their `- [x]`
+    # marker so milestone_completed_list can still find them here after the
+    # tracker section is gone.
+    def render_entry(name, body, commits, stat, now)
+      claimed = []
+      tasks = task_groups(body).flat_map do |line, block|
+        task = Task.parse(line)
+        hit = commits.find { |sha, subject| !claimed.include?(sha) && mentions?(subject, task.id) }
+        claimed << hit[0] if hit
+        summary = do_summary(block)
+        ["- [x] #{task.id} #{task.text.gsub("**", "").strip}#{hit ? " — `#{hit[0]}`" : ""}",
+         summary ? "      #{summary}" : nil]
+      end.compact
+
+      extra = unmatched_after_first_task(commits, claimed)
+      out = ["## #{name}", subheading(now, claimed.size + extra.size, stat), "", *tasks]
+      unless extra.empty?
+        out << ""
+        out << "Also in this range:"
+        extra.each { |sha, subject| out << "- `#{sha}` #{subject}" }
+      end
+      "#{out.join("\n")}\n"
+    end
+
+    # Counts only the commits attributed to this milestone, not every commit in
+    # the range — the two differ whenever the range has no anchor.
+    def subheading(now, commit_count, stat)
+      parts = [now.strftime("%Y-%m-%d")]
+      parts << "#{commit_count} commit#{"s" unless commit_count == 1}" if commit_count.positive?
+      parts << stat unless stat.to_s.empty?
+      "_#{parts.join(" · ")}_"
+    end
+
+    # Word-boundary id match that does not let "T1.1" match inside "T1.10".
+    def mentions?(subject, id)
+      return false if id.nil? || id == "?"
+
+      subject =~ /(?<![\w.])#{Regexp.escape(id)}(?![\w.])/ ? true : false
+    end
+
+    # Commits in the range belonging to no task — hand-written fixes, which are
+    # invisible to the tracker and are most of what a reader wants. Bounded to
+    # the span starting at the milestone's OWN first commit: with no anchor the
+    # range is the repo's entire history, so the first archive in a repo would
+    # otherwise file every commit ever made under this one milestone. Nothing
+    # claimed means the span is unknowable, so nothing is listed.
+    def unmatched_after_first_task(commits, claimed)
+      first = commits.index { |sha, _subject| claimed.include?(sha) }
+      return [] if first.nil?
+
+      commits[first..].reject { |sha, _subject| claimed.include?(sha) }
+    end
+
+    # Tasks moved into the changelog are still done — the tracker just no
+    # longer holds them. count(:done) must see them, or archiving the final
+    # milestone empties the tracker and `run`'s all-done fast path (which
+    # requires done.positive?) stops firing, spinning an extra turn.
+    def archived_done_count
+      changelog_lines.count { |l| l =~ /\A[[:space:]]*-[[:space:]]*\[x\]/ }
+    end
+
+    def changelog_lines
+      path = changelog_path
+      File.exist?(path) ? File.readlines(path, chomp: true) : []
+    end
+
+    def prepend_changelog(entries)
+      path = changelog_path
+      body = File.exist?(path) ? File.read(path) : ""
+      body = body.sub(/\A#{Regexp.escape(CHANGELOG_TITLE)}\n+/, "").rstrip
+      blocks = entries.map(&:rstrip)
+      blocks << body unless body.empty?
+      File.write(path, "#{CHANGELOG_TITLE}\n\n#{blocks.join("\n\n")}\n")
+    end
 
     # Line number of the first task of `kind`, using tracker_next's rule:
     # open/in-progress lines under a done/checklist heading are skipped.
@@ -179,9 +363,9 @@ module Robur
 
     # Yields each `## ` section as [name_without_prefix, lines]. Sections are
     # separated by `## ` headings; lines before the first one belong to nil.
-    def sections
+    def sections(lines = all_lines)
       result = [[nil, []]]
-      all_lines.each do |line|
+      lines.each do |line|
         if line =~ /^## /
           result << [line.sub(/^## /, ""), []]
         else

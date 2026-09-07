@@ -57,18 +57,26 @@ class PlanTest < Minitest::Test
     refute entry.include?("**")
   end
 
-  def test_completed_subject_prefers_staged_diff_then_newest_done
+  # Precedence: staged [x] diff line (hard evidence) → the dispatched task →
+  # newest [x] in the file. Tier tags are stripped; the id survives, because
+  # the changelog joins entries to commits by exactly that id.
+  def test_completed_task_prefers_staged_diff_then_dispatched_then_newest_done
+    staged = Object.new
+    def staged.capture(*) = ["+++ b/PLAN.md\n+- [x] T9.9 (normal, feat) freshly staged task", nil, nil]
+    task = Robur::Plan.new("PLAN.md", proc: staged).completed_task
+    assert_equal "T9.9", task.id
+    assert_equal "freshly staged task", task.text
+    assert_equal "feat", task.kind
+
     noop = Object.new
     def noop.capture(*) = ["", nil, nil]
-    # no staged [x] line → falls back to the newest [x] in the file; derive
-    # the expected id from the file so this doesn't break as tasks complete.
-    newest_done = File.readlines("PLAN.md").grep(/\A- \[x\] (\S+)/) { Regexp.last_match(1) }.last
-    assert Robur::Plan.new("PLAN.md", proc: noop).completed_subject.start_with?(newest_done)
+    # No staged [x] line, but the loop dispatched a task — that outranks the
+    # "newest [x] anywhere" guess, which attributes work to an unrelated task.
+    dispatched = Robur::Task.parse("- [ ] T5.5 (normal, fix) the dispatched one")
+    assert_equal "T5.5", Robur::Plan.new("PLAN.md", proc: noop).completed_task(dispatched).id
 
-    staged = Object.new
-    def staged.capture(*) = ["+++ b/PLAN.md\n+- [x] T9.9 (normal) freshly staged task", nil, nil]
-    assert_equal "T9.9 (normal) freshly staged task",
-                 Robur::Plan.new("PLAN.md", proc: staged).completed_subject
+    newest_done = File.readlines("PLAN.md").grep(/\A- \[x\] (\S+)/) { Regexp.last_match(1) }.last
+    assert_equal newest_done, Robur::Plan.new("PLAN.md", proc: noop).completed_task.id
   end
 
   def test_heading_skip_rule
@@ -223,6 +231,100 @@ class PlanTest < Minitest::Test
                      "Unblock: do the work, mark it [x] in #{path} — the next run resumes on its own.",
                      missing
       end
+    end
+  end
+
+  ARCHIVE_PLAN = <<~PLAN
+    <!-- class: MACHINE -->
+    # Plan
+    ## M1
+    - [x] T1.1 (trivial, feat) add the widget
+          do: The widget is the entry point. Everything else hangs off it.
+          verify: true
+    - [x] T1.2 (normal, fix) stop the widget leaking
+    ## M2
+    - [x] T2.1 (normal, feat) done already
+    - [ ] T2.2 (normal, feat) not done
+    ## Definition of done
+    - [x] every box ticked
+  PLAN
+
+  def archive_plan(dir, body = ARCHIVE_PLAN)
+    path = File.join(dir, "PLAN.md")
+    File.write(path, body)
+    [path, Robur::Plan.new(path)]
+  end
+
+  def test_archive_moves_only_finished_milestones_and_keeps_the_rest
+    Dir.mktmpdir do |dir|
+      path, plan = archive_plan(dir)
+      commits = [["aaa1", "feat(robur): T1.1 add the widget"],
+                 ["bbb2", "fix(robur): T1.2 stop the widget leaking"],
+                 ["ccc3", "docs: unrelated hand-written commit"]]
+
+      assert_equal ["M1"], plan.archive_completed_milestones(commits: commits, stat: "+40/-2")
+
+      tracker = File.read(path)
+      refute_includes tracker, "T1.1"
+      assert_includes tracker, "## M2"
+      # all-[x] but not a milestone: the same done/checklist heading skip the
+      # open-task scan uses applies to archiving.
+      assert_includes tracker, "## Definition of done"
+
+      log = File.read(File.join(dir, "CHANGELOG.md"))
+      assert log.start_with?("# Changelog\n")
+      assert_includes log, "3 commits"
+      assert_includes log, "+40/-2"
+      assert_includes log, "- [x] T1.1 add the widget"
+      assert_includes log, "`aaa1`"
+      # description is the task's own do: prose, first sentence only
+      assert_includes log, "The widget is the entry point."
+      refute_includes log, "Everything else hangs off it"
+      # a commit matching no task is still reported: it is invisible to the plan
+      assert_includes log, "Also in this range:"
+      assert_includes log, "`ccc3` docs: unrelated hand-written commit"
+    end
+  end
+
+  def test_archive_is_idempotent_and_only_last_bounds_the_loop_path
+    Dir.mktmpdir do |dir|
+      _path, plan = archive_plan(dir, "# Plan\n## M1\n- [x] A1 (trivial, feat) one\n## M2\n- [x] A2 (trivial, feat) two\n")
+
+      # the loop takes the newest finished milestone only, so a repo adopting
+      # this mid-flight is not swept in a single turn
+      assert_equal ["M2"], plan.archive_completed_milestones
+      assert_equal ["M1"], plan.archive_completed_milestones
+      assert_empty plan.archive_completed_milestones
+
+      log = File.read(File.join(dir, "CHANGELOG.md"))
+      assert_equal 1, log.scan("# Changelog").size
+      assert log.index("## M1") < log.index("## M2"), "newest archive goes on top"
+    end
+  end
+
+  def test_archive_all_at_once_for_the_backfill_command
+    Dir.mktmpdir do |dir|
+      _path, plan = archive_plan(dir, "# Plan\n## M1\n- [x] A1 (trivial, feat) one\n## M2\n- [x] A2 (trivial, feat) two\n")
+      assert_equal %w[M1 M2], plan.archive_completed_milestones(only_last: false)
+    end
+  end
+
+  # An archived milestone must still answer milestone_completed_list: the PR
+  # body is built from it AFTER the archive runs. Keeping the `- [x]` form in
+  # the changelog is what lets one scan serve both files.
+  def test_milestone_completed_list_and_done_count_survive_archiving
+    Dir.mktmpdir do |dir|
+      _path, plan = archive_plan(dir)
+      plan.archive_completed_milestones
+
+      listed = plan.milestone_completed_list("M1")
+      assert_equal 2, listed.size
+      assert listed[0].start_with?("[x] T1.1 add the widget")
+      # archived tasks are still done: without this, archiving the final
+      # milestone empties the tracker and run's all-done fast path, which
+      # requires done.positive?, stops firing. 2 archived + T2.1 + the
+      # Definition-of-done bullet, which is counted wherever it sits.
+      assert_equal 4, plan.count(:done)
     end
   end
 
