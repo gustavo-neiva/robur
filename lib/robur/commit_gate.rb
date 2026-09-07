@@ -50,7 +50,11 @@ module Robur
     # turn needs repair (secret hit or a red VERIFY_CMD) — never a clean
     # success. committed false + block_reason nil is a clean no-op skip
     # (COMMIT_EACH_TURN off, no git repo, or nothing staged).
-    def run(turn:, model:)
+    #
+    # task: the Task the loop dispatched this turn, passed through to
+    # Plan#completed_task so a turn that staged no tracker diff still commits
+    # under its own title instead of an unrelated task's.
+    def run(turn:, model:, task: nil)
       clean_skip = Result.new(committed: false, block_reason: nil, verify_cmd_empty: false)
       return clean_skip unless @config["COMMIT_EACH_TURN"] == "1"
       return clean_skip unless File.directory?(File.join(@dir, ".git"))
@@ -95,10 +99,17 @@ module Robur
       end
 
       verify_cmd_empty = false
+      # What the commit body will CLAIM about the gate. The body used to say
+      # "verify: green." unconditionally — including on the two paths that
+      # ran no gate at all, one of which had just warned about exactly that.
+      # A changelog built from these commits would inherit the lie.
+      gate_note = "verify: skipped (COMMIT_VERIFY_GATE off)"
       if @config["COMMIT_VERIFY_GATE"] == "1"
+        gate_note = "verify: green"
         verify_cmd = @config["VERIFY_CMD"]
         if verify_cmd.nil? || verify_cmd.empty?
           verify_cmd_empty = true
+          gate_note = "verify: none (VERIFY_CMD empty)"
           @emit.call("  \e[31mWARNING: VERIFY_CMD is empty — committing with NO green gate " \
                      "(no-gate is loud by design; set VERIFY_CMD in #{Paths::REPO_CONF}).\e[0m")
         else
@@ -120,9 +131,15 @@ module Robur
         end
       end
 
-      subject = @plan.completed_subject
-      committed = @repo.commit("auto(#{Paths::COMMIT_SCOPE}): turn #{turn} #{model} \u2014 #{subject}",
-                                "Autonomous loop turn #{turn}. verify: green.")
+      # Subject is changelog-grade: `<kind>(robur): <id> <title>`. The tier
+      # tags are routing metadata and are dropped; turn and model are
+      # debugging data and move to the body, where they no longer eat the
+      # 72-char subject budget.
+      completed = @plan.completed_task(task)
+      subject = completed ? "#{completed.id} #{completed.text.gsub("**", "").strip}" : "step"
+      kind = completed&.kind || "auto"
+      committed = @repo.commit("#{kind}(#{Paths::COMMIT_SCOPE}): #{subject}",
+                                "Autonomous loop turn #{turn}. #{gate_note}.\nmodel: #{model}")
       if committed
         @emit.call("  committed: #{subject}")
       else

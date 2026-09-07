@@ -105,6 +105,28 @@ module Robur
       status&.success? ? out.strip : nil
     end
 
+    # [[short_sha, subject], ...] for RANGE, oldest first. Empty on failure —
+    # the changelog degrades to plan-only entries rather than aborting a turn.
+    def log_subjects(range)
+      out, _err, status = git("log", "--reverse", "--no-merges", "--format=%h\t%s", range)
+      return [] unless status&.success?
+
+      out.each_line(chomp: true).filter_map do |line|
+        sha, subject = line.split("\t", 2)
+        [sha, subject] if sha && subject
+      end
+    end
+
+    # Full sha of the newest commit touching PATH, or nil when git fails or
+    # the path has never been committed. This is the changelog's range anchor:
+    # the previous archive point, so no new state file is needed.
+    def last_commit_touching(path)
+      out, _err, status = git("log", "-1", "--format=%H", "--", path)
+      return nil unless status&.success?
+
+      out.strip.empty? ? nil : out.strip
+    end
+
     # Full unified diff for RANGE (optionally scoped to a pathspec), or nil on
     # failure (distinct from an empty string, which is a valid "no changes" diff).
     def diff(range, pathspec = nil)

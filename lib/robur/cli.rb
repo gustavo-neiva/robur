@@ -47,6 +47,8 @@ module Robur
         doctor [REPO]   Preflight: conf parses, tracker has open tasks, keys live, protocol current.
         selftest         Verify detection + loop logic against fixtures (NO agent calls). Exits 0/1.
         stats   [REPO]  Parse this repo's loop.log and print the baseline metrics, then exit.
+        changelog [REPO] Move EVERY finished milestone out of the tracker into CHANGELOG.md and
+                        commit. One-off backfill; the loop archives one milestone per turn on its own.
         watch   [REPO]  Live board in a 2nd terminal: refreshes step/%/milestones/model/ETA every 2s while `run` works.
         stop    [REPO]  Signal a running loop to stop: bare = drain (after the current turn),
                         --now = abort it mid-turn. --clear removes the request.
@@ -158,7 +160,7 @@ module Robur
     end
 
     COMMANDS = %w[init new plan doctor run once selftest stats watch status stop models fanout
-                  fanout-clean migrate-state].freeze
+                  fanout-clean migrate-state changelog].freeze
 
     # Flags that swallow the NEXT argv item as their value. Only the tolerant
     # pre-scan needs this; the authoritative parse is OptionParser and knows
@@ -307,6 +309,9 @@ module Robur
       when "stats"
         warn_conf_issues(dir || ".")
         cmd_stats(dir)
+      when "changelog"
+        warn_conf_issues(dir || ".")
+        cmd_changelog(dir)
       when "migrate-state"
         cmd_migrate_state(dir)
       when *COMMANDS
@@ -426,6 +431,21 @@ module Robur
       0
     rescue StandardError => e
       die e.message
+    end
+
+    # changelog [REPO] — archive EVERY finished milestone in one pass. The
+    # loop's per-turn archive deliberately takes only the newest one, so a repo
+    # that adopts this feature with a long finished backlog is swept here,
+    # once, by a human who asked for it.
+    def cmd_changelog(dir)
+      dir = File.expand_path(dir || Dir.pwd)
+      conf = Config.load(dir, @overrides || {}).values
+      tracker = File.join(dir, conf["TRACKER_FILE"] || "PLAN.md")
+      die "no tracker at #{tracker}" unless File.file?(tracker)
+
+      names = Loop.archive_completed_milestone(dir, conf, Plan.new(tracker), only_last: false)
+      puts names.empty? ? "no finished milestone to archive" : "archived: #{names.join(", ")}"
+      0
     end
 
     def cmd_doctor(dir)
@@ -714,9 +734,9 @@ module Robur
     # Delegates to CommitGate, which owns the stage/exclude/scan/verify/commit
     # ordering; CLI supplies the loop.log
     # emit sink so the gate's prose lands in the same rendered log.
-    def commit_turn(turn, model, conf, plan, dir)
+    def commit_turn(turn, model, conf, plan, dir, task = nil)
       Robur::CommitGate.new(dir, plan: plan, config: conf, emit: method(:emit), loop_log: @loop_log)
-                        .run(turn: turn, model: model)
+                        .run(turn: turn, model: model, task: task)
     end
 
     # _turn_usage is DRY now: the loop reads Observability.turn_usage_detail

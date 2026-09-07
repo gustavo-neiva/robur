@@ -17,6 +17,8 @@ Commands:
   doctor [REPO]   Preflight: conf parses, tracker has open tasks, keys live, protocol current.
   selftest         Verify detection + loop logic against fixtures (NO agent calls). Exits 0/1.
   stats   [REPO]  Parse this repo's loop.log and print the baseline metrics, then exit.
+  changelog [REPO] Move EVERY finished milestone out of the tracker into CHANGELOG.md and
+                  commit. One-off backfill; the loop archives one milestone per turn on its own.
   watch   [REPO]  Live board in a 2nd terminal: refreshes step/%/milestones/model/ETA every 2s while `run` works.
   stop    [REPO]  Signal a running loop to stop: bare = drain (after the current turn),
                   --now = abort it mid-turn. --clear removes the request.

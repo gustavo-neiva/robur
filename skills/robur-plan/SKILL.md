@@ -39,6 +39,27 @@ The tag on each task routes it to a model tier. This is not decoration — it is
 
 Only `trivial` and `hard` are special-cased; **anything else — including a missing tag — routes to BUILD**. So an untagged task is not an error, it is a silent default. Decide on purpose.
 
+### The kind tag is REQUIRED
+
+Every task carries a conventional-commit type as a **second** tag:
+
+```markdown
+- [ ] T1.4 (normal, feat) the widget survives a restart
+- [ ] T2.1 (trivial, docs, serial) document the stop contract
+```
+
+`feat` `fix` `perf` `refactor` `docs` `test` `chore`. It must not come first — tier routing reads the first tag only, so `(normal, feat)` routes exactly as `(normal)` does. Order after that is free.
+
+This is not bookkeeping. robur builds every commit message from the task line itself, so the kind becomes the commit's prefix, and the commit is what the generated `CHANGELOG.md` groups by:
+
+```
+- [ ] T4.1 (normal, feat) emit lifecycle events for stop and recovery
+        ↓
+feat(robur): T4.1 emit lifecycle events for stop and recovery
+```
+
+A task with no kind tag still runs — it commits under the legacy `auto(robur):` prefix and lands in the changelog ungrouped. That fallback exists for plans written before this rule, not as an opt-out.
+
 `(trivial)` also forces thinking off, and models whose names match `flash|turbo|highspeed|air` get the light thinking treatment regardless of tier. Do not tag something `trivial` to save money if it needs to reason — the green gate is the safety net, but a task that cannot succeed just burns turns until the progress guard blocks it.
 
 **Auto-tag at authoring time.** As you draft each task, assign `(trivial|normal|hard)` with a one-line justification for any non-obvious choice. The human reviews at the mandatory checkpoint before any run; tagging happens during drafting, not as a separate pass. When genuinely torn between two tiers, pick the cheaper one.
@@ -78,7 +99,7 @@ All three are recognized, plus `[X]`. Tasks under a heading matching *done* or *
 One tracker line plus indented fields. The tracker line is what robur parses; the fields are what the agent reads to do the work in ONE turn.
 
 ```
-- [ ] T1.4 (hard, serial) <imperative one-line goal — what exists after this task>
+- [ ] T1.4 (hard, feat, serial) <declarative outcome — subject, verb, consequence>
       touches: lib/robur/model_health.rb, lib/robur/loop.rb
       do: <2-4 sentences. What to change, which function, and WHY. Repeat any
           assumption — the turn has no memory. Name paths and functions exactly.>
@@ -91,6 +112,27 @@ One tracker line plus indented fields. The tracker line is what robur parses; th
       verify: ruby -Ilib -e 'Dir["test/**/*_test.rb"].each{|f| require File.expand_path(f)}'
       constraints: stdlib only; no new conf keys; never edit .robur.conf
 ```
+
+### The title is the commit message is the changelog line
+
+One string, three consumers, no transformation between them. Write it for the
+reader six months out who has none of your context.
+
+**Declarative outcome: subject, verb, consequence.** State what is true once
+the task is done, and where there is room, why it matters.
+
+| | |
+|---|---|
+| ✅ | `flock loop.pid so two loops cannot share one tree` |
+| ✅ | `fanout drains its children instead of orphaning them` |
+| ✅ | `make every long wait interruptible` |
+| ❌ | `structured lifecycle events` — no verb; unreadable as a commit |
+| ❌ | `fix the bug in the loop` — names no outcome |
+| ❌ | `update observability.rb` — names the file, not the change |
+
+The `so` / `instead of` clause is what survives without context. Reach for it
+whenever the title has room — aim for a subject line under ~65 characters once
+the `<kind>(robur): <id> ` prefix is added.
 
 Field rules:
 
@@ -123,7 +165,8 @@ The gate is what actually protects you: no green, no commit. A RED turn leaves w
 ```
 # PLAN.md — <project>: <what this plan delivers>
 
-Tracker grammar: [ ] open → [IN PROGRESS] → [x] done. Tags: (trivial|normal|hard) and (serial).
+Tracker grammar: [ ] open → [IN PROGRESS] → [x] done. Tags: (trivial|normal|hard), a required
+kind (feat|fix|perf|refactor|docs|test|chore), and optional (serial).
 
 ## Design constraints (read before ANY task — non-negotiable)
 1. <invariant every turn must hold — e.g. zero regressions, additive only>
@@ -132,12 +175,12 @@ Tracker grammar: [ ] open → [IN PROGRESS] → [x] done. Tags: (trivial|normal|
 
 ## Milestone 0 — walking skeleton + green gate (serial)
 > No feature task runs before this is green. The safety model (no green, no commit) is bootstrapped here.
-- [ ] T0.1 (trivial, serial) scaffold + wire VERIFY_CMD
-- [ ] T0.2 (normal, serial) first end-to-end test is green
-- [ ] T0.3 (normal) thinnest end-to-end slice of real value
+- [ ] T0.1 (trivial, chore, serial) scaffold + wire VERIFY_CMD
+- [ ] T0.2 (normal, test, serial) first end-to-end test is green
+- [ ] T0.3 (normal, feat) thinnest end-to-end slice of real value
 
 ## Milestone 1 — <feature> (serial if tasks share files)
-- [ ] T1.1 (normal) ... <full task schema>
+- [ ] T1.1 (normal, feat) ... <full task schema>
 
 ## Definition of done
 - All tasks [x]. VERIFY_CMD green on a clean checkout. <project-specific criteria>
@@ -158,13 +201,15 @@ Interview first — the best plans come from a rich brief, not a vague one.
 2. **Design constraints.** Write the invariants every turn must hold. These become the "read before ANY task" block.
 3. **Milestone 0.** Define the walking skeleton whose VERIFY_CMD is green. Nothing else runs before it.
 4. **Decompose.** Milestones, then tasks. Each task = one discrete step a single turn can finish. If it cannot fit one turn — or 40 lines — split it.
-5. **Fill the schema.** For each task: touches / do / snippet / accept / verify / constraints. Name real paths and functions; open the files if you must. Assign the tier tag as you go. Mark `(serial)` on every task sharing a `touches` path with a sibling.
+5. **Fill the schema.** For each task: touches / do / snippet / accept / verify / constraints. Name real paths and functions; open the files if you must. Assign the tier tag AND the required kind tag as you go. Mark `(serial)` on every task sharing a `touches` path with a sibling.
 6. **Hand off.** Write `PLAN.md`, then the human reviews it (mandatory) before `robur run`. Drafting inside the loop via `robur plan` stops loudly for this review and never auto-runs.
 
 ## Checklist before you hand off
 
 - [ ] Milestone 0 exists and its verify gate can go green first.
 - [ ] Every task ID is a recognized format (`T1.2` / `A1` / `N-slug`) with NO bold or italics around it.
+- [ ] Every task has a kind tag, and it is never the FIRST tag.
+- [ ] Every title is a declarative outcome, not a noun phrase or a file name.
 - [ ] Every task has a tier tag; non-obvious tags carry a one-line justification.
 - [ ] Every task fits in 40 lines including its fields.
 - [ ] Every task is self-contained — a memoryless turn could do it from the task text alone.

@@ -22,7 +22,7 @@ RATCHET_LOOP=1
 STEP_COMPLETE
 [<timestamp>] ---
 [<timestamp>]   commit gate: running 'true' …
-[<timestamp>]   committed: T1.1 (trivial) first task
+[<timestamp>]   committed: T1.1 first task
 [<timestamp>] step complete (STEP_COMPLETE). Sleeping 2s.
 [<timestamp>] tasks: 1 done / 2 total | next: T1.2 (trivial) second task
 [<timestamp>] --- turn 2 | model=stub/stub-1 ---
@@ -33,8 +33,9 @@ RATCHET_LOOP=1
 STEP_COMPLETE
 [<timestamp>] ---
 [<timestamp>]   commit gate: running 'true' …
-[<timestamp>]   committed: T1.2 (trivial) second task
+[<timestamp>]   committed: T1.2 second task
 [<timestamp>] step complete (STEP_COMPLETE). Sleeping 2s.
+[<timestamp>] changelog | archived M1
 [<timestamp>] all PLAN.md tasks complete (2 done) — no open work remains.
 [<timestamp>]   nothing staged to commit (idempotent turn).
 [<timestamp>] agent signaled ALL_DONE — all work complete.

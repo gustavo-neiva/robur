@@ -78,6 +78,49 @@ robur stop <repo> --clear    # cancel a pending stop
 
 One Ctrl-C drains; a second escalates to an abort.
 
+## The changelog writes itself
+
+When a milestone's tasks are all `[x]`, robur moves that section out of
+`PLAN.md` and into `CHANGELOG.md`, then commits both. The tracker stays a work
+queue instead of an ever-growing archive.
+
+This is plain Ruby, not a model call. Every entry is derived from data the plan
+already holds: the task title, the first sentence of its `do:` prose, and the
+commit whose subject carries its id. Commits matching no task — the
+hand-written fixes the tracker never sees — are listed alongside.
+
+```markdown
+## Milestone 4 — Observability
+_2026-01-15 · 6 commits · +412/-88_
+
+- [x] T4.1 emit structured lifecycle events for stop and recovery — `99de982`
+      loop.log is a RENDERING of events.jsonl, never free-form prose.
+
+Also in this range:
+- `ec3906e` fix(notify): the human-attention channel had never once delivered
+```
+
+That join works because **the task line is the commit message**. robur builds
+every commit subject from the tracker, so a task tagged with a
+conventional-commit kind commits under it:
+
+```
+- [ ] T4.1 (normal, feat) emit lifecycle events for stop and recovery
+        ↓
+feat(robur): T4.1 emit lifecycle events for stop and recovery
+```
+
+The kind tag is required, and must not be the first tag — tier routing reads
+only the first. A task without one still runs, under the legacy `auto(robur):`
+prefix.
+
+The loop archives at most one milestone per turn. To sweep a repo that already
+has a long finished backlog:
+
+```sh
+robur changelog <repo>   # archive EVERY finished milestone, once
+```
+
 ## Configuration
 
 `.robur.conf` in the repo is the machine contract. It is **parsed, never

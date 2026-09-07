@@ -8,6 +8,13 @@ module Robur
     STATUS_RE = /\A\s*-\s+\[( |x|X|HUMAN)\]\s*/ # leading checkbox
     MARKER_RE = /\A\s*-\s+\[( |x|X|)\]\s*|\A\s*-\s+\[IN PROGRESS\]\s*|\A\s*-\s+\[HUMAN\]\s*/
 
+    # Conventional-commit types, carried as a NON-FIRST tag so tier routing is
+    # untouched: Tier.from_tag reads tags.first only and defaults anything it
+    # does not know to "build", so `(normal, feat)` routes exactly as
+    # `(normal)` did. The kind becomes the commit subject's prefix, which is
+    # what makes the generated CHANGELOG groupable.
+    KINDS = %w[feat fix perf refactor docs test chore].freeze
+
     attr_reader :status, :id, :tags, :text, :lineno
 
     def self.parse(line, lineno = nil)
@@ -22,6 +29,10 @@ module Robur
     def task?
       !@status.nil?
     end
+
+    # Conventional-commit type tag, or nil for a task written before the kind
+    # tag was required — those still commit under the legacy `auto` prefix.
+    def kind = (@tags & KINDS).first
 
     private
 

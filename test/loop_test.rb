@@ -127,11 +127,15 @@ class LoopTest < Minitest::Test
     code = Robur::Loop.run(repo, sleep_it: ->(_s) {})
     assert_equal 0, code
     subjects = commits(repo) # newest first: seed is last
-    assert_equal 4, subjects.size # seed + one commit per task
-    assert_includes subjects[2], "T1.1"
-    assert_includes subjects[1], "T1.2"
-    assert_includes subjects[0], "T1.3"
-    assert_equal 3, File.read(File.join(repo, "PLAN.md")).scan("[x]").size
+    assert_equal 5, subjects.size # seed + one per task + the changelog archive
+    assert_includes subjects[3], "T1.1"
+    assert_includes subjects[2], "T1.2"
+    assert_includes subjects[1], "T1.3"
+    assert_includes subjects[0], "changelog for M1"
+    # M1 finished, so its tasks moved out of the tracker and into the
+    # changelog, which is where the [x] lines now live.
+    refute_includes File.read(File.join(repo, "PLAN.md")), "[x]"
+    assert_equal 3, File.read(File.join(repo, "CHANGELOG.md")).scan("[x]").size
     assert_equal "done\n", File.read(Robur::Paths.state_file(repo, "stop_reason"))
   end
 
