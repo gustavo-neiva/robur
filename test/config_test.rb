@@ -107,6 +107,75 @@ class ConfigTest < Minitest::Test
   # halves of the product then disagree about what the default is. Matched on
   # the key, not the bare literal — "400" also appears in prose and in an HTTP
   # status pattern, neither of which is a declaration of this default.
+  # The global conf is sourced in a SUBPROCESS, so nothing in it -- not even an
+  # export -- reaches this process's ENV on its own, and no ancestor sources it
+  # either since money-loop.sh was ported into harbor's in-process runner. The
+  # bridge is therefore the only path by which NOTIFY_CMD can ever arrive.
+  def test_global_only_key_is_bridged_into_env
+    Dir.mktmpdir do |d|
+      with_home(File.join(d, "home")) do |global_conf|
+        File.write(global_conf, "NOTIFY_CMD='/bin/echo hi'\n")
+        with_clean_env("NOTIFY_CMD") do
+          Robur::Config.load(d)
+          assert_equal "/bin/echo hi", ENV["NOTIFY_CMD"],
+                       "a plain assignment in the trusted global conf must reach ENV"
+        end
+      end
+    end
+  end
+
+  def test_exported_and_plain_forms_are_equivalent
+    Dir.mktmpdir do |d|
+      with_home(File.join(d, "home")) do |global_conf|
+        File.write(global_conf, "export NOTIFY_CMD='/bin/echo exported'\n")
+        with_clean_env("NOTIFY_CMD") do
+          Robur::Config.load(d)
+          assert_equal "/bin/echo exported", ENV["NOTIFY_CMD"]
+        end
+      end
+    end
+  end
+
+  def test_inherited_env_wins_over_the_conf
+    Dir.mktmpdir do |d|
+      with_home(File.join(d, "home")) do |global_conf|
+        File.write(global_conf, "NOTIFY_CMD='/from/conf'\n")
+        with_clean_env("NOTIFY_CMD") do
+          ENV["NOTIFY_CMD"] = "/from/shell"
+          Robur::Config.load(d)
+          assert_equal "/from/shell", ENV["NOTIFY_CMD"],
+                       "an operator's explicit export is the more immediate intent"
+        end
+      end
+    end
+  end
+
+  # The whole point of the allowlist: this runs a shell command, and an agent
+  # can write the repo conf. Bridging must not open a second door.
+  def test_repo_conf_can_never_set_a_global_only_key
+    Dir.mktmpdir do |d|
+      with_home(File.join(d, "home")) do |global_conf|
+        File.write(global_conf, "STEP_TOKEN=X\n")
+        File.write(File.join(d, Robur::Paths::REPO_CONF), "NOTIFY_CMD='/pwn'\n")
+        with_clean_env("NOTIFY_CMD") do
+          r = Robur::Config.load(d)
+          assert_nil ENV["NOTIFY_CMD"], "repo conf must never reach ENV"
+          refute_equal "/pwn", r.values["NOTIFY_CMD"]
+          assert r.errors.any? { |e| e.include?("NOTIFY_CMD") },
+                 "a rejected repo-conf key must be a loud doctor error, got #{r.errors.inspect}"
+        end
+      end
+    end
+  end
+
+  def with_clean_env(*keys)
+    saved = keys.to_h { |k| [k, ENV[k]] }
+    keys.each { |k| ENV.delete(k) }
+    yield
+  ensure
+    saved.each { |k, v| v.nil? ? ENV.delete(k) : ENV[k] = v }
+  end
+
   def test_defaults_declared_once
     declarations = Dir[File.expand_path("../lib/**/*.rb", __dir__)].flat_map do |f|
       File.readlines(f).grep(/PR_SOFT_MAX_LINES["']?\s*(=>|=|:)\s*["']?\d/)

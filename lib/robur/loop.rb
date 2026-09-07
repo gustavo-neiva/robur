@@ -346,7 +346,17 @@ module Robur
               emit "salvaged green work before human-gate stop"
             end
             emit "agent signaled #{conf["HUMAN_TOKEN"]} — needs a human decision; stopping this repo."
-            emit "HUMAN NEEDED: #{plan.human_block_brief(task ? task.id : "?", next_task_str)}"
+            # This branch used to `emit "HUMAN NEEDED: …"` and break — the line
+            # reached loop.log and nothing else, which is why harbor sat blocked
+            # on T6.4 for 21h with no DM and `grep -c '"kind":"human"'` at 0.
+            #
+            # obs.notify_human, not Loop.notify_human: RENDER[:human] writes the
+            # byte-identical log line, AND records the :human event downstream
+            # ingest counts, AND spawns NOTIFY_CMD. Loop.notify_human only does
+            # the last two — it has no Observability to emit through. Every other
+            # call site is outside run()'s scope where `obs` does not exist; they
+            # still log and push, they just record no event.
+            obs.notify_human plan.human_block_brief(task ? task.id : "?", next_task_str)
             stop_reason = "human_blocked"
             break
           when :step

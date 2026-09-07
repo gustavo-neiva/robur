@@ -37,6 +37,25 @@ module Robur
       MERGE_WAIT_TIMEOUT PR_SOFT_MAX_LINES PARALLEL FANOUT_MAX MAX_TASK_ATTEMPTS
     ].freeze
 
+    # Keys that reach robur ONLY through the process environment, and that a
+    # repo conf may never set — they are deliberately absent from ALLOWLIST
+    # above, so parse_repo rejects them with a doctor error.
+    #
+    # They need bridging because nothing in the chain puts the global conf in
+    # this process's environment. `load_global` sources it in a SUBPROCESS and
+    # diffs snapshots, so not even an `export` in that file reaches the parent
+    # Ruby; and the bash `money-loop.sh` that used to source the conf before
+    # exec'ing ratchet was ported into harbor's in-process runner, which spawns
+    # `robur` with an inherited env nobody seeded. Measured 2026-09-06:
+    # NOTIFY_CMD present in load_global's `values`, nil in `ENV` — so all
+    # eleven `notify_human` call sites returned early and the loop had never
+    # once been able to ask for help.
+    #
+    # Bridging only from load_global's own result keeps the security property
+    # in `Observability#notify_human` intact: the value can come from the
+    # trusted, shell-sourced global conf and from nowhere else.
+    GLOBAL_ONLY_ENV = %w[NOTIFY_CMD].freeze
+
     NUMERIC_KEYS = %w[
       TURN_TIMEOUT STALL_TIMEOUT SHORT_SLEEP MAX_TRANSIENT COOLDOWN BOTH_WAIT TAIL_LINES
       HEARTBEAT COMMIT_EACH_TURN COMMIT_VERIFY_GATE PUSH_ON_DONE OPEN_PR APPROVE_UI
@@ -197,6 +216,20 @@ module Robur
 
     Result = Struct.new(:values, :env, :errors)
 
+    # Put GLOBAL_ONLY_ENV keys from the trusted global conf into this process's
+    # ENV, so `export FOO=` and plain `FOO=` behave the same — both are the
+    # same human-owned, shell-sourced file. An inherited value wins: if the
+    # operator already exported it in the launching shell, that is the more
+    # immediate intent and is left alone.
+    def bridge_global_env!(global)
+      GLOBAL_ONLY_ENV.each do |k|
+        next unless ENV[k].to_s.empty?
+
+        v = global[:env][k] || global[:values][k]
+        ENV[k] = v unless v.to_s.empty?
+      end
+    end
+
     # Full resolution: CLI flags > repo conf (parsed) > global conf (sourced,
     # trusted) > defaults. `cli` is a hash of already-validated flag values.
     def load(repo_dir, cli = {})
@@ -206,6 +239,7 @@ module Robur
         values.update(g[:values])
         env.update(g[:env])
         errors.concat(g[:errors])
+        bridge_global_env!(g)
       end
       repo = Paths.repo_conf(repo_dir)
       if File.file?(repo)

@@ -302,6 +302,50 @@ class LoopTest < Minitest::Test
     assert notified.any? { |m| m.include?("gate RED after ALL_DONE") }
   end
 
+  # BUG A regression. This branch used to `emit "HUMAN NEEDED: ..."` and break,
+  # never calling notify_human — so a human-blocked repo wrote the line into
+  # loop.log, recorded ZERO `"kind":"human"` events, and sent no DM. harbor sat
+  # blocked on T6.4 for 21h that way. The stop itself already worked; only the
+  # asking-for-help did not.
+  def test_human_stop_calls_notify_human
+    repo = human_blocked_repo
+    notified = []
+    stub_notify(notified) { Robur::Loop.run(repo, sleep_it: ->(_s) {}) }
+
+    assert_equal "human_blocked\n", File.read(Robur::Paths.state_file(repo, "stop_reason"))
+    refute_empty notified, "a human-gate stop must push, not just log"
+    assert notified.first.to_s.include?("T1.1"), "the push must name the blocking task, got #{notified.inspect}"
+  end
+
+  # Same stop with the real notify_human (NOTIFY_CMD empty, so nothing spawns):
+  # it must still produce the log line the old `emit` produced — the change is
+  # additive — and the :human event that downstream ingest counts.
+  def test_human_stop_logs_and_emits_the_human_event
+    repo = human_blocked_repo
+    saved = ENV.delete("NOTIFY_CMD")
+    begin
+      Robur::Loop.run(repo, sleep_it: ->(_s) {})
+    ensure
+      ENV["NOTIFY_CMD"] = saved if saved
+    end
+
+    log_dir = File.join(@home, "logs", Robur::CLI.project_slug(repo))
+    assert_includes File.read(File.join(log_dir, "loop.log")), "HUMAN NEEDED:"
+    events = File.readlines(File.join(log_dir, "events.jsonl")).map { |l| JSON.parse(l) }
+    assert events.any? { |e| e["kind"] == "human" },
+           "the :human event is what downstream ingest counts; it was always 0"
+  end
+
+  def human_blocked_repo
+    repo = make_repo
+    agent = File.join(repo, "human-agent")
+    File.write(agent, "#!/bin/bash\necho \"HUMAN_BLOCKED\"\n")
+    FileUtils.chmod(0o755, agent)
+    conf = File.join(repo, Robur::Paths::REPO_CONF)
+    File.write(conf, File.read(conf).sub(AGENT, agent))
+    repo
+  end
+
   def test_all_benched_backoff_ladder
     conf = { "COOLDOWN" => "100", "MAX_TRANSIENT" => "3", "SHORT_SLEEP" => "0" }
     health = Robur::ModelHealth.new(conf)
@@ -638,9 +682,19 @@ class LoopTest < Minitest::Test
     owner.singleton_class.send(:remove_method, backup)
   end
 
+  # Captures a human push from EITHER implementation. Loop.notify_human logs
+  # and spawns; Observability#notify_human also records the :human event, and
+  # the human-gate stop routes through that one so the event is not lost. A
+  # helper that knew only about the first would go quietly blind the moment a
+  # call site moved between them — which is the class of bug this stop had.
   def stub_notify(collector)
     Robur::Loop.singleton_class.send(:alias_method, :notify_human_orig, :notify_human)
     Robur::Loop.singleton_class.send(:define_method, :notify_human) do |msg, *_|
+      collector << msg
+      nil
+    end
+    Robur::Observability.send(:alias_method, :notify_human_orig, :notify_human)
+    Robur::Observability.send(:define_method, :notify_human) do |msg, *_|
       collector << msg
       nil
     end
@@ -648,5 +702,7 @@ class LoopTest < Minitest::Test
   ensure
     Robur::Loop.singleton_class.send(:alias_method, :notify_human, :notify_human_orig)
     Robur::Loop.singleton_class.send(:remove_method, :notify_human_orig)
+    Robur::Observability.send(:alias_method, :notify_human, :notify_human_orig)
+    Robur::Observability.send(:remove_method, :notify_human_orig)
   end
 end
