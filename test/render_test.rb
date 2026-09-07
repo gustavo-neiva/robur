@@ -8,34 +8,42 @@ require "robur/render"
 require "robur/cli"
 
 class RenderTest < Minitest::Test
-  RENDER_SH = File.expand_path("../../ratchet/lib/render.sh", __dir__)
-  BASH_RATCHET = File.expand_path("../../ratchet/bin/ratchet", __dir__)
   LOGS_DIR = File.expand_path("fixtures/logs", __dir__)
 
-  def bash_render(*funcs_and_call)
-    script = funcs_and_call.join("\n")
-    src = File.read(RENDER_SH)
-    body = src[/^render_bar\(\).*?\n}\n/m] + src[/^fmt_dur\(\).*?\n}\n/m] + src[/^render_eta\(\).*?\n}\n/m]
-    Open3.capture3("bash", "-c", "#{body}\n#{script}").first
-  end
-
-  def test_bar_matches_bash_at_various_percentages
-    [0, 1, 33, 50, 99, 100, -5, 150].each do |pct|
-      expected = bash_render("render_bar #{pct} 12")
+  # Pinned expected values (integer math, no floating point) — width 12 covers
+  # rounding down (33/50/99%) and both clamp directions (-5/150).
+  def test_bar_at_various_percentages
+    {
+      0 => "\u2591" * 12,
+      1 => "\u2591" * 12, # 1*12/100 rounds down to 0 fill
+      33 => ("\u2593" * 3) + ("\u2591" * 9),
+      50 => ("\u2593" * 6) + ("\u2591" * 6),
+      99 => ("\u2593" * 11) + "\u2591",
+      100 => "\u2593" * 12,
+      -5 => "\u2591" * 12,  # clamps to 0
+      150 => "\u2593" * 12, # clamps to 100
+    }.each do |pct, expected|
       assert_equal expected, Robur::Render.bar(pct, 12), "pct=#{pct}"
     end
   end
 
-  def test_fmt_dur_matches_bash
-    [0, 5, 59, 60, 61, 3599, 3600, 4820].each do |secs|
-      expected = bash_render("fmt_dur #{secs}")
+  def test_fmt_dur_at_various_durations
+    {
+      0 => "0s", 5 => "5s", 59 => "59s",
+      60 => "1m", 61 => "1m", 3599 => "59m",
+      3600 => "1h0m", 4820 => "1h20m",
+    }.each do |secs, expected|
       assert_equal expected, Robur::Render.fmt_dur(secs), "secs=#{secs}"
     end
   end
 
-  def test_eta_matches_bash_including_unknown
-    [[0, 0], [5, 0], [19, 171], [1, 30]].each do |remaining, avg|
-      expected = bash_render("render_eta #{remaining} #{avg}")
+  def test_eta_at_various_remaining_and_avg
+    {
+      [0, 0] => "ETA unknown",
+      [5, 0] => "ETA unknown",
+      [19, 171] => "~19 turns / ~54m left",
+      [1, 30] => "~1 turns / ~30s left",
+    }.each do |(remaining, avg), expected|
       assert_equal expected, Robur::Render.eta(remaining, avg), "remaining=#{remaining} avg=#{avg}"
     end
   end
@@ -49,9 +57,23 @@ class RenderTest < Minitest::Test
     assert_equal "c\nd", Robur::Render.summary(text, 2)
   end
 
-  # Full `robur status` vs `ratchet status`, byte-identical, over the frozen
-  # logs/*.log fixtures (T6.4 done criterion).
-  def test_status_byte_identical_to_bash_on_log_fixtures
+  # Pinned end-to-end `robur status` output over the frozen logs/*.log
+  # fixtures (old/new loop.log formats). Only the project slug and the log
+  # path vary run to run (they embed a tmpdir), so both are normalized before
+  # comparing against the pinned text.
+  EXPECTED_STATUS = {
+    "new-format.log" => "<SLUG> \u25CB\nStep ?/?  [\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591 0%]\n\n" \
+                          "Current: \nTier/Model: plan / anthropic/claude-fable-5 (thinking=low)\nNode: build\n" \
+                          "Turn 5: running\nETA: ETA unknown\n\nLoop: not running\nLog: <LOG_PATH>\n",
+    "old-format.log" => "<SLUG> \u25CB\nStep ?/?  [\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591 0%]\n" \
+                          "Tier/Model: \u2014 / anthropic/claude (thinking=\u2014)\nNode: build\n" \
+                          "Turn 4: running\nETA: ETA unknown\n\nLoop: not running\nLog: <LOG_PATH>\n",
+    "with-took.log" => "<SLUG> \u25CB\nStep ?/?  [\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591 0%]\n\n" \
+                         "Current: \nTier/Model: build / anthropic/claude-sonnet-4 (thinking=high)\nNode: build\n" \
+                         "Turn 3: took 84s\nETA: ~0 turns / ~0s left\n\nLoop: not running\nLog: <LOG_PATH>\n",
+  }.freeze
+
+  def test_status_report_on_log_fixtures
     Dir.glob(File.join(LOGS_DIR, "*.log")).each do |fixture|
       Dir.mktmpdir do |repo|
         Dir.mktmpdir do |home|
@@ -60,13 +82,13 @@ class RenderTest < Minitest::Test
           log_dir = File.join(home, "logs", slug)
           FileUtils.mkdir_p(log_dir)
           FileUtils.cp(fixture, File.join(log_dir, "loop.log"))
-          env = { "RATCHET_HOME" => home, "NO_COLOR" => "1", "HOME" => home }
+          env = { "ROBUR_HOME" => home, "NO_COLOR" => "1", "HOME" => home }
 
-          bash_out, = Open3.capture3(env, BASH_RATCHET, "status", repo)
-          robur_out, = Open3.capture3(env, RbConfig.ruby, "-I#{File.expand_path('../lib', __dir__)}",
-                                       File.expand_path("../exe/robur", __dir__), "status", repo)
+          out, = Open3.capture3(env, RbConfig.ruby, "-I#{File.expand_path('../lib', __dir__)}",
+                                 File.expand_path("../exe/robur", __dir__), "status", repo)
+          norm = out.sub(/\A\S+/, "<SLUG>").gsub(/Log: .*$/, "Log: <LOG_PATH>")
 
-          assert_equal bash_out, robur_out, "fixture=#{File.basename(fixture)}"
+          assert_equal EXPECTED_STATUS.fetch(File.basename(fixture)), norm, "fixture=#{File.basename(fixture)}"
         end
       end
     end

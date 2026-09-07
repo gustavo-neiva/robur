@@ -16,15 +16,15 @@ module Robur
   #   agent can write repo files; if this file were sourced, anything landing
   #   in the repo could execute arbitrary code outside any agent permission
   #   model. Unknown keys are errors (doctor), never assigned.
-  # - The global ~/.robur/conf is trusted exactly as much as it is in the
-  #   bash ratchet today: it is human-owned, not agent-writable, and it is
+  # - The global ~/.robur/conf is human-owned, not agent-writable, and it is
   #   bash-SOURCED. It contains shell expansion (`export PATH="$ASDF_DATA_DIR/shims:$PATH"`),
   #   so robur consumes it by running bash once for a baseline (env + declared
   #   variables) and once after sourcing the file, then taking the delta:
   #   exported variables become the environment handed to spawned turns,
   #   plain assignments become config values.
   module Config
-    # The complete allowlist — frozen contract (ratchet/lib/contract.sh).
+    # The complete allowlist — a frozen contract: an unknown key is a
+    # doctor error, never a silent no-op.
     ALLOWLIST = %w[
       MODELS TURN_TIMEOUT STALL_TIMEOUT SHORT_SLEEP MAX_TRANSIENT COOLDOWN BOTH_WAIT
       STEP_TOKEN DONE_TOKEN HUMAN_PARK_TOKEN AGENT_CMD COMMIT_EACH_TURN COMMIT_VERIFY_GATE VERIFY_CMD
@@ -44,12 +44,10 @@ module Robur
     # They need bridging because nothing in the chain puts the global conf in
     # this process's environment. `load_global` sources it in a SUBPROCESS and
     # diffs snapshots, so not even an `export` in that file reaches the parent
-    # Ruby; and the bash `money-loop.sh` that used to source the conf before
-    # exec'ing ratchet was ported into harbor's in-process runner, which spawns
-    # `robur` with an inherited env nobody seeded. Measured 2026-09-06:
-    # NOTIFY_CMD present in load_global's `values`, nil in `ENV` — so all
-    # eleven `notify_human` call sites returned early and the loop had never
-    # once been able to ask for help.
+    # Ruby; a caller that spawns `robur` in-process inherits an env nobody
+    # seeded. Measured 2026-09-06: NOTIFY_CMD present in load_global's
+    # `values`, nil in `ENV` — so all eleven `notify_human` call sites
+    # returned early and the loop had never once been able to ask for help.
     #
     # Bridging only from load_global's own result keeps the security property
     # in `Observability#notify_human` intact: the value can come from the
@@ -64,8 +62,8 @@ module Robur
       FANOUT_MAX MAX_TASK_ATTEMPTS
     ].freeze
 
-    # Neutral built-in defaults, ported from ratchet/lib/common.sh. Each default
-    # is declared exactly ONCE here; no call site carries an inline fallback.
+    # Neutral built-in defaults. Each default is declared exactly ONCE here;
+    # no call site carries an inline fallback.
     # VERIFY_CMD defaults EMPTY so a missing gate is a loud warning, never a
     # silent skip. Runtime slots the bash arg parser fills (REPO_DIR, LOOP_LOG,
     # COMMAND…) are not config and live elsewhere.
@@ -135,9 +133,9 @@ module Robur
       key =~ /\ACOOLDOWN_[A-Z0-9]/
     end
 
-# conf_hash port (ratchet/lib/contract.sh): SHA-256 hex of the file, or
-    # the literal 'none' when the file is missing. Doctor pins this against
-    # .ratchet/conf.hash so repo-contract tampering is detected.
+# SHA-256 hex of the file, or the literal 'none' when the file is missing.
+    # Doctor pins this against .robur/conf.hash so repo-contract tampering is
+    # detected.
     def conf_hash(path)
       return "none" unless File.file?(path)
       Digest::SHA256.file(path).hexdigest
@@ -147,7 +145,7 @@ module Robur
       File.read(Paths.state_file(repo_dir, "conf.hash")).strip
     end
 
-    # One-line format, identical to `conf_hash "$repo/.ratchet.conf" > .ratchet/conf.hash`.
+    # One-line format: a bare sha256 hex digest, nothing else.
     def write_conf_hash(repo_dir)
       Paths.ensure_state_dir!(repo_dir)
       File.write(Paths.state_file(repo_dir, "conf.hash"), "#{conf_hash(Paths.repo_conf(repo_dir))}\n")
@@ -206,7 +204,7 @@ module Robur
     def load_global(path)
       # one bash process for both snapshots, so SHLVL-style per-process noise never shows up as a delta
       script = %(#{SNAPSHOT}; printf "\\0--S--\\0"; . "$1"; printf "\\0--S--\\0"; #{SNAPSHOT})
-      out, err, _st = Open3.capture3("bash", "-c", script, "ratchet", path)
+      out, err, _st = Open3.capture3("bash", "-c", script, "robur", path)
       return { values: {}, env: {}, errors: [err.strip] } unless err.strip.empty?
       before_env, before_vars, after_env, after_vars =
         out.split("\0--S--\0").flat_map { |seg| seg.split("\0--V--\0", 2).map { |s| parse_pairs(s) } }

@@ -11,17 +11,12 @@ module Robur
   #
   # ## The rename, and why the old names still resolve
   #
-  # robur is no longer a port of the bash ratchet — it is the product, and it
-  # owns its own names (`.robur/`, `.robur.conf`, `~/.robur/`). But three
-  # things outside this repo still read the OLD names today:
-  #
-  #   - `atlas/bin/money-loop.sh`  -> .ratchet.conf, .ratchet/stop_reason,
-  #                                   .ratchet/loop-backoff, .ratchet/plan-approved
-  #   - `atlas/bin/status.sh`      -> .ratchet/last_task.state, .ratchet/last-log,
-  #                                   ~/.ratchet/logs, ~/.ratchet/metrics.tsv
-  #   - `harbor`'s /blocked        -> .ratchet/stop_reason, .ratchet/last_task.state
-  #
-  # Breaking them to rename ourselves would be a downgrade, so:
+  # robur owns its own names (`.robur/`, `.robur.conf`, `~/.robur/`), renamed
+  # from an earlier `.ratchet` layout. robur does not know or care who reads
+  # its on-disk state — that is the point of exposing it as a stable API
+  # rather than a private implementation detail — but SOME external reader
+  # may still expect the pre-rename paths, and breaking it would be a
+  # downgrade. So:
   #
   #   READ  — new name first, old name as fallback. A repo that has only the
   #           old layout keeps working untouched, forever if it likes.
@@ -78,7 +73,8 @@ module Robur
     def stop_file(repo_dir) = state_file(repo_dir, "stop")
 
     # Create the state dir and leave the legacy name pointing at it. The
-    # symlink is what keeps atlas and harbor working across the rename.
+    # symlink is what keeps any external reader of the old name working
+    # across the rename.
     def ensure_state_dir!(repo_dir)
       dir = state_dir(repo_dir)
       FileUtils.mkdir_p(dir)
@@ -88,7 +84,9 @@ module Robur
 
     # `.ratchet` -> `.robur`, relative so the pair survives a repo move.
     # Never clobbers a real directory: a repo still on the old layout keeps
-    # its data, and we simply write there instead (see `state_dir`).
+    # its data, and we simply write there instead (see `state_dir`). The
+    # symlink is what keeps any external reader of the old name working
+    # across the rename, with no coordination required on either side.
     def link_legacy!(repo_dir)
       legacy = File.join(repo_dir, LEGACY_STATE_DIR)
       return :occupied if File.exist?(legacy) && !File.symlink?(legacy)
@@ -104,11 +102,11 @@ module Robur
     # Leave `.ratchet.conf` as a symlink to `.robur.conf`.
     #
     # A directory symlink covers the state dir, but a plain FILE has no such
-    # shim, and `atlas/bin/money-loop.sh` gates `is_runnable()` on
-    # `.ratchet.conf` existing. Without this, a repo initialized fresh onto
-    # `.robur.conf` is silently never picked up by the nightly loop — the
-    # exact "the estate quietly broke" failure the compat layer exists to
-    # prevent. Called wherever robur writes a repo conf.
+    # shim, and an external runnability check may gate on `.ratchet.conf`
+    # existing. Without this, a repo initialized fresh onto `.robur.conf` is
+    # silently never picked up by such a check — the exact class of failure
+    # the compat layer exists to prevent. Called wherever robur writes a repo
+    # conf.
     def ensure_repo_conf_link!(repo_dir)
       legacy = File.join(repo_dir, LEGACY_REPO_CONF)
       target = File.join(repo_dir, REPO_CONF)

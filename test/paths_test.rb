@@ -6,9 +6,9 @@ require "tmpdir"
 
 module Robur
   # The compatibility contract: new names are canonical, legacy names still
-  # resolve, and a write leaves the legacy path pointing at the new one.
-  # atlas/bin/*.sh and harbor's /blocked read the legacy paths and must keep
-  # working across the rename without anyone editing them.
+  # resolve, and a write leaves the legacy path pointing at the new one, so
+  # any external reader of the pre-rename paths keeps working across the
+  # rename without anyone editing it.
   class PathsTest < Minitest::Test
     def with_env(vars)
       old = vars.to_h { |k, _| [k, ENV[k]] }
@@ -86,9 +86,9 @@ module Robur
     end
 
     # A directory symlink covers the state dir; a plain file does not, and
-    # atlas/bin/money-loop.sh gates is_runnable() on `.ratchet.conf`
-    # existing. A fresh repo must still be visible to the nightly loop.
-    def test_repo_conf_link_keeps_a_fresh_repo_visible_to_the_estate
+    # an external runnability check may gate on `.ratchet.conf` existing. A
+    # fresh repo must still be visible to such a check.
+    def test_repo_conf_link_keeps_a_fresh_repo_visible_to_legacy_readers
       Dir.mktmpdir do |d|
         assert_equal :no_target, Paths.ensure_repo_conf_link!(d)
 

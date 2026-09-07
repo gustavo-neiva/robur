@@ -65,8 +65,8 @@ module Robur
         assert_equal "done\n", File.read(File.join(repo, ".robur", "stop_reason"))
         assert_equal "MODELS=y\n", File.read(File.join(repo, ".robur.conf"))
 
-        # and the legacy paths still resolve — this is what keeps atlas and
-        # harbor working without anyone editing them
+        # and the legacy paths still resolve — this is what keeps any
+        # external reader of the old names working without anyone editing them
         assert File.symlink?(home)
         assert File.symlink?(File.join(repo, ".ratchet"))
         assert File.symlink?(File.join(repo, ".ratchet.conf"))

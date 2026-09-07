@@ -135,34 +135,26 @@ module Robur
       end
     end
 
-    # Parity: bash observability.sh's _turn_usage on the same concatenated
-    # stream of real pi events (the turn-usage fixtures).
-    BASH_OBSERVABILITY = File.expand_path("../../ratchet/lib/observability.sh", __dir__)
     FIXTURES = File.expand_path("fixtures/turn-usage", __dir__)
 
-    def bash_turn_usage(path)
-      `bash -c 'source #{BASH_OBSERVABILITY.shellescape}; _turn_usage #{path.shellescape}' 2>/dev/null`.chomp
-    end
-
-    # Parity with one deliberate divergence: out/cost still match bash
-    # _turn_usage exactly; the `in` column now includes cacheRead+cacheWrite
-    # (bash's number was 50-100x low — the fields didn't exist when it was
-    # written), so ruby_in = bash_in + cache totals.
-    def test_turn_usage_out_and_cost_match_bash_and_in_includes_cache
+    # `in` counts fresh input plus cacheRead+cacheWrite (cache-inclusive, so
+    # prompt-caching spend is never under-reported); `out`/`cost` are the
+    # plain summed counters. Pinned on a concatenated stream of 3 distinct
+    # real pi turns (the turn-usage fixtures).
+    def test_turn_usage_sums_input_output_and_cost_across_concatenated_turns
       Dir.mktmpdir do |dir|
         path = File.join(dir, "turn.jsonl")
         lines = %w[m1_think.json m1_end.json m2_tc.json m2_end.json m3_end.json start_zero.json]
                 .map { |f| File.read(File.join(FIXTURES, f)).chomp }
         File.write(path, lines.join("\n") + "\n")
 
-        bash_in, bash_out, bash_cost = bash_turn_usage(path).split("\t")
         detail = Observability.turn_usage_detail(path)
         ruby_in, ruby_out, ruby_cost = Observability.turn_usage(path).split("\t")
 
-        assert_equal bash_out, ruby_out
-        assert_equal bash_cost, ruby_cost
+        assert_equal "387", ruby_out
+        assert_equal "0.001034", ruby_cost
         assert_equal 3, detail[:messages]
-        assert_equal bash_in.to_i + detail[:cache_read] + detail[:cache_write], ruby_in.to_i
+        assert_equal 1011 + detail[:cache_read] + detail[:cache_write], ruby_in.to_i
         # Regression lock: with 3 distinct nonzero messages, sum > any single one.
         assert_operator ruby_in.to_i, :>, 637
       end
@@ -490,9 +482,9 @@ module Robur
       end
     end
 
-    # Backward compatibility: an existing harness (atlas, a shell wrapper, a
-    # CI job) still exports the RATCHET_* names. Both must be honoured, with
-    # the new name winning when they disagree.
+    # Backward compatibility: an existing external harness (a shell wrapper,
+    # a CI job) still exports the RATCHET_* names. Both must be honoured,
+    # with the new name winning when they disagree.
     def test_legacy_ratchet_metrics_env_is_still_honoured
       Dir.mktmpdir do |dir|
         legacy = File.join(dir, "legacy.tsv")
@@ -550,32 +542,53 @@ module Robur
       end
     end
 
-    # Parity: bash observability.sh's cmd_stats on the logs/*.log fixtures —
-    # loop.log-only directories, so `stats` takes the legacy fallback path.
+    # Pinned rendering of `stats` on the logs/*.log fixtures (old/new
+    # loop.log formats) — loop.log-only directories, so `stats` takes the
+    # legacy fallback path (no events.jsonl).
     LOG_FIXTURES = File.expand_path("fixtures/logs", __dir__)
-    RATCHET_LIB_DIR = File.dirname(BASH_OBSERVABILITY)
 
-    def bash_stats(loop_log, cheap_model)
-      script = <<~SH
-        source #{RATCHET_LIB_DIR.shellescape}/common.sh
-        source #{RATCHET_LIB_DIR.shellescape}/observability.sh
-        models_arr=(#{cheap_model.shellescape})
-        LOOP_LOG=#{loop_log.shellescape}
-        cmd_stats
-      SH
-      `bash -c #{script.shellescape} 2>/dev/null`.chomp
-    end
+    EXPECTED_STATS = {
+      "new-format.log" => <<~TXT,
+        turns started         : 5
+          on cheap (anthropic/claude-sonnet-4): 2 (40%)
+        successes (step+done) : 5  (steps=4 done=1)
+        failures              : hard=0 transient=0 timeout=0 exhausted=0 empty=0
+        step-success rate     : 100%
+        deadline kills        : 0
+        wasted wall-hours     : 0.00h  (0.00h per 100 turns)
+        turns by tier         : build=2, light=2, plan=1
+        turns by model        : anthropic/claude-fable-5=1, anthropic/claude-sonnet-4=2, zai/glm-5-turbo=2
+      TXT
+      "old-format.log" => <<~TXT,
+        turns started         : 4
+          on cheap (anthropic/claude-sonnet-4): 3 (75%)
+        successes (step+done) : 4  (steps=3 done=1)
+        failures              : hard=0 transient=0 timeout=0 exhausted=0 empty=0
+        step-success rate     : 100%
+        deadline kills        : 0
+        wasted wall-hours     : 0.00h  (0.00h per 100 turns)
+      TXT
+      "with-took.log" => <<~TXT,
+        turns started         : 3
+          on cheap (anthropic/claude-sonnet-4): 2 (67%)
+        successes (step+done) : 3  (steps=3 done=0)
+        failures              : hard=0 transient=0 timeout=0 exhausted=0 empty=0
+        step-success rate     : 100%
+        deadline kills        : 0
+        wasted wall-hours     : 0.00h  (0.00h per 100 turns)
+        turns by tier         : build=2, light=1
+        turns by model        : anthropic/claude-sonnet-4=2, zai/glm-5-turbo=1
+        turn duration         : avg=64s max=84s
+      TXT
+    }.freeze
 
-    def test_stats_matches_bash_cmd_stats_on_the_log_fixtures
+    def test_stats_on_the_log_fixtures
       cheap_model = "anthropic/claude-sonnet-4"
       Dir.glob(File.join(LOG_FIXTURES, "*.log")).each do |fixture|
         Dir.mktmpdir do |dir|
           FileUtils.cp(fixture, File.join(dir, "loop.log"))
-          # legacy logs cannot contain the `empty` class, so it renders as 0 —
-          # patch it into the bash expectation rather than dropping parity.
-          expected = bash_stats(fixture, cheap_model)
-                          .sub(/^failures(\s+): (.+)$/) { "failures#{$1}: #{$2} empty=0" }
-          assert_equal expected, Observability.stats(dir, cheap_model: cheap_model),
+          assert_equal EXPECTED_STATS.fetch(File.basename(fixture)).chomp,
+                       Observability.stats(dir, cheap_model: cheap_model),
                        "mismatch for #{File.basename(fixture)}"
         end
       end

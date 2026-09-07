@@ -7,11 +7,12 @@ module Robur
   # Moves live state from the legacy `.ratchet` names onto robur's own
   # `.robur` names, and leaves a symlink behind at every old path.
   #
-  # The symlinks are the point, not a courtesy. Three things outside this
-  # repo still read the old paths — atlas/bin/money-loop.sh,
-  # atlas/bin/status.sh and harbor's /blocked — and a rename that made a
-  # human go patch three repos on the same night would be a worse product,
-  # not a better one. After migrating, both names resolve to the same bytes.
+  # The symlinks are the point, not a courtesy. robur does not track who
+  # else reads its on-disk state, so any external reader still expecting the
+  # old paths keeps working with zero coordination — a rename that instead
+  # required patching every external reader on the same night would be a
+  # worse product, not a better one. After migrating, both names resolve to
+  # the same bytes.
   #
   # Dry-run is the default and `apply: true` is the only way to touch disk,
   # because this walks a real home directory with hundreds of log dirs.

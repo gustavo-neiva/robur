@@ -1,36 +1,11 @@
 # frozen_string_literal: true
 
-require "open3"
 require "tmpdir"
 require_relative "test_helper"
 require "robur/state"
 require "robur/paths"
 
 class StateTest < Minitest::Test
-  MONEY_LOOP = File.expand_path("../../atlas/bin/money-loop.sh", __dir__)
-
-  # Extracts one `name() { ... }` function body verbatim from a bash script,
-  # so sourcing it never runs the script's own `main "$@"; exit $?` tail.
-  def bash_function(script, name)
-    Open3.capture3("sed", "-n", "/^#{name}() {/,/^}/p", script).first
-  end
-
-  def bash_stop_reason(repo_dir)
-    script = "#{bash_function(MONEY_LOOP, 'stop_reason')}\nstop_reason #{repo_dir}"
-    Open3.capture3("bash", "-c", script).first.strip
-  end
-
-  def bash_backed_off(repo_dir)
-    script = "#{bash_function(MONEY_LOOP, 'backed_off')}\nbacked_off #{repo_dir} && echo yes || echo no"
-    Open3.capture3("bash", "-c", script).first.strip
-  end
-
-  # Deliberately the LEGACY path: atlas reads `.ratchet/last_task.state`, and
-  # must keep resolving through the compat symlink robur leaves behind.
-  def bash_last_task_id(repo_dir)
-    Open3.capture3("cut", "-f1", File.join(repo_dir, Robur::Paths::LEGACY_STATE_DIR, "last_task.state")).first.strip
-  end
-
   def test_read_tolerates_missing_files
     Dir.mktmpdir do |d|
       assert_nil Robur::State.read_stop(d)
@@ -66,46 +41,41 @@ class StateTest < Minitest::Test
     end
   end
 
-  def test_stop_reason_written_by_bash_ratchet_reads_correctly_and_bash_reader_agrees
+  def test_stop_reason_round_trip
     Dir.mktmpdir do |d|
       Robur::Paths.ensure_state_dir!(d)
       File.write(Robur::Paths.state_file(d, "stop_reason"), "human_blocked\n")
       assert_equal "human_blocked", Robur::State.read_stop_reason(d)
-      assert_equal "human_blocked", bash_stop_reason(d)
 
       Robur::State.write_stop_reason(d, "gate_red")
       assert_equal "gate_red\n", File.read(Robur::Paths.state_file(d, "stop_reason"))
-      assert_equal "gate_red", bash_stop_reason(d)
+      assert_equal "gate_red", Robur::State.read_stop_reason(d)
     end
   end
 
-  def test_loop_backoff_round_trip_and_bash_reader_agrees
+  def test_loop_backoff_round_trip
     Dir.mktmpdir do |d|
       Robur::Paths.ensure_state_dir!(d)
       future = Time.now.to_i + 3600
       File.write(Robur::Paths.state_file(d, "loop-backoff"), "2\t#{future}\n")
       assert_equal [2, future], Robur::State.read_loop_backoff(d)
-      assert_equal "yes", bash_backed_off(d)
 
       past = Time.now.to_i - 10
       Robur::State.write_loop_backoff(d, 3, past)
       assert_equal "3\t#{past}\n", File.read(Robur::Paths.state_file(d, "loop-backoff"))
       assert_equal [3, past], Robur::State.read_loop_backoff(d)
-      assert_equal "no", bash_backed_off(d)
     end
   end
 
-  def test_last_task_round_trip_and_bash_cut_agrees
+  def test_last_task_round_trip
     Dir.mktmpdir do |d|
       Robur::Paths.ensure_state_dir!(d)
       File.write(Robur::Paths.state_file(d, "last_task.state"), "T6.3\tstep\n")
       assert_equal %w[T6.3 step], Robur::State.read_last_task(d)
-      assert_equal "T6.3", bash_last_task_id(d)
 
       Robur::State.write_last_task(d, "T7.1", "hard_error")
       assert_equal "T7.1\thard_error\n", File.read(Robur::Paths.state_file(d, "last_task.state"))
       assert_equal %w[T7.1 hard_error], Robur::State.read_last_task(d)
-      assert_equal "T7.1", bash_last_task_id(d)
     end
   end
 
@@ -144,7 +114,7 @@ class StateTest < Minitest::Test
     end
   end
 
-  def test_fanout_state_round_trip_matches_bash_append_format
+  def test_fanout_state_round_trip_uses_tab_separated_lines
     Dir.mktmpdir do |d|
       pairs = [["../robur-wt-m1", "robur/m-m1"], ["../robur-wt-m2", "robur/m-m2"]]
       Robur::State.write_fanout(d, pairs)

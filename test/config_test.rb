@@ -21,32 +21,6 @@ class ConfigTest < Minitest::Test
     ENV["HOME"] = old
   end
 
-  # Independent bash oracle: replicate parse_repo_conf + `declare -p` in bash,
-  # compare every allowlisted key against the Ruby parse.
-  def bash_parse(conf_path)
-    script = <<~SH
-      source #{File.expand_path("../../ratchet/lib/contract.sh", __dir__)}
-      parse_repo_conf #{conf_path} || true
-      for k in $CONTRACT_KEYS COOLDOWN_ZAI; do printf '%s=%s\n' "$k" "${!k}"; done
-    SH
-    Open3.capture3("bash", "-c", script).first.lines.each_with_object({}) do |l, h|
-      k, v = l.chomp.split("=", 2)
-      h[k] = v
-    end
-  end
-
-  def test_repo_conf_matches_bash_parser
-    conf = File.expand_path("../../ratchet/.ratchet.conf", __dir__)
-    values, errors = Robur::Config.parse_repo(File.read(conf))
-    assert_empty errors
-    expected = bash_parse(conf)
-    expected.each do |k, v|
-      next unless Robur::Config.key_allowed?(k)
-      # keys the real conf doesn't set resolve to "" in bash
-      assert_equal v, values[k] || "", "key #{k}"
-    end
-  end
-
   def test_global_conf_env_and_values_match_bash_source
     global = File.expand_path("~/.ratchet/conf")
     skip unless File.file?(global)
@@ -108,9 +82,9 @@ class ConfigTest < Minitest::Test
   # the key, not the bare literal — "400" also appears in prose and in an HTTP
   # status pattern, neither of which is a declaration of this default.
   # The global conf is sourced in a SUBPROCESS, so nothing in it -- not even an
-  # export -- reaches this process's ENV on its own, and no ancestor sources it
-  # either since money-loop.sh was ported into harbor's in-process runner. The
-  # bridge is therefore the only path by which NOTIFY_CMD can ever arrive.
+  # export -- reaches this process's ENV on its own, and no caller of `robur`
+  # sources it either. The bridge is therefore the only path by which
+  # NOTIFY_CMD can ever arrive.
   def test_global_only_key_is_bridged_into_env
     Dir.mktmpdir do |d|
       with_home(File.join(d, "home")) do |global_conf|

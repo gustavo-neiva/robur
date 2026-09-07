@@ -272,7 +272,7 @@ module Robur
                          reason: commit_result.block_reason || (commit_result.committed ? "committed" : "no-op"))
           health.record!(model, klass)
 
-          # The flag alone changed nothing (harbor-872144: turn 1 logged
+          # The flag alone changed nothing (production case: turn 1 logged
           # messages=3170/runaway=true and the loop ran 51 more turns without
           # reacting). Strike AFTER record! so a same-turn :step/:done win
           # cannot silently wipe the strike back to zero — a step that only
@@ -348,8 +348,8 @@ module Robur
             end
             emit "agent signaled #{conf["HUMAN_TOKEN"]} — needs a human decision; stopping this repo."
             # This branch used to `emit "HUMAN NEEDED: …"` and break — the line
-            # reached loop.log and nothing else, which is why harbor sat blocked
-            # on T6.4 for 21h with no DM and `grep -c '"kind":"human"'` at 0.
+            # reached loop.log and nothing else, which is why a production repo
+            # sat blocked for 21h with no DM and `grep -c '"kind":"human"'` at 0.
             #
             # obs.notify_human, not Loop.notify_human: RENDER[:human] writes the
             # byte-identical log line, AND records the :human event downstream
