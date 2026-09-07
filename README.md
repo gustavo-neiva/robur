@@ -12,11 +12,6 @@ into one long run instead of dying at the first 429.
 
 Ruby, standard library only. No gems, no Bundler.
 
-> robur is the successor to [ratchet](https://github.com/gustavo-neiva/ratchet),
-> rewritten from shell into Ruby. Repos still carrying `.ratchet/` or
-> `.ratchet.conf` keep working untouched — robur reads the new names first and
-> falls back to the old ones.
-
 ## The mental model
 
 Four things, and everything else follows:
