@@ -161,9 +161,9 @@ class GoldenTest < Minitest::Test
   #  init — exactly which files land on a bare repo
   # --------------------------------------------------------------------------
 
-  # The compat symlinks are load-bearing, not cosmetic: atlas' nightly
-  # supervisor decides a repo is runnable by testing for `.ratchet.conf`, and
-  # harbor reads `.ratchet/stop_reason`. A rename that drops them breaks
+  # The compat symlinks are load-bearing, not cosmetic: an external
+  # supervisor may decide a repo is runnable by testing for `.ratchet.conf`,
+  # or read `.ratchet/stop_reason` directly. A rename that drops them breaks
   # things outside this repo silently, so the tree listing records the link
   # targets and this test asserts them by name on top of the golden.
   def test_init_on_a_bare_repo_creates_exactly_these_files
@@ -174,9 +174,9 @@ class GoldenTest < Minitest::Test
     assert_golden "init-bare", "#{cli_surface(out, err, status)}--- tree ---\n#{tree_listing(@repo)}"
 
     assert_equal ".robur", File.readlink(File.join(@repo, ".ratchet")),
-                 ".ratchet must stay a symlink to .robur (atlas/harbor read the old name)"
+                 ".ratchet must stay a symlink to .robur (external readers of the old name depend on it)"
     assert_equal ".robur.conf", File.readlink(File.join(@repo, ".ratchet.conf")),
-                 ".ratchet.conf must stay a symlink to .robur.conf (atlas gates runnability on it)"
+                 ".ratchet.conf must stay a symlink to .robur.conf (an external runnability check may gate on it)"
   end
 
   # --------------------------------------------------------------------------

@@ -5,9 +5,9 @@ require "robur/sys"
 
 module Robur
   # Wraps a tracker file (PLAN.md) per the frozen grammar. ONE counter serves
-  # open/in-progress/done: separate counters drift, and an external one in
-  # atlas/bin/board-update.sh already got the open count wrong by anchoring
-  # `^- [ ]`.
+  # open/in-progress/done: separate counters drift, and a duplicated one has
+  # already gotten the open count wrong by anchoring `^- [ ]` instead of
+  # going through this parser.
   class Plan
     TASK_LINE = /\A[[:space:]]*-?[[:space:]]*\[( |x|X|IN PROGRESS|HUMAN)\]/
     HEADING = /\A#+ /
@@ -146,15 +146,17 @@ module Robur
       block.join("\n")
     end
 
-    # Telegram DM body for a human-gate stop (human_block_brief): title line,
-    # the task's block bounded at 900 bytes, unblock instruction, /blocked
-    # pointer. Byte-truncated at 900 so the DM fits one message.
+    # Notification body for a human-gate stop (human_block_brief): title
+    # line, the task's block bounded at 900 bytes, unblock instruction. This
+    # is what reaches the human via NOTIFY_CMD — robur owns the words, not
+    # whatever downstream tool renders them, so it names no specific channel
+    # or bot command. Byte-truncated at 900 so a DM-sized channel fits it in
+    # one message.
     def human_block_brief(id, title)
       block = block_for(id)
       block = block.byteslice(0, 900) if block&.empty? == false
       format("%s: loop BLOCKED on a human decision — task: %s\n\n%s\n\n" \
-             "Unblock: do the work, mark it [x] in %s — the next run resumes " \
-             "on its own.\nFull context: /blocked in the Harbor Telegram bot.",
+             "Unblock: do the work, mark it [x] in %s — the next run resumes on its own.",
              File.basename(File.dirname(@path) || "repo"),
              title.nil? || title.empty? ? id : title,
              block.nil? || block.empty? ? "<task block not found in tracker>" : block,

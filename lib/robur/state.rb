@@ -6,14 +6,14 @@ require_relative "paths"
 
 module Robur
   # Owns every `.robur/` state file, one read + one write method per file,
-  # with the byte-exact formats frozen in PLAN.md (T6.3) so a rollback to the
-  # bash ratchet mid-migration finds valid state either direction. Reads
-  # tolerate a missing file (return nil / []); writes never raise, matching
-  # the bash `{ ... } 2>/dev/null || true` idiom throughout bin/ratchet.
+  # with byte-exact formats — the on-disk contract this module exposes to
+  # any external reader. Reads tolerate a missing file (return nil / []);
+  # writes never raise, so a state write is never the thing that takes a
+  # turn down.
   module State
     module_function
 
-    # stop_reason: one word on one line (bin/ratchet:859).
+    # stop_reason: one word on one line.
     def read_stop_reason(repo_dir)
       first_line(repo_dir, "stop_reason")
     end
@@ -37,7 +37,7 @@ module Robur
       nil
     end
 
-    # loop-backoff: "count<TAB>until_epoch" (atlas/bin/money-loop.sh bump_backoff).
+    # loop-backoff: "count<TAB>until_epoch".
     def read_loop_backoff(repo_dir)
       count, until_epoch = tab_fields(repo_dir, "loop-backoff", 2)
       return nil unless count
@@ -49,7 +49,7 @@ module Robur
       write_tab_fields(repo_dir, "loop-backoff", count, until_epoch)
     end
 
-    # last_task.state: "taskid<TAB>status" (bin/ratchet save_last_task).
+    # last_task.state: "taskid<TAB>status".
     def read_last_task(repo_dir)
       taskid, status = tab_fields(repo_dir, "last_task.state", 2)
       return nil unless taskid
@@ -61,7 +61,7 @@ module Robur
       write_tab_fields(repo_dir, "last_task.state", taskid, status)
     end
 
-    # milestone.cur: "name<TAB>base_sha<TAB>cycle<TAB>errors" (bin/ratchet:503).
+    # milestone.cur: "name<TAB>base_sha<TAB>cycle<TAB>errors".
     def read_milestone_cur(repo_dir)
       name, base_sha, cycle, errors = tab_fields(repo_dir, "milestone.cur", 4)
       return nil unless name
@@ -73,7 +73,7 @@ module Robur
       write_tab_fields(repo_dir, "milestone.cur", name, base_sha, cycle, errors)
     end
 
-    # conf.hash: sha256 hex, or the literal "none" (lib/contract.sh conf_hash).
+    # conf.hash: sha256 hex, or the literal "none".
     def read_conf_hash(repo_dir)
       first_line(repo_dir, "conf.hash")
     end
@@ -82,7 +82,7 @@ module Robur
       write_line(repo_dir, "conf.hash", hash)
     end
 
-    # last-log: the log directory path, one line (bin/ratchet:352).
+    # last-log: the log directory path, one line.
     def read_last_log(repo_dir)
       first_line(repo_dir, "last-log")
     end
@@ -91,9 +91,9 @@ module Robur
       write_line(repo_dir, "last-log", log_dir)
     end
 
-    # fanout.state: zero or more "wt_path<TAB>branch" lines (lib/commands.sh
-    # cmd_fanout, `: > state_file` then one append per created worktree).
-    # Read -> array of [wt_path, branch] pairs, [] when missing/empty.
+    # fanout.state: zero or more "wt_path<TAB>branch" lines, one appended per
+    # created worktree. Read -> array of [wt_path, branch] pairs, [] when
+    # missing/empty.
     def read_fanout(repo_dir)
       path = state_path(repo_dir, "fanout.state")
       return [] unless File.file?(path)

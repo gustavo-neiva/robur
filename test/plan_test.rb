@@ -3,24 +3,9 @@
 require_relative "test_helper"
 require "robur/plan"
 require "tmpdir"
-require "shellwords"
 
 class PlanTest < Minitest::Test
-  # This repo's own tracker has open tasks; the ratchet one is the parity target.
   def own_plan = Robur::Plan.new("PLAN.md")
-
-  def test_counts_match_bash_counters_on_ratchet_plan
-    file = File.expand_path("../../ratchet/PLAN.md", __dir__)
-    done = `grep -cE '^[[:space:]]*-?[[:space:]]*\\[x\\]' #{file}`.to_i
-    open = `awk '/^#+ / { heading = tolower($0) }
-                 /^[[:space:]]*-?[[:space:]]*\\[ \\]/ {
-                   if (heading !~ /done|checklist/) n++ }
-                 END { print n + 0 }' #{file}`.to_i
-    counts = Robur::Plan.new(file).counts
-    assert_equal done, counts[:done]
-    assert_equal open, counts[:open]
-    assert_equal 0, counts[:in_progress]
-  end
 
   # Built on a fixture tracker, NOT this repo's own PLAN.md: a tracker with
   # every task done is a legitimate steady state (it is what `run`'s all-done
@@ -161,49 +146,7 @@ class PlanTest < Minitest::Test
     end
   end
 
-  # Parity: run the bash original and compare outputs on the same file.
-  BASH_TRACKER = File.expand_path("../../ratchet/lib/tracker.sh", __dir__)
-
-  def bash_fn(fn, file)
-    dir = File.dirname(file)
-    `bash -c 'export REPO_DIR=#{dir.shellescape} TRACKER_FILE=#{File.basename(file).shellescape}; source #{BASH_TRACKER.shellescape}; #{fn}' 2>/dev/null`
-  end
-
-  def assert_milestone_parity(file)
-    plan = Robur::Plan.new(file)
-    expected = bash_fn("tracker_milestones", file).split("\n").map do |l|
-      name, done, total = l.split("\t")
-      { name:, done: done.to_i, total: total.to_i }
-    end
-    assert_equal expected, plan.milestones, file
-
-    cur = bash_fn("tracker_current_milestone", file).split("\t")
-    expected_cur = cur.empty? ? nil : { name: cur[0], index: cur[1].to_i,
-                                        count: cur[2].to_i, done: cur[3].to_i, total: cur[4].to_i }
-    # assert_equal(nil, _) raises on modern minitest — route nil through
-    # assert_nil so a tracker with no current milestone still asserts parity.
-    if expected_cur.nil?
-      assert_nil plan.current_milestone, file
-    else
-      assert_equal expected_cur, plan.current_milestone, file
-    end
-
-    expected_ready = bash_fn("plan_is_ready && echo yes || echo no", file).strip == "yes"
-    assert_equal expected_ready, plan.ready?, file
-
-    expected_ind = bash_fn("fanout_independent_milestones", file).split("\n").map do |l|
-      name, slug = l.split("\t")
-      { name:, slug: }
-    end
-    assert_equal expected_ind, plan.independent_milestones, file
-  end
-
-  def test_milestone_parity_on_ratchet_plan_and_seed
-    assert_milestone_parity(File.expand_path("../../ratchet/PLAN.md", __dir__))
-    assert_milestone_parity(File.expand_path("../../ratchet/templates/PLAN.seed.md", __dir__))
-  end
-
-  def test_milestone_parity_on_synthetic_trackers
+  def test_milestones_current_milestone_ready_and_independent_on_synthetic_tracker
     Dir.mktmpdir do |dir|
       path = File.join(dir, "PLAN.md")
       File.write(path, <<~PLAN)
@@ -219,11 +162,42 @@ class PlanTest < Minitest::Test
         ## Definition of Done
         - [ ] not a real task
       PLAN
-      assert_milestone_parity(path)
+      plan = Robur::Plan.new(path)
+
+      assert_equal [{ name: "Milestone A", done: 1, total: 3 },
+                    { name: "Milestone B", done: 0, total: 2 },
+                    { name: "Definition of Done", done: 0, total: 1 }], plan.milestones
+      assert_equal({ name: "Milestone A", index: 3, count: 3, done: 1, total: 3 }, plan.current_milestone)
+      assert plan.ready?
+      # T2 is tagged (normal, independent) — independent must be the FIRST
+      # tag to count, so Milestone A's first open task does not qualify.
+      assert_equal [], plan.independent_milestones
     end
   end
 
-  def test_human_block_brief_parity_with_bash
+  def test_current_milestone_is_nil_when_every_task_is_done
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "PLAN.md")
+      File.write(path, "# Plan\n## M1\n- [x] T1 (trivial) done\n")
+      assert_nil Robur::Plan.new(path).current_milestone
+    end
+  end
+
+  def test_independent_milestone_is_found_when_first_open_task_is_tagged
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "PLAN.md")
+      File.write(path, <<~PLAN)
+        # Plan
+        ## Milestone A
+        - [ ] T1 (independent) leads with the tag
+        ## Milestone B
+        - [ ] T2 (normal) not tagged
+      PLAN
+      assert_equal [{ name: "Milestone A", slug: "Milestone-A" }], Robur::Plan.new(path).independent_milestones
+    end
+  end
+
+  def test_human_block_brief_shape
     Dir.mktmpdir do |dir|
       path = File.join(dir, "PLAN.md")
       File.write(path, <<~PLAN)
@@ -236,14 +210,19 @@ class PlanTest < Minitest::Test
         - [ ] T2 (normal) other
         PLAN
       brief = Robur::Plan.new(path).human_block_brief("T1", "t-title")
-      assert_equal bash_fn("human_block_brief T1 t-title", path).chomp, brief
-      # fallback when the block is not found (unknown id)
-      missing = Robur::Plan.new(path).human_block_brief("ZZ", nil)
-      assert_equal bash_fn("human_block_brief ZZ ''", path).chomp, missing
-      assert_includes missing, "<task block not found in tracker>"
-      # id "?" also falls back
-      assert_equal bash_fn("human_block_brief '?' ''", path).chomp,
-                   Robur::Plan.new(path).human_block_brief("?", nil)
+      assert_equal "#{File.basename(dir)}: loop BLOCKED on a human decision — task: t-title\n\n" \
+                   "- [ ] T1 (hard) blocked thing\n  do: the work with details\n  constraints: stay safe\n\n" \
+                   "Unblock: do the work, mark it [x] in #{path} — the next run resumes on its own.",
+                   brief
+
+      # fallback when the block is not found (unknown id, or "?")
+      %w[ZZ ?].each do |id|
+        missing = Robur::Plan.new(path).human_block_brief(id, nil)
+        assert_equal "#{File.basename(dir)}: loop BLOCKED on a human decision — task: #{id}\n\n" \
+                     "<task block not found in tracker>\n\n" \
+                     "Unblock: do the work, mark it [x] in #{path} — the next run resumes on its own.",
+                     missing
+      end
     end
   end
 

@@ -304,9 +304,9 @@ class LoopTest < Minitest::Test
 
   # BUG A regression. This branch used to `emit "HUMAN NEEDED: ..."` and break,
   # never calling notify_human — so a human-blocked repo wrote the line into
-  # loop.log, recorded ZERO `"kind":"human"` events, and sent no DM. harbor sat
-  # blocked on T6.4 for 21h that way. The stop itself already worked; only the
-  # asking-for-help did not.
+  # loop.log, recorded ZERO `"kind":"human"` events, and sent no DM. A
+  # production repo sat blocked for 21h that way. The stop itself already
+  # worked; only the asking-for-help did not.
   def test_human_stop_calls_notify_human
     repo = human_blocked_repo
     notified = []
@@ -438,7 +438,7 @@ class LoopTest < Minitest::Test
   # T7.1 full repro, both halves of the fix together: MAX_TRANSIENT benches
   # a model after one strike, the (single-model) chain goes all-benched, the
   # backoff ladder fires, reset_all clears ModelHealth's strikes — and every
-  # one of those turns is ALSO runaway (harbor-872144: the flag alone
+  # one of those turns is ALSO runaway (production case: the flag alone
   # changed nothing). The model must get struck for the runaway turns, and
   # the loop must still stop once the ceiling is exceeded across bench
   # cycles that reset_all cannot touch.

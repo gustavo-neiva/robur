@@ -4,7 +4,7 @@ require_relative "test_helper"
 require "robur/tier"
 
 class TierTest < Minitest::Test
-  # --- tag → tier (bin/ratchet case block; --cheap forces light) ---
+  # --- tag → tier (--cheap forces light) ---
 
   def test_from_tag
     assert_equal "light", Robur::Tier.from_tag("trivial")
