@@ -25,7 +25,9 @@ module Robur
         "#{Paths::LEGACY_REPO_CONF}) or the AGENTS.md protocol markers — the loop reverts them. Step done: " \
         "change the task's `- [ ]` to `- [x]` in #{conf['TRACKER_FILE'] || 'PLAN.md'} — the loop never does this " \
         "for you, and an unflipped box means the next turn is handed the same task again — then " \
-        "print #{conf['STEP_TOKEN']} on its own line. No work left at all: print #{conf['DONE_TOKEN']} on its own line."
+        "print #{conf['STEP_TOKEN']} on its own line. No work left at all: print #{conf['DONE_TOKEN']} on its own line. " \
+        "Need a fact only the human has (a number, a decision) to proceed: print #{conf['HUMAN_PARK_TOKEN']} <one-line question> " \
+        "on its own line and stop — never guess."
     end
 
     def self.task_section(conf, plan)

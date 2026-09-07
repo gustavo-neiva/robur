@@ -223,7 +223,8 @@ module Robur
           status = result.kill_reason ? 128 + (result.status.termsig || 0) : result.status.exitstatus
           deadline = !result.kill_reason.nil? && result.kill_reason != "token-seen"
           klass = Classifier.classify(turn_out, step_token: conf["STEP_TOKEN"], done_token: conf["DONE_TOKEN"],
-                                               deadline: deadline, json: Turn.pi_json?(conf["AGENT_CMD"]), human_token: conf["HUMAN_TOKEN"])
+                                               deadline: deadline, json: Turn.pi_json?(conf["AGENT_CMD"]), human_token: conf["HUMAN_TOKEN"],
+                                               park_token: conf["HUMAN_PARK_TOKEN"])
           took = CLI.elapsed_int(turn_start)
           obs.emit(:turn_end, turn: turn, class: klass, took: took, exitcode: status, task: next_task_str.slice(0, 20))
 
@@ -359,6 +360,15 @@ module Robur
             obs.notify_human plan.human_block_brief(task ? task.id : "?", next_task_str)
             stop_reason = "human_blocked"
             break
+          when :human_park
+            question = Classifier.park_question(turn_out, conf["HUMAN_PARK_TOKEN"])
+            emit "agent signaled #{conf["HUMAN_PARK_TOKEN"]} — parking task #{task ? task.id : "?"} for a human answer; continuing with the next task."
+            park_current_task(dir, conf, task, question)
+            obs.emit_event(:task_parked, task: task ? task.id : "?", question: question)
+            obs.notify_human "#{File.basename(dir)}: task #{task ? task.id : "?"} PARKED — needs human: #{question}\n\n" \
+                              "Unblock: answer, then flip [HUMAN] back to [ ] in #{conf["TRACKER_FILE"] || "PLAN.md"} " \
+                              "— a Telegram reply handler lands later."
+            next
           when :step
             if commit_result.block_reason
               emit "step turn RED at commit gate — next turn will repair. Sleeping #{conf["SHORT_SLEEP"]}s."
@@ -525,6 +535,29 @@ module Robur
 
       repo.add(tracker)
       repo.commit("loop(#{Paths::COMMIT_SCOPE}): task #{task.id} BLOCKED \u2014 no progress in #{stalls} turns") unless repo.staged_files.empty?
+    end
+
+    # HUMAN_PARK_TOKEN handling: the frozen grammar's HUMAN checkbox, so
+    # Task/Plan parse it as :parked (not open, not done) and next_task(:open)
+    # skips it — the loop moves on instead of stopping the repo like
+    # HUMAN_BLOCKED does.
+    def park_current_task(dir, conf, task, question, repo: Repo.new(dir))
+      return if task.nil?
+
+      tracker = conf["TRACKER_FILE"] || "PLAN.md"
+      path = File.join(dir, tracker)
+      return unless File.file?(path)
+
+      lines = File.readlines(path)
+      ln = lines[task.lineno - 1]
+      return unless ln&.include?(task.id) && (m = ln.match(/\A(\s*-\s*\[)[^\]]+(\])/))
+
+      lines[task.lineno - 1] = "#{m[1]}HUMAN#{m[2]}#{m.post_match.chomp} — PARKED, needs human: #{question}\n"
+      File.write(path, lines.join)
+      return unless File.directory?(File.join(dir, ".git"))
+
+      repo.add(tracker)
+      repo.commit("loop(#{Paths::COMMIT_SCOPE}): task #{task.id} PARKED \u2014 needs human") unless repo.staged_files.empty?
     end
 
     # The gate-status FIRST line of last_turn.note is ALWAYS derived from whether this turn committed, so the next turn's

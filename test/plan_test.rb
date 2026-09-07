@@ -103,7 +103,7 @@ class PlanTest < Minitest::Test
       assert_equal "T2", plan.next_task.id
       assert plan.open?
       assert plan.in_progress?
-      assert_equal({ open: 1, in_progress: 1, done: 1 }, plan.counts)
+      assert_equal({ open: 1, in_progress: 1, done: 1, parked: 0 }, plan.counts)
       # bash tracker_task_block prefers the in-progress task as "current".
       assert_equal "- [IN PROGRESS] T3 wip", plan.task_block
     end
@@ -113,8 +113,27 @@ class PlanTest < Minitest::Test
     plan = Robur::Plan.new("/nonexistent/PLAN.md")
     refute plan.open?
     assert_nil plan.next_task
-    assert_equal({ open: 0, in_progress: 0, done: 0 }, plan.counts)
+    assert_equal({ open: 0, in_progress: 0, done: 0, parked: 0 }, plan.counts)
     assert_nil plan.class_marker
+  end
+
+  def test_parked_task_skipped_by_next_task_open_and_counted
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "PLAN.md")
+      File.write(path, <<~PLAN)
+        # Plan
+
+        ## M1
+        - [HUMAN] T1 (normal) needs a human fact — PARKED, needs human: which account?
+        - [ ] T2 (normal) real next task
+      PLAN
+      plan = Robur::Plan.new(path)
+
+      assert_equal "T2", plan.next_task(:open).id
+      assert plan.open?
+      assert_equal :parked, plan.next_task(:parked).status
+      assert_equal({ open: 1, in_progress: 0, done: 0, parked: 1 }, plan.counts)
+    end
   end
 
   def test_all_lines_cache_repeated_reads_consistent
@@ -138,7 +157,7 @@ class PlanTest < Minitest::Test
       # Force a distinct mtime stamp even on coarse-granularity filesystems.
       File.utime(Time.now + 2, Time.now + 2, path)
       assert_equal "T2", plan.next_task.id
-      assert_equal({ open: 1, in_progress: 0, done: 0 }, plan.counts)
+      assert_equal({ open: 1, in_progress: 0, done: 0, parked: 0 }, plan.counts)
     end
   end
 

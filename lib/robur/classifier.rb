@@ -38,10 +38,10 @@ module Robur
 
     ASSISTANT_PROSE = /\A(?:text|thinking)_(?:delta|end)\z/
 
-    # Returns one of :done, :human, :step, :exhausted, :hard, :timeout,
-    # :empty, :transient.
+    # Returns one of :done, :human, :human_park, :step, :exhausted, :hard,
+    # :timeout, :empty, :transient.
     def self.classify(path, step_token:, done_token:, deadline:, json: false,
-                      human_token: nil)
+                      human_token: nil, park_token: nil)
       lines = File.exist?(path) ? File.read(path).lines : []
       events = json ? parse_lines(lines) : nil
       # All non-JSON plain text -> literal token matching (text-mode rules).
@@ -56,9 +56,10 @@ module Robur
       end
       src = err_lines.join
 
-      return :done      if token.call(done_token)
-      return :human     if human_token && token.call(human_token)
-      return :step      if token.call(step_token)
+      return :done       if token.call(done_token)
+      return :human      if human_token && token.call(human_token)
+      return :human_park if park_token && token.call(park_token)
+      return :step       if token.call(step_token)
       return :exhausted if src.match?(EXHAUSTED_RE)
       return :hard      if src.match?(HARD_RE)
       return :timeout   if deadline
@@ -74,6 +75,19 @@ module Robur
       return events.none? { |_, ev| assistant_text?(ev) } if events
 
       lines.all? { |l| l.strip.empty? }
+    end
+
+    # Best-effort question text following the park token on whichever raw
+    # line contains it (the agent prints HUMAN_PARK_TOKEN <question> per the
+    # base prompt). Trailing JSON punctuation from a json-mode event blob is
+    # trimmed too. Empty string when the token is not found.
+    def self.park_question(path, park_token)
+      return "" if park_token.to_s.empty? || !File.exist?(path)
+
+      line = File.read(path).lines.find { |l| l.include?(park_token) }
+      return "" unless line
+
+      line.split(park_token, 2).last.to_s.strip.sub(/[\"}]+\z/, "")
     end
 
     def self.parse_lines(lines)

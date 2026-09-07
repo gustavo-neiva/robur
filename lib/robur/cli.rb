@@ -947,7 +947,8 @@ module Robur
       status = result.kill_reason ? 128 + (result.status.termsig || 0) : result.status.exitstatus
       deadline = !result.kill_reason.nil? && result.kill_reason != "token-seen"
       klass = Classifier.classify(turn_out, step_token: conf["STEP_TOKEN"], done_token: conf["DONE_TOKEN"],
-                                           deadline: deadline, json: Turn.pi_json?(conf["AGENT_CMD"]), human_token: conf["HUMAN_TOKEN"])
+                                           deadline: deadline, json: Turn.pi_json?(conf["AGENT_CMD"]), human_token: conf["HUMAN_TOKEN"],
+                                           park_token: conf["HUMAN_PARK_TOKEN"])
       took = elapsed_int(turn_start)
       obs.emit(:turn_end, turn: turn, class: klass, took: took, exitcode: status, task: next_task_str.slice(0, 20))
 
@@ -998,6 +999,11 @@ module Robur
         emit "agent signaled #{conf["HUMAN_TOKEN"]} — needs a human decision; stopping this repo."
         emit "HUMAN NEEDED: #{plan.human_block_brief(taskid, next_task_str)}"
         return ["human_blocked", model]
+      when :human_park
+        question = Classifier.park_question(turn_out, conf["HUMAN_PARK_TOKEN"])
+        emit "agent signaled #{conf["HUMAN_PARK_TOKEN"]} — parking task #{taskid} for a human answer."
+        Loop.park_current_task(dir, conf, task, question)
+        return ["human_parked", model]
       when :step
         unless commit_result.block_reason.nil?
           emit "step turn RED at commit gate — next turn will repair. Sleeping #{conf["SHORT_SLEEP"]}s."

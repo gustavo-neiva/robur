@@ -33,6 +33,12 @@ VERIFY_CMD=npm test
 STEP_TOKEN=STEP_COMPLETE
 DONE_TOKEN=ALL_DONE
 
+# Token the agent prints, with a one-line question, when it needs a fact only
+# a human has (e.g. "HUMAN_PARKED current balance of each account?"). The
+# task is parked ([HUMAN] in the tracker, not [x]) and the loop moves on to
+# the next task instead of stopping the repo like HUMAN_TOKEN does.
+#HUMAN_PARK_TOKEN=HUMAN_PARKED
+
 # Paths to un-stage before each commit (runtime junk specific to this repo).
 #COMMIT_EXCLUDE_GLOBS=
 

@@ -9,7 +9,7 @@ module Robur
   # atlas/bin/board-update.sh already got the open count wrong by anchoring
   # `^- [ ]`.
   class Plan
-    TASK_LINE = /\A[[:space:]]*-?[[:space:]]*\[( |x|X|IN PROGRESS)\]/
+    TASK_LINE = /\A[[:space:]]*-?[[:space:]]*\[( |x|X|IN PROGRESS|HUMAN)\]/
     HEADING = /\A#+ /
     SKIP_HEADING = /done|checklist/
 
@@ -28,7 +28,7 @@ module Robur
     def in_progress? = !next_task(:in_progress).nil?
 
     def counts
-      { open: count(:open), in_progress: count(:in_progress), done: count(:done) }
+      { open: count(:open), in_progress: count(:in_progress), done: count(:done), parked: count(:parked) }
     end
 
     def count(kind)
@@ -198,7 +198,7 @@ module Robur
         heading = line.downcase if line =~ HEADING
         next unless line =~ TASK_LINE
 
-        status = { " " => :open, "x" => :done, "X" => :done, "IN PROGRESS" => :in_progress }[$1]
+        status = { " " => :open, "x" => :done, "X" => :done, "IN PROGRESS" => :in_progress, "HUMAN" => :parked }[$1]
         next unless status == kind
         next if status != :done && heading =~ SKIP_HEADING
 
