@@ -32,7 +32,7 @@ module Robur
 
     def config(overrides = {})
       { "COMMIT_EACH_TURN" => "1", "COMMIT_VERIFY_GATE" => "1", "VERIFY_CMD" => "true",
-        "COMMIT_EXCLUDE_GLOBS" => "" }.merge(overrides)
+        "VERIFY_TIMEOUT" => "600", "COMMIT_EXCLUDE_GLOBS" => "" }.merge(overrides)
     end
 
     def gate(dir, cfg = config)
@@ -210,7 +210,10 @@ module Robur
       status = Object.new
       status.define_singleton_method(:success?) { ok }
       spy = Object.new
-      spy.define_singleton_method(:capture) { |*cmd, **| runs << cmd.first; [out, "", status] }
+      spy.define_singleton_method(:spawn_with_deadline) do |cmd, deadline:, **opts|
+        runs << [cmd, deadline, opts]
+        [out, "", status]
+      end
       spy
     end
 
@@ -230,7 +233,7 @@ module Robur
       runs = []
       gate = CommitGate.new(dir, plan: fake_plan, config: config, proc: spy_proc(runs))
       assert gate.run(turn: 1, model: "m").committed
-      assert_equal ["true"], runs
+      assert_equal [["true", 600, { chdir: dir }]], runs
     end
 
     def test_zero_task_staged_tracker_blocks

@@ -55,14 +55,20 @@ module Robur
         Open3.capture3(*cmd, **opts)
       end
 
-      # returns [stdout, stderr, status]; kills the process at the deadline.
-      # ponytail: wait_thr.kill + no stdin pipe; no process-group kill, add
-      # if a spawned command ever leaves grandchildren behind.
-      def spawn_with_deadline(cmd, deadline:)
-        Open3.popen3(cmd) do |stdin, stdout, stderr, wait_thr|
+      # returns [stdout, stderr, status]; kills the process group at deadline.
+      def spawn_with_deadline(cmd, deadline:, **opts)
+        Open3.popen3(cmd, **opts.merge(pgroup: true)) do |stdin, stdout, stderr, wait_thr|
           stdin.close
           status = wait_thr.join(deadline)&.value
-          Process.kill("TERM", wait_thr.pid) unless status
+          unless status
+            begin
+              Process.kill("TERM", -wait_thr.pid)
+              status = wait_thr.join(1)&.value
+              Process.kill("KILL", -wait_thr.pid) unless status
+            rescue Errno::ESRCH
+              # The process exited between join and signal.
+            end
+          end
           [stdout.read, stderr.read, status || wait_thr.value]
         end
       end
