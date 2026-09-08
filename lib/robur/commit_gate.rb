@@ -114,7 +114,9 @@ module Robur
                      "(no-gate is loud by design; set VERIFY_CMD in #{Paths::REPO_CONF}).\e[0m")
         else
           @emit.call("  commit gate: running '#{verify_cmd}' \u2026")
-          out, err, status = @proc.capture(verify_cmd, chdir: @dir)
+          out, err, status = @proc.spawn_with_deadline(
+            verify_cmd, deadline: @config["VERIFY_TIMEOUT"].to_i, chdir: @dir
+          )
           captured = "#{out}#{err}"
           # The FULL verify output goes to last_verify.out beside loop.log,
           # on pass AND fail — a chatty

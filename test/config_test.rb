@@ -73,6 +73,7 @@ class ConfigTest < Minitest::Test
         assert_equal "", r.values["VERIFY_CMD"]
         assert_equal "STEP_COMPLETE", r.values["STEP_TOKEN"]
         assert_equal "1800", r.values["TURN_TIMEOUT"]
+        assert_equal "600", r.values["VERIFY_TIMEOUT"]
       end
     end
   end
