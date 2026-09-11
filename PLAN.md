@@ -426,3 +426,21 @@ stages something pays it. Do NOT touch the parity tests
     done: the unit gate exits 0; LEARNINGS.md carries the M9 entry with the measured wall time; `git -C ../ratchet status --porcelain` is empty.
     files: LEARNINGS.md
     note: done 2026-09-04. `test/differential/` is already retired (T8.4), so the unit gate is the only gate — confirmed absent, not skipped. Three consecutive runs: 36.04s / 35.72s / 35.06s, all `319 runs, 1172 assertions, 0 failures, 0 errors, 0 skips`. Baseline was 105.7s / 315 runs. `git -C ../ratchet status --porcelain` is empty. LEARNINGS.md carries the M9 entry.
+
+## M10 — The classifier stops benching models for reading the word "quota"
+
+> Evidence: 2026-09-11, harbor T11.3, run pid 67003 (`~/.robur/logs/harbor-872144`).
+> The agent read harbor source containing the column name `quota_blocked` and the
+> comment "Rate-limit per repo" — those strings landed in `tool_execution_end`
+> events, `Classifier`'s json-mode `err_lines` scans every non-prose line, and
+> EXHAUSTED_RE false-fired. k3 and gpt-5.6-sol each ate a 14400s bench, the loop
+> fell into the all-benched sleep ladder, and a human stopped it after 5 wall
+> hours. The REAL failure in the same log was
+> `provider_transport_failure: WebSocket idle timeout after 300000ms` — which
+> matches no regex and was ignored. A transient network stall was converted into
+> a 4-hour fleet-wide outage.
+
+- [ ] T10.1 (normal, fix, serial) json-mode error scans ignore tool results, so reading the word "quota" cannot bench a model
+    do: two changes in `lib/robur/classifier.rb`. (1) In json mode, restrict the `err_lines` that EXHAUSTED_RE and HARD_RE scan to error-signalling content only: non-JSON lines, events whose parsed `type` is `"error"`, and events whose hash carries `diagnostics` or `errorMessage` anywhere top-level — never `tool_execution_end`/tool-result payloads or other data events. Text-mode behavior is unchanged. (2) Add a TRANSPORT_RE matching `provider_transport_failure`, `WebSocket idle timeout`, `socket hang up`, `ECONNRESET`, `ETIMEDOUT`, checked against those same error lines BEFORE EXHAUSTED_RE, returning `:transient` — a network stall earns a strike (3 strikes = bench, existing behavior), never an instant 4h bench. `classify`'s public signature and verdict ordering stay as documented in the module comment; update the comment.
+    done: Given a json turn log reconstructed from `~/.robur/logs/harbor-872144/last_turn.out` (tool results containing `quota_blocked` and `Rate-limit`, final event `provider_transport_failure: WebSocket idle timeout after 300000ms`), When classified, Then the verdict is `:transient`; Given a json log whose error event carries `request failed: HTTP 429`, Then the verdict is still `:exhausted`; Given a json log whose tool results contain "too many requests" but no error event, Then the verdict is NOT `:exhausted`; Given the existing classifier tests, Then they pass unchanged; the unit gate (`ruby -Ilib -e 'Dir["test/**/*_test.rb"].each{|f| require File.expand_path(f)}'`) exits 0.
+    files: lib/robur/classifier.rb, test/classifier_test.rb
