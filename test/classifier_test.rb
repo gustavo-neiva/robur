@@ -50,10 +50,17 @@ module Robur
       assert_equal "step", classify(str, json: true)
     end
 
-    def test_json_real_429_still_exhausted
+    def test_json_error_event_429_still_exhausted
       str = %({"type":"text_delta","delta":"working on it"}\n) +
-            %({"type":"error","error":{"type":"rate_limit_error"}} request failed: HTTP 429)
+            %({"type":"error","errorMessage":"request failed: HTTP 429"}\n)
       assert_equal "exhausted", classify(str, json: true)
+    end
+
+    def test_json_tool_results_do_not_trigger_error_scans
+      tools = %({"type":"tool_execution_end","result":"quota_blocked; Rate-limit; too many requests"}\n)
+      transport = %({"type":"error","errorMessage":"provider_transport_failure: WebSocket idle timeout after 300000ms"}\n)
+      assert_equal "transient", classify(tools + transport, json: true)
+      refute_equal "exhausted", classify(tools, json: true)
     end
 
     def test_json_human_token

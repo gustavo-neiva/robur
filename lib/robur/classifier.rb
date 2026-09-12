@@ -3,10 +3,10 @@
 require "json"
 
 module Robur
-  # Turn-outcome detection. Classifies by CONTENT, not exit code: done > human > step > exhausted >
-  # hard > timeout > empty > transient. In json mode (pi --mode json) token matches
-  # count only in assistant text_end events and error scans exclude assistant
-  # text/thinking events, else prose *discussing* a rate limit false-fires.
+  # Turn-outcome detection. Classifies by CONTENT, not exit code: done > human > step > transport >
+  # exhausted > hard > timeout > empty > transient. In json mode (pi --mode json), token matches
+  # count only in assistant text_end events; error scans inspect only non-JSON and error-signalling
+  # events, so tool results and prose discussing a rate limit cannot false-fire.
   module Classifier
     EXHAUSTED_RE = /
       (request\ failed:\ HTTP\ (429|503|529))
@@ -36,7 +36,7 @@ module Robur
     |(timed.{0,10}out)
     /xi
 
-    ASSISTANT_PROSE = /\A(?:text|thinking)_(?:delta|end)\z/
+    TRANSPORT_RE = /provider_transport_failure|WebSocket idle timeout|socket hang up|ECONNRESET|ETIMEDOUT/i
 
     # Returns one of :done, :human, :human_park, :step, :exhausted, :hard,
     # :timeout, :empty, :transient.
@@ -49,7 +49,7 @@ module Robur
 
       if events
         token = ->(t) { events.any? { |line, ev| assistant_text?(ev) && line.include?(t) } }
-        err_lines = events.reject { |_, ev| ev && prose_event?(ev) }.map(&:first)
+        err_lines = events.select { |_, ev| error_signalling?(ev) }.map(&:first)
       else
         token = ->(t) { lines.any? { |l| l.include?(t) } }
         err_lines = lines
@@ -60,6 +60,7 @@ module Robur
       return :human      if human_token && token.call(human_token)
       return :human_park if park_token && token.call(park_token)
       return :step       if token.call(step_token)
+      return :transient if src.match?(TRANSPORT_RE)
       return :exhausted if src.match?(EXHAUSTED_RE)
       return :hard      if src.match?(HARD_RE)
       return :timeout   if deadline
@@ -108,9 +109,10 @@ module Robur
       ev["type"] == "text_end" || ev.dig("assistantMessageEvent", "type") == "text_end"
     end
 
-    def self.prose_event?(ev)
-      t = ev["type"] || ev.dig("assistantMessageEvent", "type")
-      t&.match?(ASSISTANT_PROSE)
+    # A nil event is a non-JSON line. JSON events are error-signalling only when
+    # their top-level type or fields say so; nested tool payloads are data.
+    def self.error_signalling?(ev)
+      ev.nil? || (ev.is_a?(Hash) && (ev["type"] == "error" || ev.key?("diagnostics") || ev.key?("errorMessage")))
     end
   end
 end
