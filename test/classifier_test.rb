@@ -95,6 +95,30 @@ module Robur
       assert_equal "transient", classify("#{PARK} q?", park_token: nil)
     end
 
+    # Prod regression: the base prompt CONTAINS the park token (it is what
+    # tells the agent to print it) and is the FIRST line of the log, so
+    # matching any raw line filed the whole prompt blob into PLAN.md as the
+    # question. Six parked tasks, six leaked prompts, six lost questions.
+    def test_park_question_reads_assistant_text_not_the_echoed_prompt
+      f = File.join(Dir.mktmpdir, "turn.out")
+      File.write(f, [
+        %({"type":"message_start","message":{"role":"user","content":[{"type":"text","text":"print #{PARK} <question> and stop.\\nTask:\\n- [ ] T14.14 thing"}]}}),
+        %({"type":"message_update","assistantMessageEvent":{"type":"text_end","contentIndex":0,"content":"#{PARK} Has CABI granted written permission?"}}),
+        %({"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"#{PARK} Has CABI granted written permission?"}]}})
+      ].join("\n"))
+
+      assert_equal "Has CABI granted written permission?", Classifier.park_question(f, PARK)
+    end
+
+    # Text mode has no events to filter, so the raw line is all there is --
+    # but only its first line, or a multi-line prompt leaks here instead.
+    def test_park_question_text_mode_takes_one_line
+      f = File.join(Dir.mktmpdir, "turn.out")
+      File.write(f, "#{PARK} which account balance?\nTask, quoted from PLAN.md:\n- [ ] T1.1 thing\n")
+
+      assert_equal "which account balance?", Classifier.park_question(f, PARK)
+    end
+
     def test_deadline_timeout
       assert_equal "timeout", classify("agent still working, no token", deadline: true)
     end

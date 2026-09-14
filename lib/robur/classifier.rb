@@ -78,17 +78,43 @@ module Robur
       lines.all? { |l| l.strip.empty? }
     end
 
-    # Best-effort question text following the park token on whichever raw
-    # line contains it (the agent prints HUMAN_PARK_TOKEN <question> per the
-    # base prompt). Trailing JSON punctuation from a json-mode event blob is
-    # trimmed too. Empty string when the token is not found.
+    # Best-effort question text following the park token (the agent prints
+    # HUMAN_PARK_TOKEN <question> per the base prompt). Empty string when the
+    # token is not found.
+    #
+    # In json mode only ASSISTANT text counts, for the same reason classify
+    # filters: the base prompt that TELLS the agent to print the token also
+    # CONTAINS the token, and it is the FIRST line of the log. Matching any
+    # raw line filed the entire prompt blob into the tracker as the
+    # "question" (prod: 6 parked tasks, 6 leaked prompts, 6 lost questions).
+    # The answer is extracted from the parsed event, so JSON escaping is
+    # undone by the parser instead of by punctuation-stripping regex.
+    #
+    # Newest match wins (the park is the turn's last act), and only its FIRST
+    # line survives -- the agent is told to put the question on its own line,
+    # so a multi-line blob can never leak again even via the text-mode path.
     def self.park_question(path, park_token)
       return "" if park_token.to_s.empty? || !File.exist?(path)
 
-      line = File.read(path).lines.find { |l| l.include?(park_token) }
-      return "" unless line
+      lines = File.read(path).lines
+      events = parse_lines(lines)
+      texts = if events.any? { |_, ev| ev }
+                events.select { |_, ev| assistant_text?(ev) }.map { |line, ev| assistant_content(ev) || line }
+              else
+                lines
+              end
 
-      line.split(park_token, 2).last.to_s.strip.sub(/[\"}]+\z/, "")
+      hit = texts.reverse.find { |t| t.include?(park_token) }
+      return "" unless hit
+
+      hit.split(park_token, 2).last.to_s.lines.first.to_s.strip.sub(/[\"}]+\z/, "")
+    end
+
+    # The assistant's own text out of either event shape.
+    def self.assistant_content(ev)
+      return nil unless ev.is_a?(Hash)
+
+      ev["text"] || ev.dig("assistantMessageEvent", "content")
     end
 
     def self.parse_lines(lines)
