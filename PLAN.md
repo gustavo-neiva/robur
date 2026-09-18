@@ -1,446 +1,937 @@
 <!-- class: MACHINE -->
-# PLAN.md — Track B: ratchet bash → robur (Ruby)
+# PLAN.fleet.md — robur grows its outer loop: one machine, many repos, forever
 
-> Tracker grammar: `[x]` open → `[ ]` → `[x]`. Tags `(trivial|normal|hard)`
-> route the model tier; `serial` forbids parallel siblings.
+> Tracker grammar: `- [ ]` open → `- [IN PROGRESS]` → `- [x]` done.
+> Tags: `(trivial|normal|hard)` routes the model tier, a REQUIRED non-first
+> conventional-commit kind (`feat|fix|perf|refactor|docs|test|chore`) becomes
+> the commit prefix, and `(serial)` forbids parallel siblings.
 
-**robur** is the Ruby replacement for the bash ratchet loop. It is a NEW sibling
-repo. The working bash ratchet in `ratchet/` builds it and therefore cannot break
-itself.
+**What this delivers.** `robur run` drives ONE repo until it stops. Something
+else has to decide which repo runs next, how often, and what happens when one
+fails. Today that decision lives in a sibling Python repo (`../harbor`,
+`harbor/loop/`) — 4,978 lines that shell out to `robur` and read robur's own
+state files from the outside. This plan brings the decision inside: a **fleet**
+layer that owns a roster of repos, gates each one, plans a cycle under budgets,
+executes it with per-checkout locking, and repeats on a beat.
 
-**Path convention — read this before running any command.** Paths starting
-`ratchet/`, `atlas/`, `harbor/` or `robur/` are written **estate-relative**: they
-name sibling directories under `~/Code/gustavo-neiva/`. Your working directory is
-the `robur` repo, so reach a sibling with `../` — `ratchet/lib/tracker.sh` is
-`../ratchet/lib/tracker.sh` from where you are, and the bash binary the
-differential harness compares against is `../ratchet/bin/ratchet`. Paths with no
-such prefix (`lib/`, `test/`, `exe/`) are relative to this repo. Sibling repos are
-separate git repos, and `../ratchet` is READ-ONLY — read it freely, never write it.
+**Reference, read-only.** `../harbor/harbor/loop/` is the working implementation
+this ports FEATURES from. Read it freely for behaviour and for the production
+scars in its comments. **Never write a byte there.** Nothing in this plan
+removes, edits or deprecates any harbor file; harbor keeps running unchanged
+throughout, and the two implementations coexist until a human decides to cut
+over. There is no cutover task in this plan.
 
-**This plan must NOT touch:** `ratchet/` — read-only for the entire migration, no
-task may edit a byte of it — nor `atlas/bin/`, nor `atlas/cycles.conf` except the
-one HUMAN task that adds this repo to it.
+**Port features, not implementations.** harbor/loop is a line-by-line port of a
+bash script and still has bash's shape: free functions mutating a `_Cycle`
+struct, a `dry_run_lines()` that renders decisions as tab-separated strings,
+and an `eligibility()` that parses those strings back. It also re-implements
+things robur already owns — a second `PLAN.md` parser (`loop/tracker.py` vs
+`Robur::Plan`), a second `.robur.conf` reader (`loop/config.py`, whose own
+docstring says *"keep the two in sync by hand"*), and a second model-health
+registry that is documented as unable to tell a live bench from a dead one.
+**None of that is ported.** Take the behaviour; call the module robur already
+has.
 
-**Sequencing:** both tracks are live in `atlas/cycles.conf` as of 2026-09-01 and
-run concurrently — `harbor` first in the chain, then `robur`. They touch disjoint
-repos and share no files, so neither blocks the other. Track A still ships first
-at *cutover*: it closes a security hole and takes the shell out of the daily path,
-and its cutover is signed off before Track B's.
-
-**Behaviour-compatible, not code-compatible.** These formats are FROZEN — robur
-reads and writes them byte-identically, in both directions, so a rollback after
-cutover finds valid state:
-
-- `.ratchet.conf` — allowlisted `KEY=value`, the 48-key allowlist, the
-  `COOLDOWN_<PROVIDER>` prefix rule, quote stripping, numeric coercion
-- `~/.ratchet/conf` — bash-sourced today; robur must consume the same file (T2.2)
-- the `PLAN.md` task grammar exactly as documented at `ratchet/lib/tracker.sh:1-21`
-- `.ratchet/` state: `stop_reason`, `loop-backoff`, `last_task.state`,
-  `milestone.cur`, `conf.hash`, `last-log`, `fanout.state`
-- `~/.ratchet/metrics.tsv` — the same 12 columns in the same order
-- the CLI surface — same commands, same flags, same exit codes
-
-**The `.ratchet` names stay.** robur is the product name; the on-disk contract
-keeps its current filenames for the whole migration, because rollback depends on
-both binaries reading the same state. Renaming state files is not in this plan.
-
-**Stdlib only.** `JSON`, `Time`, `FileUtils`, `Open3`, `Net::HTTP`,
-`OptionParser`, `Digest` cover the observed surface. Minitest is pre-approved.
-Any other gem needs a one-line justification in the task and a HUMAN gate — see
-`atlas/MIGRATION-CUTOVER.md`. **Plain Ruby: no Sorbet, no RBS, no Steep** —
-measured 2.3× token cost (audit §4.2).
-
-**Real OOP, small classes, DI at the boundaries.** Filesystem, clock, subprocess
-and HTTP are injected, so tests never need a fake `$HOME`. Seams: `Config`,
-`Plan`/`Task`, `ModelChain`, `Turn`, `Classifier`, `CommitGate`, `Observability`,
-`Repo`, `Cli`.
-
-**Fix by construction, do not port.** Three JSON-parsing strategies collapse to
-one `JSON.parse`; three open-task counters, four default-branch detections and two
-copies of the worktree-porcelain state machine collapse to one each; the
-greedy-paren tag bug at `ratchet/lib/tracker.sh:145` gets a correct parser and a
-regression test.
-
-**Do NOT redesign features.** Same tiers, same fallback/cooldown/bench policy,
-same commit-gate ordering, same classification taxonomy. Behaviour changes are a
-later project.
+**Explicitly dropped.** Telegram, the Svelte console, HTTP API routes, queue
+drafts, `MONEY.md` board rewriting, the weekly critic, the publish dispatcher,
+the 14-day stall watchdog, the session brief, the ideas pipeline, revenue
+attribution, cost-in-BRL, and the SQLite run store (`loop/ingest_runs.py`).
+Those are either estate rituals that belong to harbor or a separate
+observability project. This plan is the orchestrator and nothing else.
 
 ---
 
-## Selftest triage — what gets a Ruby equivalent and what does not
+## Design constraints (read before ANY task — non-negotiable)
 
-44 bash suites. Domain behaviour is re-expressed in Minitest; shell-mechanic pins
-exist only to constrain a language robur does not use, and are deliberately
-dropped with the reason recorded here. This table is the contract; a task may not
-silently port a dropped suite.
+1. **Stdlib only.** No gems, no Bundler, no Sorbet, no RBS. Minitest is
+   pre-approved (it ships with Ruby).
+2. **Never hardcode an on-disk name.** `.robur/`, `.robur.conf`, `~/.robur/`,
+   `ROBUR_HOME` and every new fleet path resolve through `Robur::Paths` and
+   nowhere else.
+3. **Reuse the seams robur already has.** Tracker reads go through
+   `Robur::Plan`. Files under `.robur/` go through `Robur::State`. Config goes
+   through `Robur::Config`. Filesystem/clock/subprocess/HTTP go through
+   `Robur::Sys` (injected, so tests never touch a real `$HOME`, clock or
+   process). Terminal output goes through `Robur::Render`. A `Fleet::*` class
+   that re-implements any of these is a failed task, not a shortcut.
+4. **Fleet budget keys are GLOBAL-ONLY.** `MAX_RUNS_PER_CYCLE`,
+   `MAX_PLANS_PER_CYCLE`, `AUTOPLAN_MIN_SECS`, `BACKOFF_BASE`, `BACKOFF_CAP`,
+   `FLEET_INTERVAL`, `HEALTHCHECK_URL` are read from `~/.robur/conf` and ENV
+   only. **Never add one to `Config::ALLOWLIST`** — `.robur.conf` is
+   agent-writable, and an agent that can raise its own run budget or lower its
+   own backoff has escaped the thing that bounds it.
+5. **One planner, two renderers.** `Fleet::Planner` is PURE: it takes a roster
+   and a gate and returns decisions. It never spawns, never writes, never
+   touches `File`/`Dir`, and reads the clock only through an injected
+   `Sys::Clock`. Anything on disk it needs — the pause flag, an autoplan stamp
+   — is read by the CALLER or by `Gate` and handed in as a value. `--dry-run`
+   and the real cycle consume the SAME decisions. There must never be a second
+   code path that decides what runs — that divergence is why harbor's board
+   reported `0 open` for repos its runner considered runnable.
+6. **Spawn from the running process, never from `$PATH`.** A child turn is
+   launched as `[<the ruby running now>, <this exe>, "run", repo]`. Harbor
+   needed a 30-line `_robur_ok()` preflight because it shelled out to the bare
+   name `robur`, and three multi-day outages (2026-09-04..07) were launchd
+   resolving `#!/usr/bin/env ruby` to system Ruby 2.6. Resolving from the live
+   process removes the MISATTRIBUTION, not the whole failure class: the
+   supervisor's own launch is still `$PATH`-dependent, and a child that never
+   starts is an environment fault that must fail the cycle and back off NO
+   repo (see T3.3). Charging it to every repo is what turned three small
+   config bugs into a multi-day outage harbor could not exit.
+7. **`../harbor` is READ-ONLY.** Read it for reference; never write it.
+8. **One task per turn.** Do the task, add its verify case, run `VERIFY_CMD`,
+   mark `[x]`, print `STEP_COMPLETE`.
 
-| # | bash suite | verdict | reason |
-|---|---|---|---|
-| 0 | render (terminal functions) | port | domain: the PM header/bar/timing render |
-| 1 | turn classification | port | domain: the outcome taxonomy |
-| 2 | tracker tag extraction | port + extend | domain, plus the `:145` greedy-paren regression |
-| 3 | milestone parsing | port | domain |
-| 4 | contract parsing | port | domain: the 48-key allowlist |
-| 5 | tier routing | port | domain |
-| 6 | session sanitizer | port | domain: thinking-block stripping |
-| 7 | agnosticism (no project knowledge) | port, rewritten | invariant is real; the grep targets Ruby source |
-| 8 | end-to-end (fake-agent) | port | domain, and the differential harness subsumes it |
-| 9 | doctor tier warning | port | domain |
-| 10 | tier routing end-to-end | port | domain |
-| 11 | builtin secret scan | port BEHAVIOUR only | patterns are domain; the BSD-vs-GNU grep pins are not — Ruby `Regexp` has no such split |
-| 12 | --cheap + staged-changes warning | port | domain |
-| 13 | ratchet plan turn | port | domain |
-| 14 | stats (tier/model counts) | port, re-based | reads structured events, not regexes over prose |
-| 15 | doctor mid-operation check | port | domain: rebase/MERGE_HEAD detection |
-| 16 | status rendering + liveness | port | domain |
-| 17 | FANOUT contract key | port | domain |
-| 18 | models (chain ops, conf upsert) | port | domain |
-| 19 | bounded reap (watchdog kill) | port BEHAVIOUR only | the kill/deadline contract is domain; the bash 3.2 `kill -0`/`$SECONDS` mechanism it pins does not exist in Ruby |
-| 20 | model cost cache (models.dev join) | port | domain |
-| 21 | model-select (MODEL_RANK slice) | port | domain |
-| 22 | chain_for_tier override wire-in | port | domain |
-| 23 | build_default_prompt from template | port | domain |
-| 24 | RATCHET_LOOP advisory-only | DROP | greps bash source for `if`/`case`/`[` branches on an env var; the invariant is re-expressed as one Ruby test that the flag is only ever written, never read |
-| 25 | AGENTS.md human-only | port | domain: template content |
-| 26 | init AGENTS.md migration | port | domain |
-| 27 | doctor protocol delivery | port | domain |
-| 28 | notify_human | port | domain |
-| 29 | wait_for_merge | port | domain |
-| 30 | plan_is_ready | port | domain |
-| 31 | auto-plan flow | port | domain |
-| 32 | milestone branch lifecycle | port | domain |
-| 33 | per-task session resume | port | domain |
-| 34 | gate-status note each turn | port | domain |
-| 35 | parallel stash guard | port | domain |
-| 36 | fanout orchestrator | port | domain |
-| 37 | fanout-clean worktree sweep | port | domain |
-| 38 | metrics (`_turn_usage` + append) | port | domain: the responseId dedupe rule |
-| 39 | loop metrics hooks | port | domain |
-| 40 | human_block_brief | port | domain |
-| 41 | autoplan tier + KTLO prompt | port | domain |
-| 42 | metrics isolation (`RATCHET_HOME`) | port | domain: the fixture-pollution regression |
-| 43 | `PR_SOFT_MAX_LINES` default drift | DROP | pins that a constant is declared once; a Ruby constant cannot drift between a call-site fallback and a default |
-| 44a | no empty tracked files repo-wide | DROP | guards leaked bash test stubs (`bin/gh`, `err.txt`) written by PATH-stub suites robur does not have |
-| 44b | PATH-drift guard proves itself | DROP | pure shell mechanic: suites leaking `PATH` into each other. Minitest processes are isolated and boundaries are injected |
-| 44c | docs cover metrics observability | DROP | doc-drift guard for the bash README; re-author against robur's own docs when they exist, not as a port |
-| 44d | selftest banner numbering | DROP | bookkeeping for hand-numbered `suite_start N` banners; Minitest names its own tests |
+### The shape being built
 
-Eight suites are dropped outright and two more are ported as behaviour with their
-shell mechanism discarded — matching the audit's count of ≥8 pins that exist
-solely to constrain bash.
+```
+lib/robur/fleet.rb              Fleet.cycle / Fleet.dry_run — the two entry points
+lib/robur/fleet/roster.rb       fleet.conf: read + classify (read-only; humans edit it)
+lib/robur/fleet/gate.rb         one repo's verdict (pure reads, no decisions)
+lib/robur/fleet/backoff.rb      the failure ladder, over Robur::State
+lib/robur/fleet/lock.rb         one writer per checkout (flock)
+lib/robur/fleet/planner.rb      PURE: roster + gate + budgets -> [Decision]
+lib/robur/fleet/cycle.rb        executes decisions, records outcomes
+lib/robur/fleet/notifier.rb     NOTIFY_CMD, deduped per (repo, reason)
+lib/robur/fleet/render.rb       PURE terminal rendering of a decision board
+lib/robur/fleet/supervisor.rb   --every: the perpetual beat
+test/fleet/*_test.rb            one test file per class above
+```
 
----
+## Milestone 0 — the tracer bullet: one command answers "what happens next" (serial)
 
-## M1 — Scaffold, fixtures, and the differential harness
+> No other milestone starts until `robur fleet --dry-run` prints a real board
+> from a real roster. It is thin — two gate checks — but it runs end to end
+> through every layer the rest of the plan thickens: Paths → Roster → Gate →
+> Render → CLI. Nothing here spawns a process or writes a file.
 
-The harness is the primary deliverable. Nothing is ported until it can prove a
-port changed nothing.
+- [ ] T0.1 (trivial, chore, serial) the fleet namespace loads and the gate stays green
+      touches: lib/robur/fleet.rb, lib/robur/paths.rb, test/fleet/paths_test.rb
+      do: Create the `Robur::Fleet` namespace module in `lib/robur/fleet.rb` (empty
+          module body for now; later tasks add `Fleet.cycle` and `Fleet.dry_run`).
+          Add three path resolvers to `Robur::Paths`, because constraint 2 forbids
+          hardcoding these names anywhere else: `fleet_conf` returns
+          `File.join(home, "fleet.conf")`, `fleet_paused_flag` returns
+          `File.join(home, "fleet.paused")`, and `fleet_log_dir` returns
+          `File.join(home, "logs", "fleet")`. A log DIRECTORY, not a file:
+          `Robur::Observability.new(dir)` takes a directory and writes
+          `loop.log` + `events.jsonl` inside it, and T6.2 hands it this path.
+          `Paths.home` already honours `ROBUR_HOME`, so tests isolate for free.
+          Create `test/fleet/` — the gate globs `test/**/*_test.rb`, so a
+          subdirectory is already collected.
+      snippet:
+          def fleet_log_dir = File.join(home, "logs", "fleet")
+      accept:
+          Given ROBUR_HOME points at a temporary directory
+          When Robur::Paths.fleet_conf is called
+          Then it returns <that directory>/fleet.conf and no file is created
+      verify: ruby -Ilib -e 'Dir["test/**/*_test.rb"].each{|f| require File.expand_path(f)}'
+              — new test/fleet/paths_test.rb asserts all three resolvers honour ROBUR_HOME.
+      constraints: stdlib only; no new conf keys; create no files on disk from a path reader.
 
-- [x] T1.1 (trivial, serial) scaffold the repo
-    do: `git init` this directory; create `exe/`, `lib/robur/`, `test/`, `test/differential/`, `test/fixtures/`; add `.gitignore` covering `.ratchet/`, `tmp/`, `*.log`; add `lib/robur.rb` requiring nothing yet and defining `module Robur; VERSION = "0.0.1"; end`; add `exe/robur` as an executable stub that resolves its own symlink chain to find `lib/` and prints usage. Make one commit.
-    done: Given a clean checkout, When `ruby -Ilib -e 'require "robur"; puts Robur::VERSION'` runs, Then it prints `0.0.1`; When `exe/robur` is symlinked onto PATH from another directory and invoked, Then it still finds `lib/` and prints usage.
-    files: .gitignore, lib/robur.rb, exe/robur
-- [x] T1.2 (trivial, serial) the repo contract files
-    do: `.ratchet.conf` and `.gitignore` were bootstrapped by hand — verify them, do not rewrite them. Add `AGENTS.md` describing what robur is, the stdlib-only rule, the no-Sorbet rule, and the frozen-format list — no loop mechanics, that travels in the harness prompt. Add `LEARNINGS.md` with the append-only header, seeded with this gotcha: `.ratchet.conf` values are truncated at the first `#` by `parse_repo_conf`, so a `VERIFY_CMD` containing Ruby string interpolation like a `#{...}` sequence is silently cut in half and RED-locks the loop. That is why the gate uses `File.expand_path(f)` and not interpolation. Never put a `#` in any `.ratchet.conf` value.
-    done: Given the three files, When `ratchet doctor .` runs from the bash ratchet, Then it exits 0 and reports the conf parses, the tracker has open tasks, and the protocol is current; the `VERIFY_CMD` it echoes ends in `}'` and is not truncated.
-    files: AGENTS.md, LEARNINGS.md
-- [x] T1.3 (trivial, serial) the test entrypoint
-    do: add `test/test_helper.rb` requiring `minitest/autorun` and putting `lib/` on the load path, plus one `test/smoke_test.rb` asserting `Robur::VERSION`. Confirm the `VERIFY_CMD` one-liner discovers and runs it with no bundler and no Rakefile.
-    done: Given the two files, When `ruby -Ilib -e 'Dir["test/**/*_test.rb"].each{|f| require File.expand_path(f)}'` runs, Then it reports 1 run, 1 assertion, 0 failures and exits 0.
-    files: test/test_helper.rb, test/smoke_test.rb
-- [x] T1.4 (normal, serial) port the fixtures
-    do: copy `ratchet/test/fixtures/` into `test/fixtures/` — `fake-agent`, `fixture-repo/` with its `PLAN.md`/`verify.sh`/`.gitignore`/`README.md`, `turn-usage/*.json`, and `logs/*.log`. Copy only; do not edit `ratchet/`. The `fake-agent` script must stay byte-identical so both binaries face the same stub, including its `RATCHET_LOOP`/`RATCHET_FANOUT` stderr echoes.
-    done: Given the copy, When `diff -r ratchet/test/fixtures test/fixtures` runs, Then it reports no differences; When `fake-agent` is invoked in a copy of `fixture-repo`, Then it ticks the first `[ ]`, marks the next `[ ]`, and prints `STEP_COMPLETE`.
-    files: test/fixtures/
-- [x] T1.5 (hard, serial) the differential harness — core
-    do: add `test/differential/harness.rb` with a `Scenario` (name, argv, fixture setup, env) and a `Runner` that, for one scenario, builds two pristine copies of the fixture repo, points `RATCHET_HOME` at two separate temp dirs, sets `AGENT_CMD` to the fake-agent, runs `ratchet/bin/ratchet ARGV` in one and `exe/robur ARGV` in the other, and captures stdout, stderr, exit code, every file under `.ratchet/`, `metrics.tsv`, `loop.log`, and `git log --format='%s'`. Normalization is an explicit, narrow substitution list — timestamps, temp paths, elapsed seconds, PIDs, commit shas — and nothing else, because a wide normalizer hides the regressions this exists to catch.
-    done: Given a scenario running `--help`, When the runner executes it, Then it returns a diff report object listing zero differences; When a deliberate extra space is injected into robur's usage text, Then the report lists exactly one difference and names `stdout`.
-    files: test/differential/harness.rb
-- [x] T1.6 (hard, serial) the differential harness — one-command runner
-    do: add `test/differential/run.rb` as the single entrypoint: `ruby test/differential/run.rb [--suite NAME]`. It loads scenario files from `test/differential/suites/`, runs each, prints one line per scenario (`ok` or the diffing surfaces), and ends with `N diffs across M scenarios`. Exit 0 only when N is 0. Seed `suites/milestone-1.rb` with the `--help`, unknown-flag, and `doctor` scenarios.
-    done: Given the seeded suite, When `ruby test/differential/run.rb --suite milestone-1` runs, Then it prints one line per scenario and a final count, and its exit code is 0 if and only if that count is 0.
-    files: test/differential/run.rb, test/differential/suites/milestone-1.rb
-- [x] T1.7 (trivial, serial) M1 self-QA
-    do: run both gates and record the harness invocation in `AGENTS.md` so a fresh agent finds it.
-    done: `ruby -Ilib -e 'Dir["test/**/*_test.rb"].each{|f| require File.expand_path(f)}'` exits 0, AND `ruby test/differential/run.rb --suite milestone-1` reports `0 diffs`. PASS is both exit 0 and the literal string `0 diffs` in the harness output.
-    files: AGENTS.md, LEARNINGS.md
+- [ ] T0.2 (normal, feat, serial) the roster reads fleet.conf and keeps parked repos visible
+      touches: lib/robur/fleet/roster.rb, test/fleet/roster_test.rb
+      do: Add `Robur::Fleet::Roster`, the ONE parser of `fleet.conf` (one repo path
+          per line, priority order, `#` comments). `Roster.new(path, fs:)` exposes
+          `entries` -> an array of `Entry = Struct.new(:path, :parked, :lineno,
+          :raw)`. A line whose first non-space character is `#` followed
+          immediately by a path is a PARKED repo — still listed, never run;
+          `# a note` (hash then space) is a comment and yields no entry. Blank
+          lines yield nothing. Paths expand `~` and resolve relative entries
+          against the conf's own directory. `active` returns parked==false
+          entries in file order. Port the classification from
+          `../harbor/harbor/loop/cycles.py` and `control.py:_cycle_line_repo`,
+          which prove parked repos must stay visible or the operator cannot
+          see what they turned off.
+      snippet:
+          Entry = Struct.new(:path, :parked, :lineno, :raw, keyword_init: true)
+      accept:
+          Given a fleet.conf with an active path, a "#/parked/path" line and a "# note" line
+          When Roster#entries is read
+          Then exactly two entries are returned, the second has parked == true,
+          And Roster#active returns only the first
+      verify: ruby -Ilib -e 'Dir["test/**/*_test.rb"].each{|f| require File.expand_path(f)}'
+              — new test/fleet/roster_test.rb covers active, parked, comment, blank,
+              "~" expansion, a relative path, and a missing file (returns []).
+      constraints: never write the conf in this task; stdlib only; no new conf keys.
 
-## M2 — Config and the boundaries
+- [ ] T0.3 (normal, feat, serial) `robur fleet --dry-run` prints why each repo will or will not run
+      touches: lib/robur/fleet/gate.rb, lib/robur/fleet/render.rb, lib/robur/fleet.rb,
+               lib/robur/cli.rb, exe/robur, test/fleet/gate_test.rb, test/fleet/render_test.rb
+      do: THE TRACER BULLET — thin, but end to end. Add `Fleet::Gate.new(repo)`
+          with two readers only: `initialized?`
+          (`File.file?(Paths.repo_conf(repo))`) and `open_tasks`. Gate OWNS the
+          tracker path and resolves it through the conf, never a literal:
+          `TRACKER_FILE` is an allowlisted repo key with NO entry in
+          `Config::DEFAULTS`, so hardcoding `PLAN.md` makes a repo that renamed
+          its tracker read as 0 open forever. `open_tasks` MUST be
+          `plan.counts[:open] + plan.counts[:in_progress]` — counting `[ ]`
+          alone is the divergence that made harbor's board report `0 open` for
+          repos its own runner considered runnable
+          (`../harbor/harbor/loop/tracker.py:5`). Add pure
+          `Fleet::Render.board(rows)` returning a string, one aligned line per
+          repo: `<basename>  <verdict>  <n> open`. Add `Fleet.dry_run(roster:,
+          out:)` mapping entries to `run` / `skip:parked` / `skip:no-conf` /
+          `skip:caught-up`. Register `fleet` in `CLI::COMMANDS`, dispatch it,
+          and `require "robur/fleet"` in `exe/robur`. `--dry-run` is the only
+          flag this task accepts; a bare `robur fleet` may exit 0 printing
+          "not implemented yet (M3)".
+      snippet:
+          def plan = Robur::Plan.new(File.join(@repo,
+            Robur::Config.load(@repo).values["TRACKER_FILE"] || "PLAN.md"))
+      accept:
+          Given a fleet.conf naming an initialized repo with 2 open tasks and a parked repo
+          When `robur fleet --dry-run` runs
+          Then stdout has one line per repo, the first reading "run" with "2 open",
+          And the second reading "skip:parked", and no file on disk changed
+      verify: ruby -Ilib -e 'Dir["test/**/*_test.rb"].each{|f| require File.expand_path(f)}'
+              — new test/fleet/gate_test.rb (open_tasks counts IN PROGRESS, and a
+              repo whose TRACKER_FILE is not PLAN.md is still counted) and
+              test/fleet/render_test.rb (board alignment is stable).
+      constraints: read-only — no spawning, no writes; Render stays pure; stdlib only.
 
-- [x] T2.1 (normal) Sys — the injected boundaries
-    do: add `lib/robur/sys.rb` defining four tiny collaborators with real default implementations and no interfaces beyond what is used: `Sys::Fs` (read, write, exist?, mkdir_p, glob), `Sys::Clock` (now, monotonic, sleep), `Sys::Proc` (capture, spawn-with-deadline via `Open3`), `Sys::Http` (get, post via `Net::HTTP`). Every other class takes a `sys:` keyword defaulting to the real one. No plugin registry, no factory — these exist so tests need no fake `$HOME`.
-    done: Given a test double for `Sys::Clock`, When a class that sleeps is constructed with it, Then no real time passes and the recorded sleep durations are assertable.
-    files: lib/robur/sys.rb, test/sys_test.rb
-- [x] T2.2 (hard, serial) Config — both conf files, and the sourced-conf decision
-    do: add `lib/robur/config.rb`. The repo `.ratchet.conf` is PARSED with the 48-key allowlist, the `COOLDOWN_<PROVIDER>` prefix rule, one layer of quote stripping and the numeric-key digit coercion — never evaluated, because the loop later `eval`s `VERIFY_CMD` and an agent can write repo files. The global `~/.ratchet/conf` is bash-sourced today and contains `export PATH="$ASDF_DATA_DIR/shims:$PATH"`, which needs shell expansion, so robur consumes it by running `bash -c 'env -0'` once for a baseline and once after sourcing the file, then taking the delta: exported variables become the environment handed to spawned turns, plain assignments become config values. Record this decision and its trust boundary in a comment and in `AGENTS.md`: the global conf is trusted exactly as much as it is today, the repo conf is never trusted.
-    done: Given `ratchet/.ratchet.conf` and the real `~/.ratchet/conf`, When `Config.load` runs, Then every key resolves to the same value the bash `parse_repo_conf` plus source produces, asserted by comparing against `bash -c '. conf; declare -p'` output; Given a repo conf containing `NOTIFY_CMD=x` or any other non-allowlisted key, Then it is rejected with a doctor error and never assigned.
-    files: lib/robur/config.rb, test/config_test.rb, AGENTS.md
-- [x] T2.3 (normal) Config — precedence and defaults
-    do: add the neutral built-in defaults from `ratchet/lib/common.sh` as one frozen constant hash, and implement the precedence chain CLI flags > repo conf > global conf > defaults. `VERIFY_CMD` defaults empty so a missing gate stays a loud warning. Declare each default exactly once; there are no inline fallbacks at call sites.
-    done: Given a value set in all four layers, When `Config.load` runs, Then the CLI value wins; Given it set in three, Then the repo conf wins, and so on down; Given `PR_SOFT_MAX_LINES` unset everywhere, Then it is 400 and that literal appears exactly once in `lib/`.
-    files: lib/robur/config.rb, test/config_test.rb
-- [x] T2.4 (normal) conf_hash and the doctor tamper pin
-    do: add `Config#conf_hash` producing the same SHA-256 hex `ratchet/lib/contract.sh:conf_hash` produces, and read/write `.ratchet/conf.hash` in the same one-line format.
-    done: Given `ratchet/.ratchet.conf`, When `Config#conf_hash` runs, Then it equals `shasum -a 256 .ratchet.conf | awk '{print $1}'`; Given a `.ratchet/conf.hash` written by bash ratchet, Then robur reads it and reports no tampering.
-    files: lib/robur/config.rb, test/config_test.rb
-- [x] T2.5 (trivial, serial) M2 self-QA
-    do: extend the differential suite to cover config resolution and run both gates.
-    done: `ruby test/differential/run.rb --suite milestone-2` reports `0 diffs` across the conf-parsing scenarios — valid conf, unknown key, malformed line, quoted value, numeric coercion, per-provider cooldown — where the compared surface is `doctor` stdout and exit code. PASS is `0 diffs` plus a green unit run.
-    files: test/differential/suites/milestone-2.rb, LEARNINGS.md
+## Milestone 1 — every reason a repo does not run, in one verdict
 
-## M3 — The tracker grammar
+> Thickens `Fleet::Gate` from two checks to the full set. Every check is a PURE
+> read over `Robur::State` and `Robur::Plan`; the gate reports, it never
+> decides and never writes. All tasks are `(serial)` — they share `gate.rb`.
 
-- [x] T3.1 (hard, serial) Task — a correct tag and id parser
-    do: add `lib/robur/task.rb` with `Task.parse(line, lineno)` returning status (`open`/`in_progress`/`done`), id, tags, and text. Support every id form: `T1.2`, `T5`, `A1`, `I3`, `N-slug`, and `?` for none. The tag parser must scan the FIRST parenthesised group only — `ratchet/lib/tracker.sh:145` uses `.*\((trivial|normal|hard)[,)]` whose leading `.*` is greedy, so a task whose own text contains a word like hard in parentheses re-tags the task. Recognise `serial` and `independent` as additional tags.
-    done: Given `- [ ] T1.2 (normal, serial) rewrite the greedy matcher`, When parsed, Then id is `T1.2`, tags are `normal` and `serial`, status is open; Given a line tagged `(trivial)` whose title text later contains a parenthesised occurrence of the word hard, Then the tag is still `trivial` — this is the `:145` regression and it must be a named test.
-    files: lib/robur/task.rb, test/task_test.rb
-- [x] T3.2 (normal) Plan — the one open-task counter
-    do: add `lib/robur/plan.rb` wrapping a tracker file: `next_task`, `open?`, `in_progress?`, `counts` (open, in-progress, done), `completed_list`, `completed_subject`, `task_block`, `class_marker`. `counts` is the single counter — bash has three implementations and `atlas/bin/board-update.sh:13` gets it wrong by omitting `[ ]`. Honour the heading skip rule: `[ ]` lines under a heading whose lowercased text matches `done` or `checklist` are not tasks.
-    done: Given `ratchet/PLAN.md`, When `counts` runs, Then it matches `tracker_count_done` and the bash open-count for that file; Given a `[ ]` line under a `### Definition of Done` heading, Then `next_task` skips it and `open?` ignores it.
-    files: lib/robur/plan.rb, test/plan_test.rb
-- [x] T3.3 (normal) Plan — milestones and readiness
-    do: add `milestones` (name, done, total per `## ` section), `current_milestone` (name, index, count, done, total for the section holding the first open task), `ready?` (no `_(...)_` placeholders outside backticks, at least one tagged open task, and an all-done tracker counts as ready), and `independent_milestones`.
-    done: Given `ratchet/PLAN.md` and `ratchet/templates/PLAN.seed.md`, When each method runs, Then the outputs equal the bash `tracker_milestones`, `tracker_current_milestone`, `plan_is_ready` and `fanout_independent_milestones` results for the same files, asserted by executing both.
-    files: lib/robur/plan.rb, test/plan_test.rb
-- [x] T3.4 (normal) human_block_brief
-    do: add `Plan#human_block_brief(id, title)` producing the Telegram DM body byte-identically to `ratchet/lib/tracker.sh:human_block_brief` — the title line, the 900-char task block, the unblock instruction naming the tracker path, and the `/blocked` pointer.
-    done: Given the fixture repo and a known task id, When the brief is produced by both implementations, Then the two strings are identical including the 900-char bound and the fallback text when the block is not found.
-    files: lib/robur/plan.rb, test/plan_test.rb
-- [x] T3.5 (trivial, serial) M3 self-QA
-    do: add the tracker scenarios to the differential suite and run both gates.
-    done: `ruby test/differential/run.rb --suite milestone-3` reports `0 diffs` across all fixture repos, where each scenario runs `status` and `once` against a tracker variant — tagged, untagged, `[ ]`, all-done, placeholder-seeded, and the greedy-paren case — and compares stdout, exit code and the resulting `PLAN.md`. PASS is the literal `0 diffs`.
-    files: test/differential/suites/milestone-3.rb, LEARNINGS.md
+- [ ] T1.1 (normal, feat, serial) a failed repo backs off on a doubling ladder capped below a day
+      touches: lib/robur/fleet/backoff.rb, lib/robur/state.rb, test/fleet/backoff_test.rb
+      do: Add `Fleet::Backoff.new(repo, base:, cap:, clock:)` over
+          `Robur::State.read_loop_backoff` / `write_loop_backoff`, which already
+          own the `count<TAB>until_epoch` format — do not parse that file here.
+          Every keyword defaults (`BASE_DEFAULT`, `CAP_DEFAULT`, `Sys::Clock.new`)
+          so `Backoff.new(path)` alone is valid — T4.2 calls it that way.
+          `active?` is `now < until_epoch`. `bump!` increments count, doubles
+          delay from `base` per consecutive failure, clamps at `cap`, writes
+          `[count, now + delay]`, and returns `[count, delay]`. `clear!` returns
+          TRUE when it deleted a file and FALSE when there was none — T4.2
+          counts the truthy returns to report how many it cleared. `State` has
+          no delete for this file, only `clear_stop`; add
+          `State.clear_loop_backoff` beside it rather than unlinking a path
+          built here. Defaults: base 3600, cap 14400 — NOT 86400. Harbor
+          learned this the hard way (`../harbor/harbor/loop/runner.py:35`): a
+          cap above the beat interval means the 4th failure silences a repo for
+          longer than the gap between fires, so no new information is ever
+          produced and nothing can clear it.
+      snippet:
+          BASE_DEFAULT = 3600
+          CAP_DEFAULT  = 14_400
+      accept:
+          Given a repo with 3 recorded consecutive failures and base 3600, cap 14400
+          When Backoff#bump! is called
+          Then it returns [4, 14400] and active? is true until now + 14400
+      verify: ruby -Ilib -e 'Dir["test/**/*_test.rb"].each{|f| require File.expand_path(f)}'
+              — new test/fleet/backoff_test.rb asserts the 1x/2x/4x/cap sequence with
+              an injected clock, that clear! makes active? false and returns true,
+              and that clear! on a repo with no backoff file returns false.
+      constraints: all reads/writes/deletes via Robur::State; injected clock only, never
+                   Time.now; stdlib only; no new repo-conf keys (design constraint 4).
 
-## M4 — Models, turns, classification
+- [ ] T1.2 (hard, feat, serial) a repo waiting on a human stops re-asking the same question
+      touches: lib/robur/fleet/gate.rb, test/fleet/gate_test.rb
+      do: Add `Gate#human_blocked?`. True only when BOTH: `State.read_stop_reason`
+          is `"human_blocked"`, AND the task id in `State.read_last_task` is still
+          dispatchable in the tracker. Dispatchable means still `[ ]` or
+          `[IN PROGRESS]` — a `[HUMAN]` parked task does NOT count, because robur
+          never dispatches a parked task and the repo must get on with its other
+          work. Tagged hard: this is the self-clearing property, and getting it
+          wrong is expensive in both directions. A stop_reason is per-run state,
+          so without the tracker re-check a 15-minute beat re-fires the same
+          unanswered question forever — harbor measured 246 re-runs from one
+          question (`../harbor/harbor/loop/gates.py:human_blocked`). With it, the
+          block clears the moment the human closes or parks the task, and there
+          is no unblock command to remember. A missing or `"?"` task id means
+          still blocked.
+      snippet:
+          %r{^\s*- \[( |IN PROGRESS)\] #{Regexp.escape(task_id)}( |$)}
+      accept:
+          Given stop_reason is "human_blocked" on T3.1 and PLAN.md still has "- [ ] T3.1 ..."
+          When Gate#human_blocked? is called
+          Then it is true
+          And when that line becomes "- [HUMAN] T3.1 ..." or "- [x] T3.1 ..." it is false
+      verify: ruby -Ilib -e 'Dir["test/**/*_test.rb"].each{|f| require File.expand_path(f)}'
+              — test/fleet/gate_test.rb adds the four cases: open, in-progress, parked, done.
+      constraints: read-only; reads go through Robur::State and Robur::Plan; stdlib only.
 
-- [x] T4.1 (normal) ModelChain — first-available, bench, cooldown
-    do: add `lib/robur/model_chain.rb` holding the chain, the per-model transient strike counts and bench-until timestamps, with `pick`, `bench!`, `strike!`, `reset_all`, and the per-provider `COOLDOWN_<PROVIDER>` override resolved from the model's leading path segment. Take `Sys::Clock` by injection so cooldown expiry is testable without sleeping.
-    done: Given a three-model chain, When the first is benched, Then `pick` returns the second; When all are benched, Then `pick` returns nil; When the injected clock advances past the cooldown, Then the first is picked again; Given `COOLDOWN_ZAI=3600` and a global `COOLDOWN=14400`, Then a `zai/...` model unbenches after 3600 simulated seconds.
-    files: lib/robur/model_chain.rb, test/model_chain_test.rb
-- [x] T4.2 (normal) tier selection
-    do: add `lib/robur/tier.rb` resolving a task tag to a tier (`trivial`→light, `hard`→build-hard, else build), the chain for a tier with the documented fallback order, the thinking level per tier, `AUTOPLAN` falling back to `PLAN` then flat, and the `--cheap` override that forces every tier to light. Include the `MODEL_RANK` auto-slice for unset tiers.
-    done: Given each combination of set and unset tier keys from the bash suite-5, suite-21 and suite-22 cases, When the tier chain is resolved, Then it equals what `chain_for_tier` returns for the same conf, asserted against recorded bash output.
-    files: lib/robur/tier.rb, test/tier_test.rb
-- [x] T4.3 (hard) Turn — one agent invocation with a watchdog
-    do: add `lib/robur/turn.rb` running one `AGENT_CMD` invocation through `Sys::Proc`, streaming output to the turn file, enforcing `TURN_TIMEOUT` and the `STALL_TIMEOUT` no-growth kill, and recording the kill reason. Use `Process.wait` and a monotonic clock; the bash version hand-rolls this with `kill -0` and `$SECONDS` because bash 3.2 has no `timeout`.
-    done: Given a stub agent that sleeps past the deadline, When the turn runs, Then it is killed, the kill reason is `deadline`, and the elapsed time is within one poll interval of the cap; Given a stub that emits nothing for longer than `STALL_TIMEOUT` then would finish, Then it is killed with reason `stall`; Given a stub that finishes normally, Then the exit code and captured output are intact.
-    files: lib/robur/turn.rb, test/turn_test.rb
-- [x] T4.4 (hard) Classifier — one JSON parser
-    do: add `lib/robur/classifier.rb` returning `done | human | step | exhausted | hard | timeout | transient` in that precedence order. It parses the pi event stream with a single `JSON.parse` per line — bash parses this stream three ways in three files, by regex, by `jq`, and by an embedded Python heredoc. Token matches count only in assistant `text_end` events; error scans must exclude assistant `text`/`thinking` events, or a task that merely discusses a rate limit false-fires as exhausted.
-    done: Given the `turn-usage` fixtures and recorded provider error bodies, When each is classified, Then the verdict matches bash `classify_turn` for every case in suite 1; Given an output whose assistant prose contains the phrase for a quota error, Then the class is not exhausted; Given a non-JSON plain-text output, Then classification falls back to literal token matching.
-    files: lib/robur/classifier.rb, test/classifier_test.rb
-- [x] T4.5 (normal) session sanitize
-    do: add `lib/robur/session_sanitize.rb` stripping prior thinking blocks so any provider can continue a session, matching `ratchet/lib/session-sanitize.sh` behaviour, including the no-op path when `SANITIZE_THINKING=0`.
-    done: Given the recorded session fixtures from bash suite 6, When sanitized, Then the output is byte-identical to the bash result; Given `SANITIZE_THINKING=0`, Then the input is returned unchanged.
-    files: lib/robur/session_sanitize.rb, test/session_sanitize_test.rb
-- [x] T4.6 (trivial, serial) M4 self-QA
-    do: extend the differential suite with turn-level scenarios and run both gates.
-    done: `ruby test/differential/run.rb --suite milestone-4` reports `0 diffs`, where the scenarios run `once` against the fixture repo with a stub agent forced into each outcome — step, done, human, exhausted, hard, timeout, transient — and compare stdout, exit code, `.ratchet/last_task.state` and the metrics row. PASS is the literal `0 diffs`.
-    files: test/differential/suites/milestone-4.rb, LEARNINGS.md
+- [ ] T1.3 (normal, feat, serial) a class HUMAN plan waits for approval before it ever runs
+      touches: lib/robur/fleet/gate.rb, test/fleet/gate_test.rb
+      do: Add `Gate#class_gated?`: true when the tracker's class marker is `HUMAN`
+          and `Robur::State.state_path(repo, "plan-approved")` does not exist.
+          Read the marker with `Robur::Plan#class_marker`, which already parses
+          `<!-- class: MACHINE -->` off the tracker's first line — do NOT port
+          harbor's looser `class:\s*(\S+)` scan of the first 5 lines
+          (`../harbor/harbor/loop/gates.py:class_gated`), which matches prose as
+          well as the marker. A `MACHINE` marker, or no marker at all, is not
+          gated. This is the gate that keeps a plan involving money, strategy or
+          anything outward-facing from running unattended.
+      snippet:
+          def class_gated? = plan.class_marker&.upcase == "HUMAN" && !approved?
+      accept:
+          Given a PLAN.md whose first line is "<!-- class: HUMAN -->" and no .robur/plan-approved
+          When Gate#class_gated? is called
+          Then it is true
+          And after .robur/plan-approved is created it is false
+      verify: ruby -Ilib -e 'Dir["test/**/*_test.rb"].each{|f| require File.expand_path(f)}'
+              — test/fleet/gate_test.rb adds HUMAN-gated, HUMAN-approved, MACHINE, and no-marker.
+      constraints: read-only; use Robur::Plan#class_marker, never a new regex; stdlib only.
 
-## M5 — Repo, commit gate, observability
+- [ ] T1.4 (normal, feat, serial) Gate#verdict names one reason, and the dry run prints it
+      touches: lib/robur/fleet/gate.rb, lib/robur/fleet.rb, test/fleet/gate_test.rb
+      do: Compose the checks into `Gate#verdict` -> a Symbol, evaluated in this
+          fixed order so the reported reason is the most actionable one:
+          `:no_conf` (not initialized), `:caught_up` (open_tasks == 0),
+          `:backoff` (Backoff#active?), `:human_block` (human_blocked?),
+          `:class_gate` (class_gated?), else `:runnable`. Add
+          `Gate#stop_reason` returning `State.read_stop_reason` or, when that
+          file is absent, `"done"` if open_tasks is zero and `"stopped"`
+          otherwise. Widen `Fleet.dry_run` to render these verdicts through the
+          existing `Fleet::Render.board`. Order matters and is the whole point:
+          a repo that is both backed off and class-gated should report the
+          backoff, because that is the one that expires on its own.
+      snippet:
+          REASONS = { no_conf: "not robur-initialized", caught_up: "no open tasks",
+                      backoff: "backed off after a failure" }.freeze
+      accept:
+          Given a repo that is backed off AND has a class HUMAN plan
+          When `robur fleet --dry-run` runs
+          Then its line reads "skip:backoff", not "skip:class-gate"
+      verify: ruby -Ilib -e 'Dir["test/**/*_test.rb"].each{|f| require File.expand_path(f)}'
+              — test/fleet/gate_test.rb asserts each verdict in isolation plus the
+              backoff-beats-class-gate precedence case.
+      constraints: Gate stays read-only and decides nothing about budgets; stdlib only.
 
-- [x] T5.1 (normal) Repo — one default-branch detection, one worktree state machine
-    do: add `lib/robur/repo.rb` wrapping git through `Sys::Proc`: `default_branch` (one implementation; bash has four copies of the `symbolic-ref` plus `main` fallback), `status_porcelain`, `staged_diff`, `staged_files`, `commit`, `checkout_b`, `push`, `shortstat`, and `worktrees` returning parsed porcelain records (path, head, branch, detached) — one implementation replacing the two copies of the porcelain state machine in `ratchet/lib/commands.sh`.
-    done: Given a fixture repo with an `origin/HEAD` ref and one without, When `default_branch` runs, Then it returns the ref's branch and `main` respectively; Given a repo with two added worktrees, When `worktrees` runs, Then it returns three records with correct paths and branches, and the primary is first.
-    files: lib/robur/repo.rb, test/repo_test.rb
-- [x] T5.2 (hard) CommitGate — same ordering, same blocks
-    do: add `lib/robur/commit_gate.rb` preserving the exact bash ordering: stage all, un-stage `COMMIT_EXCLUDE_GLOBS` and `.ratchet.conf`, secret-scan the staged diff, run `VERIFY_CMD` as a hard gate, skip cleanly when nothing is staged, then one commit with the tracker-mined subject. The scan looks only at ADDED lines, honours the `ratchet:allow-secret` inline marker, and an empty added-line set is CLEAN — the inverted return there once dead-locked the loop. An empty `VERIFY_CMD` is a loud warning, never a silent skip.
-    done: Given a green tree, When the gate runs, Then exactly one commit lands with subject `auto(ratchet): turn N MODEL — SUBJECT`; Given a red `VERIFY_CMD`, Then nothing is committed and the work is left staged; Given a staged private key, an AWS id, an `sk-` key, a JWT and a `.env` addition, Then each is blocked with the matching reason; Given a staged diff with zero added lines, Then the scan reports clean and the commit proceeds.
-    files: lib/robur/commit_gate.rb, test/commit_gate_test.rb
-- [x] T5.3 (hard, serial) Observability — structured events as the source of truth
-    do: add `lib/robur/observability.rb` with an `Event` record and an `emit` that appends one JSON line to `events.jsonl` AND renders the frozen human line into `loop.log`. The log becomes a rendering of the events, killing the write-prose-then-regex-parse-it-back round-trip: bash writes English prose and parses it back with 5 regexes and 9 exact-wording substring checks, so rewording a log line silently zeroes a metric. The human-readable line format does not change.
-    done: Given a run producing turn-start, turn-end, commit, bench and stop events, When the run finishes, Then `loop.log` is byte-identical to what bash ratchet writes for the same run, AND `events.jsonl` has one parseable record per line whose fields reconstruct that log line exactly.
-    files: lib/robur/observability.rb, test/observability_test.rb
-- [x] T5.4 (normal) metrics.tsv and turn usage
-    do: add `Observability#metrics_append` writing the same 12 tab-separated columns in the same order, defaulting to `RATCHET_HOME/metrics.tsv` and honouring `RATCHET_METRICS` — never `$HOME` directly, because hardcoding it made 333 of 340 recorded rows fixture noise. Add `turn_usage` summing per-message usage deltas deduped by `id`, `message.id`, `message.responseId` or `responseId` — zai streams carry no `id` and repeat the same usage 3–6 times per message.
-    done: Given the `turn-usage` fixtures, When `turn_usage` runs, Then the in/out/cost triple equals the bash `_turn_usage` output exactly; Given `RATCHET_METRICS` pointed at a temp file, Then nothing is written to the real metrics file and the appended row has 12 fields in the frozen order.
-    files: lib/robur/observability.rb, test/observability_test.rb
-- [x] T5.5 (normal) notify_human and stats
-    do: add `notify_human` — emit `HUMAN NEEDED:`, ring the bell on a TTY, run `NOTIFY_CMD` in the background with the message as `$1`, and never accept `NOTIFY_CMD` from the repo conf. Add `stats` computing the baseline metrics from `events.jsonl` rather than by re-parsing prose, with a fallback that reads a legacy `loop.log` so old logs still report.
-    done: Given a `NOTIFY_CMD` stub, When `notify_human` runs, Then the stub receives the message as its first argument exactly once; Given the `logs/*.log` fixtures, When `stats` runs on them, Then the printed metrics match `ratchet stats` on the same files line for line.
-    files: lib/robur/observability.rb, test/observability_test.rb
-- [x] T5.6 (trivial, serial) M5 self-QA
-    do: extend the differential suite to the gate and log surfaces and run both gates.
-    done: `ruby test/differential/run.rb --suite milestone-5` reports `0 diffs`, where scenarios cover a green commit, a red gate, each secret-scan block, an idempotent turn, and a `.ratchet.conf` tamper attempt, comparing `loop.log`, the metrics row, and `git log --format='%s'`. PASS is the literal `0 diffs`, and the git-history comparison must include the commit subjects, not just the count.
-    files: test/differential/suites/milestone-5.rb, LEARNINGS.md
+- [ ] T1.5 (normal, test, serial) the gate is proven against a real repo layout, not a mock
+      touches: test/fleet/gate_test.rb, test/fixtures/fleet/README.md
+      do: Add a fixture helper that builds a throwaway repo on disk — `.robur.conf`,
+          a `PLAN.md` with a class marker and a mix of `[ ]`, `[IN PROGRESS]`,
+          `[HUMAN]` and `[x]` lines, plus optional `.robur/stop_reason`,
+          `.robur/last_task.state` and `.robur/loop-backoff` — and drive every
+          `Gate` reader against it. This is the regression net for the rest of
+          the plan: M2 and M3 both consume `Gate#verdict`, and a gate that is
+          only tested against stubs will pass while reading the wrong file.
+          Keep the helper in the test file; do not add a framework.
+      snippet:
+          def with_repo(open: 1, in_progress: 0, marker: "MACHINE", **state)
+      accept:
+          Given a fixture repo with 1 open and 1 IN PROGRESS task
+          When Gate#open_tasks is called
+          Then it returns 2
+      verify: ruby -Ilib -e 'Dir["test/**/*_test.rb"].each{|f| require File.expand_path(f)}'
+              — every Gate reader is exercised against a real on-disk fixture.
+      constraints: use Dir.mktmpdir and clean up; never touch the operator's real ~/.robur
+                   (test_helper.rb already fences ROBUR_HOME); stdlib only.
 
-## M6 — The CLI and the loop
+## Milestone 2 — the planner decides a whole cycle, purely
 
-- [x] T6.1 (normal) Cli — argument parsing and exit codes
-    do: add `lib/robur/cli.rb` using `OptionParser` for the full flag surface, plus the two-phase parse the bash entrypoint needs: a tolerant pre-scan that finds only the subcommand and repo dir so the repo conf can load before the authoritative parse. Preserve every exit code: 0 for a clean stop, 1 for preflight failure and PR-flow errors, 2 for the manual-merge and push-failure paths, and `die` for an unknown option.
-    done: Given each documented flag and subcommand, When parsed, Then the resolved config matches the bash result; Given an unknown option, Then it exits non-zero with the same message shape; Given `--help`, Then stdout is byte-identical to `ratchet --help` after the program-name substitution.
-    files: lib/robur/cli.rb, test/cli_test.rb
-- [x] T6.2 (hard, serial) the run loop
-    do: add `lib/robur/loop.rb` orchestrating the turn cycle: the all-done fast path, tier routing with model reinit only on tier change, the tier-exhausted fallback to the flat chain, the all-benched backoff ladder 900/3600/14400, the per-outcome dispatch, the `ALL_DONE`-with-open-tasks downgrade to step, the timeout salvage that commits a green killed turn, the human-gate salvage, and the `MAX_DONE_GATE_FAILS` stop. Setting a status inside a branch must actually take effect — the bash version lost a status assignment inside a `case` arm and exited with open tasks.
-    done: Given the fixture repo and the fake-agent, When `robur run` executes to completion, Then all three tasks are ticked, three commits exist, `.ratchet/stop_reason` is `done`, and the exit code is 0; Given a stub forced red for `MAX_DONE_GATE_FAILS` consecutive done-turns, Then the loop stops with `stop_reason` `gate_red` and notifies.
-    files: lib/robur/loop.rb, test/loop_test.rb
-- [x] T6.3 (normal) state files
-    do: add `lib/robur/state.rb` owning every `.ratchet/` file with the frozen formats: `stop_reason` (one word), `loop-backoff` (`count<TAB>until_epoch`), `last_task.state` (`taskid<TAB>status`), `milestone.cur` (`name<TAB>base_sha<TAB>cycle<TAB>errors`), `conf.hash`, `last-log`, `fanout.state`. Reads tolerate a missing file; writes never raise.
-    done: Given each state file as written by bash ratchet, When robur reads it, Then the parsed value is correct; Given robur writes each one, Then bash ratchet's own readers — `stop_reason`, `backed_off`, `cut -f1 last_task.state` — return the same values, asserted by executing them.
-    files: lib/robur/state.rb, test/state_test.rb
-- [x] T6.4 (normal) render and the status board
-    do: add `lib/robur/render.rb` for the PM header, progress bar, timing and ETA lines, and `robur status` for the fleet board including liveness from the pid file and the milestone bars. Keep the ETA honestly labelled with the `~` prefix and `ETA unknown` before any recorded duration.
-    done: Given the `logs/*.log` fixtures, When `robur status` renders, Then stdout is byte-identical to `ratchet status` on the same fixtures; Given no recorded turn duration, Then the ETA line reads `ETA unknown`.
-    files: lib/robur/render.rb, test/render_test.rb
-- [x] T6.5 (hard) init, doctor, new, plan
-    do: add `lib/robur/commands.rb` with `init` (stamp `.ratchet.conf`, `AGENTS.md`, seed `PLAN.md`, `LEARNINGS.md`, strip a legacy `ratchet-protocol:v1` block while preserving surrounding prose, write `conf.hash`), `doctor` (conf parses, tracker has work, tokens align, protocol current, mid-operation detection, tier warnings, conf-hash tamper), `new`, and `plan` with its `--auto` variant and the KTLO prompt for a caught-up tracker.
-    done: Given a bare repo, When `robur init` runs, Then the stamped files are byte-identical to `ratchet init`'s output; Given a repo mid-rebase, a repo with a legacy protocol block, and a repo with `LIGHT_MODELS` but no `THINKING_LIGHT=off`, When `robur doctor` runs on each, Then stdout and exit code match `ratchet doctor` exactly.
-    files: lib/robur/commands.rb, test/commands_test.rb
-- [x] T6.6 (hard) models, PR flow, fanout
-    do: add `lib/robur/models_cmd.rb` (`list`/`add`/`remove`/`thinking`/`rank`, registry validation against the pi model cache, conf upsert, `--repo` targeting with a conf-hash re-stamp), and add the PR-cadence path to the loop — plan PR #0, milestone branch lifecycle, the bounded review turn, `open_milestone_pr`, and `wait_for_merge` with its four return states — plus `fanout` and `fanout-clean` using the single `Repo#worktrees` parser and the fail-toward-KEEP rule.
-    done: Given the recorded `gh` stub responses from bash suites 29, 31, 32, 36 and 37, When each flow runs, Then the emitted log lines, the `milestone.cur` contents, the `fanout.state` contents and the exit codes match bash exactly, including that a worktree with a stash, an unpushed commit or a dirty tree is KEPT.
-    files: lib/robur/models_cmd.rb, lib/robur/loop.rb, test/pr_flow_test.rb
-- [x] T6.7 (trivial, serial) M6 self-QA
-    do: run the full differential suite across every command and both gates.
-    done: `ruby test/differential/run.rb --suite milestone-6` reports `0 diffs` across every subcommand — `run`, `once`, `init`, `new`, `plan`, `plan --auto`, `doctor`, `status`, `stats`, `models`, `fanout`, `fanout-clean` — on all fixture repos. PASS is the literal `0 diffs`; a scenario that cannot be compared must be listed as unsupported in the report, never silently skipped.
-    files: test/differential/suites/milestone-6.rb, LEARNINGS.md
+> `Fleet::Planner` is the architectural centre: it turns a roster plus gate
+> verdicts plus budgets into an ordered list of decisions, with NO side
+> effects. `--dry-run` and the real cycle both consume its output, so they can
+> never disagree. Tasks share `planner.rb` and are `(serial)`.
 
-## M7 — Parity gate, then rewiring
+- [ ] T2.1 (hard, feat, serial) one pure planner produces the decisions both callers execute
+      touches: lib/robur/fleet/planner.rb, lib/robur/fleet.rb, test/fleet/planner_test.rb
+      do: Add `Fleet::Planner.new(roster:, gate_for:, budget:, clock:, paused:
+          false, already_ran: [])` where `gate_for` is a lambda
+          `repo -> Fleet::Gate` (dependency injection, so the planner never
+          touches disk) and `budget` is a Struct of `max_runs`, `max_plans`.
+          Declare all six keywords NOW even though `paused` (T2.3) and
+          `already_ran` (T3.4's second pass) are unused here — both are values
+          the CALLER reads off disk, and a pure planner must never grow an `fs:`
+          later. `#decisions` returns an ordered array of
+          `Decision = Struct.new(:repo, :action, :reason)` with `action` in
+          `:run | :plan | :skip`. Walk `roster.active` in file order: a
+          `:runnable` verdict becomes `:run` until `max_runs` is spent, then
+          `:skip` with reason `:max_runs`; a repo in `already_ran` is `:skip`
+          with reason `:once_per_cycle`. Every other verdict becomes `:skip`
+          carrying the gate's reason. Tagged hard because this replaces TWO
+          harbor code paths that drifted — `runner.run_cycle` and the separate
+          `runner.dry_run_lines`, whose string output `schedule.eligibility`
+          then re-parsed. There is exactly one decision path here, and
+          `Fleet.dry_run` must be rewritten to render `#decisions` rather than
+          compute anything itself.
+      snippet:
+          Decision = Struct.new(:repo, :action, :reason, keyword_init: true)
+      accept:
+          Given 3 runnable repos in roster order and max_runs of 2
+          When Planner#decisions is called
+          Then the first two are :run and the third is :skip with reason :max_runs
+          And a repo passed in already_ran is :skip with reason :once_per_cycle
+          And no file on disk was read or written by the planner itself
+      verify: ruby -Ilib -e 'Dir["test/**/*_test.rb"].each{|f| require File.expand_path(f)}'
+              — new test/fleet/planner_test.rb drives it with stub gates and no filesystem.
+      constraints: PURE — no File, no Dir, no spawn, no Time.now; clock is injected;
+                   stdlib only.
 
-Software first. Every rewiring task below is deferred to the end on purpose: the
-port must be provably identical before any live reference moves.
+- [ ] T2.2 (normal, feat, serial) a caught-up repo tops up its own backlog, but not on every beat
+      touches: lib/robur/fleet/planner.rb, lib/robur/fleet/gate.rb, test/fleet/planner_test.rb
+      do: A repo whose verdict is `:caught_up` and which has a tracker file is
+          eligible for an unattended `robur plan --auto` turn. Emit it as a
+          `:plan` decision, bounded by `budget.max_plans`. Rate-limit PER REPO,
+          not per cycle: add `Gate#autoplan_due?(min_secs, now)` reading the
+          mtime of `State.state_path(repo, "autoplan.stamp")`, and skip with
+          reason `:autoplan_recent` when it is not due. Default
+          `AUTOPLAN_MIN_SECS` is 21600 (6h). This is the estate's dominant
+          cost line, not a nicety: harbor recorded robur taking 2,273 of 2,299
+          turns over four days purely by being caught up
+          (`../harbor/harbor/loop/runner.py:60`), and on a 15-minute beat an
+          unstamped rule would draw 96 plan turns a day per caught-up repo, on
+          the scarcest model chain. A repo that is backed off, human-blocked or
+          class-gated is never auto-planned. Also add `#cycle_plan`, which is
+          only `{ runs: <the :run decisions>, plans: <the :plan decisions> }`
+          off the same single `#decisions` walk — grouping, not a second
+          decision path.
+      snippet:
+          AUTOPLAN_MIN_SECS_DEFAULT = 21_600
+      accept:
+          Given a caught-up repo whose autoplan.stamp is 1 hour old and min_secs of 21600
+          When Planner#decisions is called
+          Then its decision is :skip with reason :autoplan_recent
+          And with a stamp 7 hours old the decision is :plan
+          And cycle_plan groups that same decision under :plans, deciding nothing new
+      verify: ruby -Ilib -e 'Dir["test/**/*_test.rb"].each{|f| require File.expand_path(f)}'
+              — test/fleet/planner_test.rb covers due, not-due, missing stamp (due),
+              max_plans exhausted, and backed-off-so-never-planned.
+      constraints: planner stays pure (the stamp read lives on Gate); injected clock;
+                   AUTOPLAN_MIN_SECS is global/ENV only, never a repo-conf key.
 
-- [x] T7.1 (hard, serial) the parity gate
-    do: add `test/differential/suites/parity.rb` composing every milestone suite into one run, plus a long-run scenario driving the fixture repo from empty tracker to `ALL_DONE` across many turns with the fake-agent. `ruby test/differential/run.rb --suite parity` is the single command that proves feature parity.
-    done: Given all fixture repos, When `ruby test/differential/run.rb --suite parity` runs, Then it reports `0 diffs` across every scenario in every milestone suite and exits 0; When any single milestone suite is failing, Then the parity run fails and names it.
-    files: test/differential/suites/parity.rb
-    note: green 2026-09-03 (0 diffs / 49 scenarios, 1 unsupported) after the audit-implementation session; the audit's deliberate divergences are codified in-suite (`drop_lines:` with named reasons) and excluded by name (`events.jsonl`) — see AGENTS.md "Deliberate divergences".
-- [x] T7.2 (trivial, serial) publish the parity evidence
-    do: run the parity gate and paste its verbatim output, the date, and the robur git sha into the Track B evidence block of `atlas/MIGRATION-CUTOVER.md`. Do not perform any rewiring and do not tick any checklist box — that document is human-owned.
-    done: Given a green parity run, When this task completes, Then `atlas/MIGRATION-CUTOVER.md` contains the verbatim output under `## Track B — parity evidence` with a date and a sha, and every checklist box in that document is still unticked.
-    files: ../atlas/MIGRATION-CUTOVER.md
-    note: done 2026-09-03 (atlas c1a78d8). Verbatim parity output at robur f605f55 under `## Track B — parity evidence`, with date, sha and branch. All 45 checklist boxes verified still unticked; nothing else in that document touched.
-- [x] T7.3 (normal, serial) the rewiring inventory
-    do: produce `REWIRING.md` in this repo: every live reference to the bash ratchet that cutover must move, each with its file, line, current value, target value, and the exact revert. Cover at minimum the `ratchet` symlink on PATH, `atlas/cycles.conf` repo paths, `~/.ratchet/conf` `NOTIFY_CMD`, the launchd plist, `atlas/bin/money-loop.sh`'s `ratchet run` and `ratchet plan --auto` invocations, harbor's `/loop` and `/blocked` paths, and any `RATCHET_HOME` or `RATCHET_METRICS` override. Find them by grep, not from memory. Change nothing.
-    done: Given the estate, When `REWIRING.md` is complete, Then every entry names a file and line that currently exists, each has a one-line revert, and re-running the same greps surfaces no reference absent from the document.
-    files: REWIRING.md
-    note: done 2026-09-03. Inventory is 1 EDIT (the /usr/local/bin/ratchet symlink) + 7 VERIFY-ONLY entries; every caller invokes the bare command name, so the symlink moves all of them. harbor needs no rewiring (frozen .ratchet/ state reads only). No live RATCHET_HOME/RATCHET_METRICS override exists. All 21 file:line citations re-verified. Flags one stale line in the human-owned MIGRATION-CUTOVER.md checklist (metrics 12-vs-15 fields).
-- [x] T7.4 (trivial, serial) M7 self-QA and Track B close
-    do: final gate, then append the Track B close entry to `LEARNINGS.md`.
-    done: `ruby -Ilib -e 'Dir["test/**/*_test.rb"].each{|f| require File.expand_path(f)}'` exits 0 AND `ruby test/differential/run.rb --suite parity` reports `0 diffs` AND `git -C ../ratchet status --porcelain` is empty, proving no task in this plan touched the read-only bash ratchet. PASS is all three.
-    files: LEARNINGS.md
-    note: PASS 2026-09-03, all three parts — unit 257 runs/956 assertions/0 failures exit 0; parity 0 diffs across 49 scenarios (1 unsupported) exit 0; `git -C ../ratchet status --porcelain` empty. Track B close entry appended to LEARNINGS.md. M7 complete; cutover remains class: HUMAN in atlas/MIGRATION-CUTOVER.md.
+- [ ] T2.3 (normal, feat, serial) a paused fleet plans nothing and says so once
+      touches: lib/robur/fleet/planner.rb, lib/robur/fleet.rb, test/fleet/planner_test.rb
+      do: When the planner is constructed with `paused: true`, `#decisions`
+          returns a single `:skip` decision per active repo with reason
+          `:paused`, and `#cycle_plan` returns empty run and plan phases. The
+          planner NEVER stats the flag itself — design constraint 5 — so
+          `Fleet.dry_run` and `Fleet.cycle` each pass
+          `paused: File.exist?(Paths.fleet_paused_flag)` when they build it.
+          One flag read, two callers, identical behaviour. Render it as one
+          `fleet paused` header line above the board rather than repeating
+          "paused" on every row.
+      snippet:
+          Planner.new(..., paused: File.exist?(Paths.fleet_paused_flag))
+      accept:
+          Given ~/.robur/fleet.paused exists
+          When `robur fleet --dry-run` runs
+          Then the output opens with a "fleet paused" line and lists no :run or :plan rows
+      verify: ruby -Ilib -e 'Dir["test/**/*_test.rb"].each{|f| require File.expand_path(f)}'
+              — test/fleet/planner_test.rb asserts paused yields zero run/plan decisions.
+      constraints: flag path comes from Robur::Paths; the planner never stats the flag;
+                   stdlib only.
 
-> **Cutover is not in this plan.** Executing the rewiring in `REWIRING.md` —
-> swapping `cycles.conf` paths, `NOTIFY_CMD`, and the `ratchet` name on PATH — is
-> `class: HUMAN` and lives in `atlas/MIGRATION-CUTOVER.md`, blocked on T7.1
-> reporting `0 diffs`. Rollback is reverting that one config change.
+- [ ] T2.4 (normal, feat, serial) the fleet's budgets come from the human-owned conf, not from constants
+      touches: lib/robur/fleet.rb, test/fleet/budget_test.rb
+      do: Nothing yet reads the seven global keys, so every budget in M1-M2 is
+          a hardcoded default. Add `Fleet.budget` returning a Struct of
+          `max_runs`, `max_plans`, `autoplan_min_secs`, `backoff_base`,
+          `backoff_cap`, `interval`, `healthcheck_url`, resolved in ONE place
+          with precedence ENV > `~/.robur/conf` > the constants declared in
+          T1.1/T2.2. Read the conf through `Robur::Config.load_global(
+          Paths.global_conf)`, taking `[:values]` and `[:env]` — that is the
+          trusted, bash-sourced half of the trust boundary and the only loader
+          that exists; `Config.load` is repo-scoped and must not be used here.
+          A missing conf file yields the defaults, never an exception. Defaults:
+          max_runs 4, max_plans 4 (harbor's), the rest as already declared.
+          These keys are GLOBAL-ONLY — design constraint 4 — so this reader
+          must never consult a repo `.robur.conf`, and nothing here may be
+          added to `Config::ALLOWLIST`.
+      snippet:
+          Budget = Struct.new(:max_runs, :max_plans, :autoplan_min_secs, ..., keyword_init: true)
+      accept:
+          Given a ~/.robur/conf setting MAX_RUNS_PER_CYCLE=2 and no MAX_PLANS_PER_CYCLE
+          When Fleet.budget is read
+          Then max_runs is 2 and max_plans is the default 4
+          And with MAX_RUNS_PER_CYCLE=9 also set in ENV, max_runs is 9
+          And with no ~/.robur/conf at all every field is its default
+      verify: ruby -Ilib -e 'Dir["test/**/*_test.rb"].each{|f| require File.expand_path(f)}'
+              — new test/fleet/budget_test.rb covers ENV-wins, conf-wins-over-default,
+              missing conf, and that a repo .robur.conf setting these is ignored.
+      constraints: global conf + ENV only; never Config::ALLOWLIST; never repo conf;
+                   a missing or unreadable conf returns defaults; stdlib only.
 
-## M8 — Rebirth: robur is the product
+## Milestone 3 — the cycle executes the plan
 
-Decision (2026-09-04, owner): **parity with the bash ratchet is retired.** robur
-is no longer a port that must justify every difference — it is the product, and
-the goal is for it to be BETTER than what it replaced, not identical to it.
-`../ratchet` stays on disk, read-only, but it is no longer the oracle and the
-differential harness that compared against it is being removed.
+> The first milestone that spawns anything. `Fleet::Cycle` consumes
+> `Planner#cycle_plan` and does exactly what it says — it makes no decisions of
+> its own. Tasks sharing `cycle.rb` are `(serial)`.
 
-One constraint survives, and it is a product decision rather than a legacy one:
-**nobody outside this repo should have to change anything.** `atlas/bin/*.sh`
-(41 references) and harbor's `/blocked` read the old on-disk names today. So
-robur reads the new names first and the old ones as a fallback, and every write
-leaves the old path as a symlink to the new one. A repo that never migrates
-keeps working; an external reader following `.ratchet/stop_reason` gets robur's
-bytes. That is the difference between a rename and a migration you inflict on
-other people.
+- [ ] T3.1 (normal, feat) one writer per checkout, and a busy repo is skipped not queued
+      touches: lib/robur/fleet/lock.rb, test/fleet/lock_test.rb
+      do: Add `Fleet::Lock.acquire(repo)` -> a `Lease` with `#release`, or `nil`
+          immediately when the checkout is already locked. Use a non-blocking
+          `flock(LOCK_EX | LOCK_NB)` on `State.state_path(repo, "loop.lock")`,
+          writing the holder pid into the file so `Lock.holder_pid(repo)` can
+          report who has it. Never wait and never force: a contended checkout is
+          skipped for this cycle and retried on the next beat. This is what stops
+          a cycle from moving `HEAD` underneath a human's live session in the
+          same tree — harbor's own architecture review recorded `HEAD` moving
+          three times under a read-only analysis before this existed (L3 in
+          `../harbor/docs/research/2026-09-11-agentic-harness.md`). Follow the
+          flock pattern already in `Robur::Lifecycle#acquire_lock!`.
+      snippet:
+          f.flock(File::LOCK_EX | File::LOCK_NB) or return nil
+      accept:
+          Given a lease already held on a repo
+          When Lock.acquire is called again for that repo
+          Then it returns nil without blocking, and holder_pid reports the first holder
+          And after the first lease is released, acquire succeeds
+      verify: ruby -Ilib -e 'Dir["test/**/*_test.rb"].each{|f| require File.expand_path(f)}'
+              — new test/fleet/lock_test.rb takes two leases in one process and one via a
+              forked child, asserting non-blocking failure and clean re-acquisition.
+      constraints: lock path via Robur::State/Paths; never block, never break a lock;
+                   always release in an ensure; stdlib only.
 
-- [x] T8.1 (hard, serial) `Robur::Paths` — one source of truth for on-disk names
-    do: replace the on-disk names scattered as string literals across 21 files with one module owning `.robur/`, `.robur.conf`, `~/.robur/`, `ROBUR_HOME`/`ROBUR_METRICS`/`ROBUR_LOOP`, each with its legacy fallback, plus `ensure_state_dir!` leaving the legacy path as a relative symlink.
-    done: Given a repo with only `.ratchet.conf`, When any command runs, Then it works unchanged; Given a fresh repo, When state is written, Then `.robur/` holds it and `.ratchet` resolves to it; Given `ROBUR_HOME` and `RATCHET_HOME` both set, Then the former wins.
-    files: lib/robur/paths.rb, lib/robur/config.rb, lib/robur/state.rb, test/paths_test.rb
-    note: done 2026-09-04. 10 tests. The rename stopped being scary the moment the names lived in one place.
-- [x] T8.2 (normal, serial) `robur migrate-state` — move live state, leave symlinks
-    do: a dry-run-by-default one-shot that moves `~/.ratchet` to `~/.robur` and each repo's `.ratchet/` and `.ratchet.conf` to their new names, leaving a symlink at every old path. Idempotent; never clobbers an existing destination; reports the size of what moves.
-    done: Given a populated home and two repos, When `--apply` runs, Then every file is present under the new name and every old path still resolves; When it runs again, Then it reports nothing to do; Given no `--apply`, Then nothing is modified.
-    files: lib/robur/migrate.rb, test/migrate_test.rb
-    note: done 2026-09-04. 6 tests. Dry-run verified against the real estate: 295 log dirs, 2,376 metrics rows.
-- [x] T8.3 (hard, serial) sweep lib/ onto Paths and robur's own wording
-    do: route every remaining hardcoded name through `Paths`; rename user-visible wording (`robur START`, `robur END`, session prefix `robur-<slug>`, `robur-protocol` marker written, both read); delete the ~43 bash provenance citations, rewriting the comments that carry a real reason so they stand alone.
-    done: Given `grep -rn 'ratchet' lib/`, Then the only hits are the deliberate compatibility fallbacks; the unit suite is green; `robur --help`, `robur doctor` and `robur init` all work.
-    files: lib/robur/*.rb
-    note: done 2026-09-04, commit ba5a3e6 (found unticked during M9 setup; verified: grep clean, Paths is the single source, suite green at that commit).
-- [x] T8.4 (normal, serial) retire the differential harness
-    do: remove `test/differential/` — it compares against a binary that no longer defines correctness, and a half-true gate is worse than no gate. Replace it with golden-file tests over robur's OWN output so the CLI surface stays pinned to something.
-    done: Given the unit suite, Then it is green and no test shells out to `../ratchet`; Given a wording change, Then a golden test fails and names the surface.
-    files: test/differential/, test/golden_test.rb
-    note: done 2026-09-04, commit 1bfa4b3 (found unticked during M9 setup; verified: test/differential/ gone, test/golden_test.rb exists).
-- [x] T8.5 (normal, serial) templates, docs, and the setup path
-    do: `templates/robur.conf.example`; rewrite AGENTS.md for a product that stands alone; update REWIRING.md around the compatibility symlink; append the rebirth entry to LEARNINGS.md. Verify `robur init` on a bare repo end to end.
-    done: Given a bare repo, When `robur init` runs, Then it stamps `.robur.conf`, AGENTS.md with `robur-protocol:v1`, a seed PLAN.md and LEARNINGS.md, and `robur doctor` on it exits 0.
-    files: templates/, AGENTS.md, REWIRING.md, LEARNINGS.md
-    note: done 2026-09-04. Most of the rebirth landed in b9c7dab; this pass closed the remainder — init now stamps `robur-protocol:v1` into AGENTS.md (was: marker existed nowhere, so the done-criterion check had nothing to find), init's no-stack message tells the truth (VERIFY_CMD stays at the template default — blanking it would fail doctor, breaking this very criterion), REWIRING.md §5 no longer calls the `.ratchet.conf` gap open (ensure_repo_conf_link! closed it), and a bare-repo acceptance test pins the full stamp + doctor zero-problems.
-- [x] T8.6 (trivial, serial) M8 self-QA
-    do: full gate, then confirm the estate still reads robur's state through the compatibility symlinks.
-    done: the unit suite exits 0 AND `git -C ../ratchet status --porcelain` is empty AND, after `migrate-state --apply` on a scratch repo, reading `.ratchet/stop_reason` returns what robur wrote to `.robur/stop_reason`.
-    files: LEARNINGS.md
-    note: done 2026-09-04. Gate green (315 runs, 0 failures), `../ratchet` porcelain clean, scratch-repo `migrate-state . --apply` verified the symlink read-back; gotcha about the positional repo arg appended to LEARNINGS.md.
+- [ ] T3.2 (hard, feat, serial) a child turn is spawned from the running ruby, never from $PATH
+      touches: lib/robur/fleet/cycle.rb, test/fleet/cycle_test.rb
+      do: Add `Fleet::Cycle.new(planner:, spawner:, lock: Fleet::Lock, out:)` and
+          `#spawn(repo, *argv)` returning the child's exit status. The DEFAULT
+          spawner builds the command from the LIVE process, never from a name
+          lookup: `RbConfig.ruby` for the interpreter, and for the program the
+          EXACT expression `EXE = File.expand_path("../../../exe/robur", __dir__)`
+          from `lib/robur/fleet/cycle.rb` — written out because `$0` and
+          `$PROGRAM_NAME` differ under symlinks, binstubs and shims, and this is
+          the one line design constraint 6 rests on. Tagged hard for that reason:
+          shelling out to the bare name `robur` gave three multi-day outages
+          (2026-09-04..07) where launchd's PATH resolved the shebang to system
+          Ruby 2.6, and each was wrongly charged to every repo as a run failure.
+          A separate process is still the right isolation boundary — one repo
+          crashing must not take the fleet down — but the binary is resolved, not
+          searched. `system` returns NIL when the child never started and FALSE
+          when it ran and failed; return the distinct sentinel `:spawn_error` for
+          nil, because T3.3 must not charge an environment fault to a repo.
+          The spawner is injected so no test ever launches a real turn.
+      snippet:
+          EXE = File.expand_path("../../../exe/robur", __dir__)
+      accept:
+          Given the default spawner
+          When Cycle#spawn builds the command for a repo
+          Then argv[0] is RbConfig.ruby and argv[1] is an executable file that exists,
+          And the literal string "robur" is never used as a bare command name,
+          And a child that cannot be started yields :spawn_error, not an exit code
+      verify: ruby -Ilib -e 'Dir["test/**/*_test.rb"].each{|f| require File.expand_path(f)}'
+              — new test/fleet/cycle_test.rb asserts File.executable?(Cycle::EXE), the
+              argv shape, the :spawn_error sentinel, and that an injected spawner
+              receives the argv with no process launched.
+      constraints: never `system("robur", ...)` or exec a bare name; never $0/$PROGRAM_NAME;
+                   injected spawner in tests; stdlib only (RbConfig is stdlib).
 
-## M9 — Test suite performance: remove the artificial waits
+- [ ] T3.3 (hard, feat, serial) a repo's stop reason decides its backoff, and a deliberate stop costs nothing
+      touches: lib/robur/fleet/cycle.rb, test/fleet/cycle_test.rb
+      do: Add `Cycle#record_outcome(repo, exit_status)` applying the policy table
+          below, reading `Gate#stop_reason` after the child exits. `done` clears
+          the backoff. `human_blocked` marks the repo skipped for the rest of the
+          cycle and notifies (T5.3 wires the notifier; leave a hook). `stopped`
+          does NEITHER bump nor clear — a human ran `robur stop`, and that is an
+          instruction, not a failure; backing off for it silently costs the next
+          scheduled cycle too. `:spawn_error` (T3.2's sentinel: the child never
+          started) bumps NOTHING and fails the whole cycle loudly — a missing
+          interpreter or exe is a property of this machine, not of any repo, and
+          charging it per repo is exactly how harbor turned three small config
+          bugs into a multi-day outage every repo then had to climb out of.
+          `gate_red`, `progress_stalled`, `review_exceeded` and any real nonzero
+          exit bump the ladder. Tagged hard: `stopped` and `:spawn_error` are the
+          non-obvious rows and every other one is easy to get subtly wrong.
+          Ported from `../harbor/harbor/loop/runner.py:_run_repo` + `run_cycle`.
+      snippet:
+          when :spawn_error then fail_cycle(repo, :environment) # bump nothing
+          when "stopped"      then :no_change
+          when "human_blocked" then skip_rest_of_cycle(repo)
+      accept:
+          Given a repo whose child exits 0 with stop_reason "stopped"
+          When Cycle#record_outcome runs
+          Then the loop-backoff file is neither created nor modified
+          And with stop_reason "done" an existing backoff file is removed
+          And with stop_reason "gate_red" the backoff count increments by one
+          And with :spawn_error no repo's backoff file is touched and the cycle is red
+      verify: ruby -Ilib -e 'Dir["test/**/*_test.rb"].each{|f| require File.expand_path(f)}'
+              — test/fleet/cycle_test.rb covers done, stopped, human_blocked, gate_red,
+              progress_stalled, a nonzero exit with no stop_reason file, and that
+              :spawn_error across a 3-repo roster writes zero backoff files.
+      constraints: backoff writes go through Fleet::Backoff; stop_reason via Gate;
+                   an environment fault never backs off a repo; stdlib only.
 
-Re-profiled 2026-09-04 before starting: the gate had grown to **105.7s wall on
-8.5s user CPU — 92% of it sleeping, not computing**. The 39s/4-test figure
-below was stale; the real distribution was thirteen tests holding 91.5s (87%):
+- [ ] T3.4 (normal, feat, serial) `robur fleet` runs a real cycle and returns the cycle's status
+      touches: lib/robur/fleet/cycle.rb, lib/robur/fleet.rb, lib/robur/cli.rb,
+               test/fleet/cycle_test.rb
+      do: Add `Cycle#run` executing three phases in order: `cycle_plan[:runs]`,
+          then `cycle_plan[:plans]` (`spawn(repo, "plan", "--auto", repo)`), then
+          a SECOND run pass. The second pass is a NEW `Planner` built by the
+          CYCLE, not a third method on the planner: same roster and budget, a
+          fresh `gate_for` (the plan turns have since added tasks) and
+          `already_ran:` set to the repos run in pass one, which T2.1 turns into
+          `:skip` reason `:once_per_cycle`. Exactly two run passes, never three:
+          a plan turn only ADDS tasks, so a third finds nothing a second could
+          not. Every spawn is wrapped in `Lock.acquire` and released in an
+          `ensure`; a `nil` lease logs `lock held by pid N` and skips that repo
+          for the cycle. Return 0 when every child exited 0, else the last
+          nonzero status. Wire `Fleet.cycle` and make a bare `robur fleet`
+          call it, replacing T0.3's "not implemented yet" stub. One repo raising
+          must not abort the cycle — rescue per repo, record it as a failure, and
+          carry on to the next.
+      snippet:
+          Planner.new(**base, gate_for: fresh_gate_for, already_ran: ran).cycle_plan[:runs]
+      accept:
+          Given a roster of two runnable repos and an injected spawner returning 0 then 1
+          When `robur fleet` runs
+          Then both repos were spawned, the exit status is 1,
+          And a repo caught up in pass one with tasks after its plan turn runs in pass three,
+          And a repo already run in pass one is not spawned again,
+          And a repo whose lock is already held is skipped without spawning
+      verify: ruby -Ilib -e 'Dir["test/**/*_test.rb"].each{|f| require File.expand_path(f)}'
+              — test/fleet/cycle_test.rb drives a full cycle with an injected spawner,
+              asserting the three-phase order, once-per-cycle, lock skip, per-repo rescue.
+      constraints: never spawn without a lease; always release in ensure; injected spawner
+                   in tests — the suite must launch no real turn; stdlib only.
 
-| tests | wall | root cause |
-|---|---|---|
-| LoopTest × **7** @ 9.5s | 66.5s | watchdog polls at the 3s `POLL_INTERVAL` default while fake-agent finishes in ~150ms, × 3 turns |
-| GoldenTest × 2 @ 6.4s | 12.8s | same cause, second fixture — **missed by the original M9 write-up** |
-| TurnTest × 4 @ 3.0s | 12.2s | `Sys::Proc#kill`'s unconditional 2s sleep between TERM and KILL |
-| all other 302 tests | ~14s | 46ms average |
+- [ ] T3.5 (normal, feat, serial) the autoplan stamp is written only after a plan turn actually ran
+      touches: lib/robur/fleet/cycle.rb, test/fleet/cycle_test.rb
+      do: After a `:plan` decision spawns successfully, touch
+          `State.state_path(repo, "autoplan.stamp")` so T2.2's per-repo rate
+          limit advances. Write it only on a spawn that happened — stamping a
+          skipped or lock-contended repo would silence its next six hours of
+          planning for work that was never attempted. A plan turn that produces
+          no open tasks is a CORRECT outcome for a genuinely caught-up repo: log
+          it plainly and do not bump the backoff, because an honest empty plan
+          is not a failure.
+      snippet:
+          FileUtils.touch(Robur::State.state_path(repo, "autoplan.stamp"))
+      accept:
+          Given a caught-up repo whose plan turn is spawned and exits 0 producing no tasks
+          When the cycle finishes
+          Then autoplan.stamp exists with a current mtime and no backoff was recorded
+          And a repo skipped for lock contention has no stamp written
+      verify: ruby -Ilib -e 'Dir["test/**/*_test.rb"].each{|f| require File.expand_path(f)}'
+              — test/fleet/cycle_test.rb asserts stamp-on-spawn, no-stamp-on-skip,
+              and that an empty plan result records no failure.
+      constraints: stamp path via Robur::State; stdlib only.
 
-Pruning was evaluated first and **rejected**: 302 of 315 tests ran in 14s
-total, so deleting the entire rest of the suite would buy 13% and cost all the
-coverage. Test:lib is 4865:5325 lines (~0.91:1, lean), and the whole suite
-contains exactly one `assert_respond_to`/`assert_kind_of`/`assert_instance_of`
-between all 315 tests — there is no tautological padding to cut. The suite was
-not overtested, it was sleeping.
+## Milestone 4 — the operator's knobs
 
-This suite is also this repo's `VERIFY_CMD`, so every production turn that
-stages something pays it. Do NOT touch the parity tests
-(render/harness/plan/repo): they are subprocess-bound by design, each test is
-≤1.2s, and they are the repo's core value.
+> The two things a human does between beats that a text editor cannot do:
+> stop the beat, and clear a stale backoff ladder. Everything else about
+> `fleet.conf` and `PLAN.md` — adding, removing, parking, unparking a repo,
+> handing a parked task back — is a line edit in a human-owned file, and the
+> operator is already in an editor. These verbs existed in harbor only because
+> Telegram has no editor; a terminal does. See Non-goals.
 
-**Result: 105.7s → ~35s (3x), 319 runs green, three consecutive runs stable.**
+- [ ] T4.1 (trivial, feat, serial) `robur fleet pause` and `resume` stop and restart the beat
+      touches: lib/robur/fleet.rb, lib/robur/cli.rb, test/fleet/cli_test.rb
+      do: Add `robur fleet pause` (create `Paths.fleet_paused_flag`) and
+          `robur fleet resume` (unlink it, tolerating absence). T2.3 already
+          makes the planner honour the flag, so this task only adds the two
+          verbs and their output lines. Print the resulting state so a human
+          gets confirmation rather than silence. Tagged trivial: two file
+          operations behind two subcommands.
+      snippet:
+          when "pause"  then FileUtils.touch(Paths.fleet_paused_flag)
+      accept:
+          Given no pause flag exists
+          When `robur fleet pause` then `robur fleet --dry-run` run
+          Then the dry run reports the fleet as paused
+          And after `robur fleet resume` it reports the normal board again
+      verify: ruby -Ilib -e 'Dir["test/**/*_test.rb"].each{|f| require File.expand_path(f)}'
+              — new test/fleet/cli_test.rb asserts pause, resume, and resume-when-absent.
+      constraints: flag path via Robur::Paths; resume must not raise when already resumed.
 
-- [x] T9.1 (trivial, serial) LoopTest and GoldenTest poll at test speed
-    do: `test/loop_test.rb`'s `make_repo` and `test/golden_test.rb`'s `base_conf` both write a conf without `POLL_INTERVAL`, so `Loop.run`'s `Turn.run` call polls at the 3s default — three turns = ~9.5s for ~150ms of agent work. Set `POLL_INTERVAL="0.1"` for those runs. Do NOT write a fractional value expecting fractional polling: the call site does `.to_i`, so anything below 1 polls at 0 (a spin — existing pr_flow behaviour, fine for a 150ms agent). No `lib/` changes in this task.
-    done: Given the unit gate, When it runs, Then it exits 0 and the LoopTest/GoldenTest integration tests finish in ~1s each instead of ~9s and ~6.4s.
-    files: test/loop_test.rb, test/golden_test.rb
-    note: done 2026-09-04. **The original instruction was wrong and was corrected during implementation.** It said to add `POLL_INTERVAL` "to the conf heredoc in `make_repo`, the exact convention `test/pr_flow_test.rb` already uses" — but pr_flow passes conf **hashes** in-process and never writes a `.robur.conf` through the validator. `POLL_INTERVAL` is deliberately NOT in `Config::ALLOWLIST` (a frozen contract mirroring `ratchet/lib/contract.sh`); it is an ENV knob by design, per the precedent recorded at `lib/robur/observability.rb:81`. Writing it into the conf file made `doctor` emit `unknown key 'POLL_INTERVAL' (not in allowlist)`, which broke the `loop-log` golden and sped up nothing. Correct fix is ENV: `loop_test` sets/restores it alongside the existing `HOME_ENV` juggling in setup/teardown; `golden_test` gets a `fast_poll!` helper called only by the two tests that actually drive `Loop.run`, since its `setup` snapshots ENV and `teardown` restores it. Keeping it out of `base_conf` also guarantees the four doctor goldens (which render the conf) cannot shift. LoopTest 9.5s → ~1.4s each, GoldenTest 6.4s → ~1.0s each.
-- [x] T9.2 (normal, serial) kill grace: poll-reap instead of blind sleep
-    do: `lib/robur/turn.rb` defines its own `Sys::Proc` (spawn/reap/kill, near the bottom of the file) — its `kill` does TERM, unconditional `sleep(2)`, then KILL, so every watchdog kill pays 2s even when TERM worked (the common case). Replace the blind sleep with a `Process.waitpid2(pid, Process::WNOHANG)` poll loop (0.05s tick, 2s ceiling); if the ceiling passes, KILL then blocking-reap. `kill` returns the reaped `Process::Status` (nil on ESRCH), and `Turn.run`'s tail — currently `proc.kill(pid); status = proc.reap(pid)` — becomes `status = proc.kill(pid) || proc.reap(pid)`, so a status kill already reaped is not passed to `Process.wait` again (that raises ECHILD). The TERM→KILL escalation and the resulting wstatus are unchanged: TERM-responsive still reports SIGTERM, TERM-trapping still gets SIGKILL at the ceiling — only the wait becomes adaptive. Add two `test/turn_test.rb` cases: a deadline kill returns within ~0.2s of detection (not 2s), and a hanger that traps TERM (`RbConfig.ruby, "-e", "trap('TERM'){}; sleep 30"`) still dies with termsig 9.
-    done: Given a stub that sleeps past the deadline and honours TERM, When the turn is killed, Then kill_reason and the signaled status are unchanged AND the kill completes within ~0.2s of detection; Given a TERM-trapping stub, When the 2s ceiling passes, Then it dies by SIGKILL; the unit gate exits 0 and the two TurnTest kill tests drop from ~3s each to ~1.2s.
-    files: lib/robur/turn.rb, test/turn_test.rb
-    note: done 2026-09-04. Implemented as specified: `kill` TERMs, then polls `Process.waitpid2(pid, Process::WNOHANG)` on a 0.05s tick against a 2s `GRACE` ceiling, returning the reaped status; past the ceiling it KILLs and blocking-reaps. `Turn.run`'s tail is now `status = proc.kill(pid) || proc.reap(pid)` so an already-reaped status is never handed to `Process.wait` again (ECHILD). Rescues `Errno::ECHILD` as well as `ESRCH`. Two tests added — `test_deadline_kill_returns_promptly_when_term_is_honoured` asserts the kill adds <1s on top of detection (was a flat 2s) and still reports termsig 15, and `test_term_trapping_hanger_still_dies_by_sigkill` proves a `trap('TERM'){}` child still dies by termsig 9 at the ceiling. The four TurnTest kill tests dropped 3.0s → ~1.1s. This was also a **production** fix, not just a test one: every watchdog kill in a real run burned 2s even when TERM worked, which is the common case. The one remaining 3.05s test is the TERM-trapping ceiling test itself — irreducible without adding an injection seam for a single test, so it stays.
-- [x] T9.3 (normal, serial) evaluate Minitest.parallel_fork — adopt or reject with evidence
-    do: after T9.1+T9.2 the suite should be ~17s; try going lower with the stdlib fork runner. Add `Minitest.parallel_fork` to `test/test_helper.rb` (stdlib, no gems). Fork isolation also quarantines the ENV-juggling tests (RATCHET_HOME et al) that today depend on teardown ordering. Run the gate FIVE times: if all five are green and wall time drops materially, keep it; if any run fails a test that passes serially, revert the enablement and tick this task with a `rejected:flaky` note naming the failing test — a flaky gate is worse than a slow gate, and the revert is a valid deliverable, not a failure.
-    done: Given five consecutive gate runs, Then either all five exit 0 with materially lower wall time and `parallel_fork` stays, or it is reverted and the tick carries a `rejected:flaky` note naming the failing test; either way the gate exits 0 on the final state.
-    files: test/test_helper.rb
-    note: **rejected:flaky** 2026-09-04. `test/test_helper.rb` is unchanged.
-      Two independent reasons, both verified rather than assumed:
-      1. **The task's premise is factually wrong.** `Minitest.parallel_fork` is not stdlib — `ruby -e 'require "minitest"; puts Minitest.respond_to?(:parallel_fork)'` prints `false` on the installed minitest 6.0.6. It is jeremyevans' separate `minitest-parallel_fork` **gem**. This repo has no Gemfile and no gemspec (zero dependencies), so adopting it would mean taking on the repo's first dependency to save ~15s on a suite that is now 35s. Bad trade.
-      2. **The stdlib alternative deadlocks.** stdlib's only option is thread-based `parallelize_me!`. Measured: run 1 finished in 7.9s but with **16 failures and 7 errors**; run 2 **hung indefinitely** and was killed at 400s. Cause is structural, not tunable — the suite mutates process-global state that threads share: `ENV[RATCHET_HOME]`/`ENV[ROBUR_HOME]`/`ENV[POLL_INTERVAL]` in loop_test and golden_test setup/teardown, `ENV.replace(@old_env)` wholesale in golden_test, the `Robur::CLI.@loop_log`/`@quiet` module-level ivars, and `Dir.chdir`. Fork isolation would fix this, which is exactly why the gem exists — but see reason 1.
-      A gate that hangs is worse than a gate that takes 35s. T9.1+T9.2 already delivered 3x with zero flake across three consecutive green runs.
-- [x] T9.4 (trivial, serial) M9 self-QA and the timing record
-    do: run `time ruby -Ilib -e 'Dir["test/**/*_test.rb"].each{|f| require File.expand_path(f)}'` and append the measured wall time plus which of T9.1–T9.3 landed to LEARNINGS.md. Run the differential gate too if `test/differential/` still exists (T8.4 may have already retired it — if so, note that and run the unit gate only).
-    done: the unit gate exits 0; LEARNINGS.md carries the M9 entry with the measured wall time; `git -C ../ratchet status --porcelain` is empty.
-    files: LEARNINGS.md
-    note: done 2026-09-04. `test/differential/` is already retired (T8.4), so the unit gate is the only gate — confirmed absent, not skipped. Three consecutive runs: 36.04s / 35.72s / 35.06s, all `319 runs, 1172 assertions, 0 failures, 0 errors, 0 skips`. Baseline was 105.7s / 315 runs. `git -C ../ratchet status --porcelain` is empty. LEARNINGS.md carries the M9 entry.
+- [ ] T4.2 (trivial, feat, serial) `robur fleet retry` clears every backoff so a fixed fleet runs now
+      touches: lib/robur/fleet.rb, lib/robur/cli.rb, test/fleet/cli_test.rb
+      do: Add `robur fleet retry`: for every active roster entry, call
+          `Fleet::Backoff#clear!` and print how many were cleared. This is the
+          "I just fixed the thing that was failing, stop waiting" button — after
+          an environment fault every repo can be sitting on a 4h ladder for a
+          cause that no longer exists, and without this the only cure is waiting
+          it out. Parked repos are skipped. Tagged trivial: a loop and a delete.
+      snippet:
+          cleared = roster.active.count { |e| Backoff.new(e.path).clear! }
+      accept:
+          Given two active repos with backoff files and one parked repo with one
+          When `robur fleet retry` runs
+          Then it prints "cleared 2" and the parked repo's backoff file still exists
+      verify: ruby -Ilib -e 'Dir["test/**/*_test.rb"].each{|f| require File.expand_path(f)}'
+              — test/fleet/cli_test.rb asserts the count, the deletions, and the parked skip.
+      constraints: clears go through Fleet::Backoff, never File.unlink on a path built here.
 
-## M10 — The classifier stops benching models for reading the word "quota"
+## Milestone 5 — perpetual, and loud when it cannot be
 
-> Evidence: 2026-09-11, harbor T11.3, run pid 67003 (`~/.robur/logs/harbor-872144`).
-> The agent read harbor source containing the column name `quota_blocked` and the
-> comment "Rate-limit per repo" — those strings landed in `tool_execution_end`
-> events, `Classifier`'s json-mode `err_lines` scans every non-prose line, and
-> EXHAUSTED_RE false-fired. k3 and gpt-5.6-sol each ate a 14400s bench, the loop
-> fell into the all-benched sleep ladder, and a human stopped it after 5 wall
-> hours. The REAL failure in the same log was
-> `provider_transport_failure: WebSocket idle timeout after 300000ms` — which
-> matches no regex and was ignored. A transient network stall was converted into
-> a 4-hour fleet-wide outage.
+> The fleet becomes something you start once. A cycle is still a single
+> process-worth of work, so `robur fleet` stays cron/launchd-friendly; `--every`
+> adds the supervisor for the common case where you just want it running.
 
-- [x] T10.1 (normal, fix, serial) json-mode error scans ignore tool results, so reading the word "quota" cannot bench a model
-    do: two changes in `lib/robur/classifier.rb`. (1) In json mode, restrict the `err_lines` that EXHAUSTED_RE and HARD_RE scan to error-signalling content only: non-JSON lines, events whose parsed `type` is `"error"`, and events whose hash carries `diagnostics` or `errorMessage` anywhere top-level — never `tool_execution_end`/tool-result payloads or other data events. Text-mode behavior is unchanged. (2) Add a TRANSPORT_RE matching `provider_transport_failure`, `WebSocket idle timeout`, `socket hang up`, `ECONNRESET`, `ETIMEDOUT`, checked against those same error lines BEFORE EXHAUSTED_RE, returning `:transient` — a network stall earns a strike (3 strikes = bench, existing behavior), never an instant 4h bench. `classify`'s public signature and verdict ordering stay as documented in the module comment; update the comment.
-    done: Given a json turn log reconstructed from `~/.robur/logs/harbor-872144/last_turn.out` (tool results containing `quota_blocked` and `Rate-limit`, final event `provider_transport_failure: WebSocket idle timeout after 300000ms`), When classified, Then the verdict is `:transient`; Given a json log whose error event carries `request failed: HTTP 429`, Then the verdict is still `:exhausted`; Given a json log whose tool results contain "too many requests" but no error event, Then the verdict is NOT `:exhausted`; Given the existing classifier tests, Then they pass unchanged; the unit gate (`ruby -Ilib -e 'Dir["test/**/*_test.rb"].each{|f| require File.expand_path(f)}'`) exits 0.
-    files: lib/robur/classifier.rb, test/classifier_test.rb
+- [ ] T5.1 (hard, feat, serial) `robur fleet --every 15m` keeps running and drains on Ctrl-C
+      touches: lib/robur/fleet/supervisor.rb, lib/robur/cli.rb, test/fleet/supervisor_test.rb
+      do: Add `Fleet::Supervisor.new(interval:, cycle:, lifecycle:, clock:)` and
+          `#run`: execute one cycle, sleep the interval, repeat. `interval`
+          defaults to `Fleet.budget.interval` (`FLEET_INTERVAL`); `--every`
+          overrides it and parses `900`, `15m`, `2h`. Reuse
+          `Robur::Lifecycle#install!` and its INTERRUPTIBLE `#sleep` so one
+          Ctrl-C finishes the current cycle and exits and a second aborts — do
+          NOT call `Kernel.sleep`, which would make a 15-minute beat take up to
+          15 minutes to respond to a signal. `Lifecycle.new` takes a dir it
+          reads a stop file from; the fleet has no repo, so pass
+          `Paths.fleet_log_dir` — that also makes `robur stop` on the fleet a
+          later one-liner. A cycle that RAISES must be RESCUED, logged, and
+          followed by the next beat: the supervisor's whole job is to outlive a
+          bad night. Tagged hard for the signal semantics.
+      snippet:
+          loop { begin; cycle.run; rescue => e; log(e); end
+                 break if lifecycle.stop_requested?; lifecycle.sleep(interval) }
+      accept:
+          Given an injected cycle that raises on its first call and returns 0 after
+          When Supervisor#run executes with a stub lifecycle stopping after 3 beats
+          Then the cycle was invoked 3 times and the raise did not end the supervisor
+          And a stop requested during the sleep ends it without waiting out the interval
+      verify: ruby -Ilib -e 'Dir["test/**/*_test.rb"].each{|f| require File.expand_path(f)}'
+              — new test/fleet/supervisor_test.rb with injected cycle, clock and lifecycle;
+              the test must complete in well under a second (no real sleeping).
+      constraints: use Robur::Lifecycle#sleep, never Kernel.sleep; a raising cycle never
+                   ends the supervisor; stdlib only.
+
+- [ ] T5.2 (normal, feat, serial) a dead-man ping proves the beat is alive, not just that it started
+      touches: lib/robur/fleet/cycle.rb, test/fleet/cycle_test.rb
+      do: When `HEALTHCHECK_URL` is set in the global conf or ENV, ping
+          `<url>/start` FIRST thing in `Cycle#run`, then close the pair at the
+          end: the bare URL on a green cycle, `<url>/fail` on a red one. Use the
+          injected `Sys::Http`; a failed ping is logged and never fails the
+          cycle. The pair is the point — pinging only at the start cannot tell a
+          healthy cycle from one that HANGS. When the key is unset, print a LOUD
+          warning rather than a routine line: harbor ran blind for two days
+          because the switch was silently off after a path change, and the
+          switch was the only thing watching (`../harbor/harbor/loop/runner.py`,
+          the `no HEALTHCHECK_URL` branch). The ping happens BEFORE the pause
+          check, because a deliberate pause is not a dead schedule.
+      snippet:
+          http.get("#{url}/start") rescue nil
+      accept:
+          Given HEALTHCHECK_URL is set and every child exits 0
+          When Cycle#run completes
+          Then the injected Http received "<url>/start" then "<url>", in that order
+          And on a nonzero cycle the second call is "<url>/fail"
+          And with the key unset a warning naming the global conf is printed
+      verify: ruby -Ilib -e 'Dir["test/**/*_test.rb"].each{|f| require File.expand_path(f)}'
+              — test/fleet/cycle_test.rb asserts the ordered pair, the fail variant,
+              the unset warning, and that an Http raise does not fail the cycle.
+      constraints: HEALTHCHECK_URL is global-conf/ENV only, never a repo-conf key;
+                   injected Sys::Http; a ping failure must never raise out of the cycle.
+
+- [ ] T5.3 (normal, feat, serial) a repo blocked on a human nudges daily, not every beat and not once ever
+      touches: lib/robur/fleet/notifier.rb, lib/robur/fleet/cycle.rb, test/fleet/notifier_test.rb
+      do: Add `Fleet::Notifier.new(clock:)` with `#notify_once(repo, key, msg)`:
+          send unless `State.state_path(repo, "last_notified")` already holds
+          `key` AND its mtime is newer than `RENOTIFY_SECS` (86400); write the
+          marker either way. `key` is `"<task_id>\t<reason>"`, so a new task or
+          reason always sends. BOTH halves are load-bearing: without the key a
+          repo stuck on one question sends 96 times a day, and without the
+          24h expiry it sends exactly once — harbor measured an unanswered block
+          sitting 46 hours against a 6-hour assumption because the single
+          notification scrolled away (`runner.py:_notify_once`). Delivery goes
+          through `Robur::Observability#notify_human`, which already spawns
+          NOTIFY_CMD detached with the message as `$1`, reads the key from the
+          trusted conf only, and never raises or blocks — do not re-implement it
+          over `Sys::Proc#capture`, which BLOCKS the cycle. Wire the
+          `human_blocked` and `gate_red` hooks left in T3.3.
+      snippet:
+          RENOTIFY_SECS = 86_400
+      accept:
+          Given a repo blocked on T3.1 that notifies on one cycle
+          When a second cycle an hour later finds the same task still blocked
+          Then no second notification is sent
+          And when 25 hours have passed a nudge is sent again
+          And when the blocked task id changes, a notification is sent immediately
+      verify: ruby -Ilib -e 'Dir["test/**/*_test.rb"].each{|f| require File.expand_path(f)}'
+              — new test/fleet/notifier_test.rb asserts dedupe, the 24h re-send with an
+              injected clock, re-send on key change, and that a failing command
+              does not raise.
+      constraints: delivery via Observability#notify_human, never a second spawn path;
+                   NOTIFY_CMD never added to Config::ALLOWLIST; injected clock; no HTTP.
+
+- [ ] T5.4 (normal, feat, serial) a fleet paused long enough to be forgotten says so
+      touches: lib/robur/fleet/cycle.rb, test/fleet/cycle_test.rb
+      do: When the pause flag is older than `PAUSE_REMINDER_DAYS` (7), notify
+          once a day through T5.3's `Notifier` naming how long it has been
+          paused, then carry on skipping the cycle. Nothing here resumes the
+          fleet — only the human does that. This closes the hole T5.2 opens on
+          purpose: the healthcheck pings BEFORE the pause check, so a paused
+          fleet reads green to every dashboard forever. Harbor sat paused for 30
+          hours with every dashboard green before this existed
+          (`../harbor/harbor/loop/runner.py:_pause_reminder`), and a pause that
+          old is almost always forgotten rather than intended. Use the flag's
+          own mtime as the record and the notifier's key expiry as the throttle
+          — no new stamp file, no new format to corrupt.
+      snippet:
+          days = ((clock.now - File.mtime(Paths.fleet_paused_flag)) / 86_400).to_i
+      accept:
+          Given a pause flag whose mtime is 9 days old
+          When a cycle runs
+          Then one notification naming "paused 9 days" is sent and the cycle still skips
+          And a second cycle an hour later sends nothing
+          And a pause flag 2 days old sends nothing at all
+      verify: ruby -Ilib -e 'Dir["test/**/*_test.rb"].each{|f| require File.expand_path(f)}'
+              — test/fleet/cycle_test.rb covers under-threshold, over-threshold, and the
+              daily throttle, all with an injected clock.
+      constraints: never resume the fleet; reuse Fleet::Notifier's dedupe, do not add a
+                   stamp file; flag path via Robur::Paths; stdlib only.
+
+- [ ] T5.5 (hard, feat, serial) the supervisor restarts itself after a turn rewrites its own code
+      touches: lib/robur/fleet/supervisor.rb, lib/robur/fleet/cycle.rb,
+               test/fleet/supervisor_test.rb
+      do: A long-lived `--every` supervisor holds robur's code in memory, so the
+          moment a turn commits to robur's OWN checkout the fleet keeps running
+          the old `Fleet::*` forever — it cannot pick up the fix it just wrote.
+          Have `Cycle#run` record whether any spawn advanced `HEAD` in the
+          checkout robur itself is running from (compare `git rev-parse HEAD`
+          before and after that one repo, via `Sys::Proc`), and expose it as
+          `Cycle#self_updated?`. `Supervisor#run` breaks the loop cleanly after
+          a GREEN cycle that set it, exiting `RESTART_EXIT_STATUS` (75) so
+          launchd/systemd respawns into the new code; a red cycle never
+          restarts, because exiting on a failure would loop a crash. Tagged hard
+          because the wrong version of this restarts on every commit anywhere.
+          Ported from `../harbor/harbor/loop/runner.py:_new_head` + RESTART_EXIT_STATUS.
+      snippet:
+          RESTART_EXIT_STATUS = 75
+      accept:
+          Given the roster contains the checkout this process is running from
+          When a green cycle's turn commits to that checkout
+          Then Supervisor#run stops after that cycle and exits 75
+          And a commit in any OTHER repo does not stop the supervisor
+          And a RED cycle that touched its own checkout keeps beating
+      verify: ruby -Ilib -e 'Dir["test/**/*_test.rb"].each{|f| require File.expand_path(f)}'
+              — test/fleet/supervisor_test.rb drives all three cases with a stub cycle;
+              no git and no real process is invoked.
+      constraints: restart only on a GREEN cycle and only for robur's own checkout;
+                   git reads via Sys::Proc; stdlib only.
+
+## Milestone 6 — reading the fleet without a browser
+
+> The console is not ported. These three tasks are the replacement: text that
+> answers the two questions an operator actually has — what is it doing, and
+> what is waiting on me. All three are `(serial)`: they share `fleet.rb`,
+> `cli.rb`, `render.rb` and `cycle.rb` with milestones 0-5.
+
+- [ ] T6.1 (normal, feat, serial) `robur fleet status` shows the whole fleet on one screen
+      touches: lib/robur/fleet/render.rb, lib/robur/fleet.rb, lib/robur/cli.rb,
+               test/fleet/render_test.rb
+      do: Add `robur fleet status`: one line per roster entry with name, verdict,
+          open/done task counts, stop reason, backoff expiry as a relative
+          duration, and whether a lock is currently held. Below it, a `waiting on
+          you` section listing every repo whose verdict is `:human_block` or
+          `:class_gate` with its parked task id and question line. Render with
+          `Robur::Render` helpers (`bar`, `fmt_dur`, the colour wrappers) so the
+          output matches `robur status` rather than inventing a second house
+          style. Keep `Fleet::Render` pure — it takes rows and returns a string;
+          `Fleet` gathers the data.
+      snippet:
+          "#{name.ljust(w)}  #{verdict.ljust(14)}  #{open}/#{total}  #{Render.fmt_dur(secs)}"
+      accept:
+          Given a roster with one runnable repo, one backed off, and one human-blocked
+          When `robur fleet status` runs
+          Then each repo has a line naming its verdict,
+          And the backed-off repo shows a relative expiry, not a raw epoch,
+          And the human-blocked repo also appears under "waiting on you"
+      verify: ruby -Ilib -e 'Dir["test/**/*_test.rb"].each{|f| require File.expand_path(f)}'
+              — test/fleet/render_test.rb asserts column alignment and the waiting section.
+      constraints: Fleet::Render stays pure; reuse Robur::Render, do not reimplement bars
+                   or duration formatting; read-only — status never writes.
+
+- [ ] T6.2 (normal, feat, serial) every cycle decision lands in events.jsonl, not just in prose
+      touches: lib/robur/fleet/cycle.rb, lib/robur/observability.rb, test/fleet/cycle_test.rb
+      do: Emit five events per cycle through the existing `Robur::Observability`,
+          constructed against `Paths.fleet_log_dir`: `fleet_start` (roster size,
+          budgets), `fleet_decision` (repo, action, reason), `fleet_spawn` (repo,
+          argv), `fleet_exit` (repo, status, stop_reason), `fleet_end` (status,
+          runs, plans, skips). `Observability#emit` does `RENDER.fetch(kind)` and
+          raises KeyError on an unknown kind, so this task MUST add a lambda per
+          kind to the `RENDER` table — without them the best-effort rescue below
+          swallows every event and the feature is a silent no-op that still
+          passes a loose test. The log line is a RENDERING of the event, never
+          prose parsed back with regexes: that is the module's contract and what
+          lets a later observability project read fleet history without the 1,290
+          lines of log archaeology harbor needed
+          (`../harbor/harbor/loop/ingest_runs.py`). Telemetry is best-effort — a
+          failed emit is logged and never fails the cycle it describes.
+      snippet:
+          fleet_decision: ->(f) { ["  #{f[:repo]}: #{f[:action]} (#{f[:reason]})"] },
+      accept:
+          Given a cycle over two repos, one run and one skipped for backoff
+          When the cycle completes
+          Then events.jsonl holds fleet_start, two fleet_decision records, one
+          fleet_spawn, one fleet_exit and one fleet_end, each carrying a run id
+          And loop.log holds one rendered human line per event, none of them blank
+          And an emit that raises does not change the cycle's exit status
+      verify: ruby -Ilib -e 'Dir["test/**/*_test.rb"].each{|f| require File.expand_path(f)}'
+              — test/fleet/cycle_test.rb parses the emitted JSONL, asserts the event
+              sequence, asserts every fleet kind resolves in RENDER (no KeyError),
+              and covers the best-effort rescue.
+      constraints: use Robur::Observability, do not add a second event writer; every event
+                   carries a run id; telemetry never raises out of the cycle.
+
+- [ ] T6.3 (trivial, docs, serial) README and the conf example document the fleet as a first-class half
+      touches: README.md, templates/robur.conf.example, AGENTS.md
+      do: Add a "The fleet" section to `README.md` after "The mental model":
+          `fleet.conf` is the roster — one repo path per line, `#` before a path
+          parks it, and you EDIT IT IN AN EDITOR, there are no add/remove verbs.
+          `robur fleet --dry-run` explains the next cycle, `robur fleet` runs
+          one, `robur fleet --every 15m` runs forever, and the operator verbs are
+          pause/resume/retry/status. State plainly that the fleet budget keys
+          (`MAX_RUNS_PER_CYCLE`, `MAX_PLANS_PER_CYCLE`, `AUTOPLAN_MIN_SECS`,
+          `BACKOFF_BASE`, `BACKOFF_CAP`, `FLEET_INTERVAL`, `HEALTHCHECK_URL`)
+          live ONLY in the human-owned `~/.robur/conf`, and say why: an agent
+          that could raise its own run budget has escaped the thing that bounds
+          it. Add the same note to `templates/robur.conf.example` beside the
+          existing `NOTIFY_CMD` paragraph, which makes the identical argument.
+      snippet:
+          ## The fleet
+      accept:
+          Given a reader who has only run `robur run`
+          When they read README.md
+          Then they can configure a roster and start a perpetual fleet without
+          reading source, and they know which keys are global-only and why
+      verify: ruby -Ilib -e 'Dir["test/**/*_test.rb"].each{|f| require File.expand_path(f)}'
+              — docs only; the gate must stay green.
+      constraints: documentation only, no behaviour change; do not add any fleet key to
+                   Config::ALLOWLIST while editing the conf example.
+
+## Definition of done
+
+- Every task `[x]`; `VERIFY_CMD` green on a clean checkout.
+- `robur fleet --dry-run` explains, for every repo in the roster, exactly what
+  the next cycle will do and why — with no side effects.
+- `robur fleet` executes that plan: locks each checkout, spawns one child per
+  repo, applies the outcome policy, and exits with the cycle status.
+- `robur fleet --every 15m` runs that forever, survives one repo failing and one
+  raising cycle, drains cleanly on Ctrl-C, and restarts itself after a turn
+  rewrites robur's own code.
+- An environment fault — a child that never starts — fails the cycle and backs
+  off NO repo.
+- Every budget comes from `~/.robur/conf`/ENV; nothing in the fleet reads a
+  repo `.robur.conf`, and `Config::ALLOWLIST` is unchanged.
+- `robur fleet status` is readable without a browser.
+- `../harbor` is byte-identical to its state at the start of this plan.
+
+## Non-goals
+
+- **No cutover.** harbor keeps running its own loop. Nothing here disables,
+  edits or deletes harbor code. Switching launchd over is a later human call.
+- **No durable run store.** No SQLite, no `runs`/`turns` tables, no port of
+  `ingest_runs.py`. `events.jsonl` + `metrics.tsv` stay the record.
+- **No Telegram, no HTTP API, no web console.** The interfaces are the CLI and
+  `NOTIFY_CMD`.
+- **No estate rituals.** No queue drafts, no `MONEY.md` board, no critic, no
+  stall watchdog, no publish dispatcher, no brief, no ideas pipeline.
+- **No new model-selection or tier logic.** The fleet decides WHICH repo runs;
+  `Robur::Loop` keeps deciding everything about HOW a turn runs.
+- **No parallel repo execution.** One repo at a time per cycle, like today.
+  `PARALLEL`/`FANOUT` stay per-repo concerns.
+- **No changes to `Config::ALLOWLIST`.** See constraint 4.
+- **No roster-editing verbs.** No `fleet add/remove/park/unpark`, and therefore
+  no byte-preserving writer in `Roster` — it stays a reader. `fleet.conf` is one
+  repo path per line in a human-owned file; `#` before a path parks a repo and
+  `$EDITOR` preserves every comment for free. Harbor needed these because
+  Telegram has no editor. If a roster ever needs programmatic edits, port
+  `../harbor/harbor/loop/control.py:set_parked` then, not now.
+- **No `fleet requeue`.** Answering a parked task means editing `[HUMAN]` back
+  to `[ ]` in a tracker the human is already reading to answer the question.
+  One character, in an editor that is already open.
+- **No fleet-level singleton.** Two overlapping cycles are survivable — the
+  per-checkout lock (T3.1) makes the second skip every busy repo. harbor's
+  `runner.cycle_running()` pgrep probe is not ported.
+- **No third run pass, ever.** Two passes bound the cycle (T3.4); a plan turn
+  only ADDS tasks, so a third finds nothing a second could not.
