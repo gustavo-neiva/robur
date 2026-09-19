@@ -108,6 +108,12 @@ DONE_TOKEN=ALL_DONE
 # The loop appends the message itself — do NOT add a trailing "$1" of your own
 # or every notification is delivered twice.
 
+# Fleet budget keys are also global-only, for the same reason: MAX_RUNS_PER_CYCLE,
+# MAX_PLANS_PER_CYCLE, AUTOPLAN_MIN_SECS, BACKOFF_BASE, BACKOFF_CAP,
+# FLEET_INTERVAL, HEALTHCHECK_URL. An agent that could raise its own run budget
+# from a repo conf it writes has escaped the thing that bounds it — so robur
+# rejects them here too. Set them ONLY in ~/.robur/conf.
+
 # Derived rank snapshot: frozen on first use so tiers don't reshuffle mid-
 # project on catalog churn. Inspect / force a refresh:
 #   robur models rank           # show effective rank (explicit or derived)

@@ -46,9 +46,12 @@ module Robur
       # through the gate factory — a lambda that news a Gate per call, never
       # a cached verdict. spawner and notifier are injected so no test ever
       # launches a real turn or spawns NOTIFY_CMD.
+      # obs (T6.2) is the cycle's Robur::Observability, built by the caller
+      # against Paths.fleet_log_dir. Nil (as in most unit tests) = no
+      # telemetry at all.
       def initialize(roster:, gate_for:, budget:, clock:, paused: false,
                      spawner: DEFAULT_SPAWNER, lock: Lock, proc: Sys::Proc.new,
-                     notifier: nil, http: nil, out: $stdout)
+                     notifier: nil, http: nil, obs: nil, out: $stdout)
         @roster = roster
         @gate_for = gate_for
         @budget = budget
@@ -59,11 +62,14 @@ module Robur
         @proc = proc
         @notifier = notifier
         @http = http || Sys::Http.new
+        @obs = obs
         @out = out
         @status = 0
         @self_updated = false
         @human_skipped = []
         @lock_skipped = []
+        @runs = 0
+        @plans = 0
       end
 
       # Launch one child turn for repo as
@@ -72,10 +78,11 @@ module Robur
       # the sentinel :spawn_error when it could not be started at all.
       def spawn(repo, *argv)
         status = @spawner.([RbConfig.ruby, EXE, *argv])
+        emit(:fleet_spawn, repo: repo, argv: argv)
         status.nil? ? :spawn_error : status
       end
 
-      attr_reader :status, :human_skipped
+      attr_reader :status, :human_skipped, :obs
 
       # T5.5: a spawn into SELF_CHECKOUT moved HEAD — the code this process
       # is running no longer matches disk.
@@ -95,9 +102,11 @@ module Robur
       #                    machine, not of any repo
       # Returns one of :environment, :skipped, :cleared, :bumped, :no_change.
       def record_outcome(repo, exit_status)
-        return fail_cycle(repo) if exit_status == :spawn_error
+        spawn_error = exit_status == :spawn_error
+        reason = spawn_error ? nil : Gate.new(repo).stop_reason
+        emit(:fleet_exit, repo: repo, status: exit_status, stop_reason: reason)
+        return fail_cycle(repo) if spawn_error
 
-        reason = Gate.new(repo).stop_reason
         # human_blocked is deliberately NOT gated on a zero exit: the loop
         # itself exits 1 for it, so reason must win over exit status here.
         case reason
@@ -136,18 +145,25 @@ module Robur
       # added. Returns 0 when every child exited 0, else the LAST nonzero
       # status.
       def run
+        emit(:fleet_start, roster: @roster.active.size, budgets: @budget.to_h)
         ping_start
         pause_reminder
-        first = planner_for.cycle_plan
+        # The FIRST pass's decisions are the cycle's emitted plan; pass
+        # two's restate pass one, and its runs are already recorded by
+        # fleet_spawn/fleet_exit.
+        first = planner_for.decisions
+        first.each { |d| emit(:fleet_decision, repo: d.repo, action: d.action, reason: d.reason) }
         ran = []
-        first[:runs].each { |d| ran << d.repo if run_repo(d.repo, "run", d.repo) }
-        first[:plans].each { |d| run_plan(d.repo) }
+        first.select { |d| d.action == :run }.each { |d| ran << d.repo if run_repo(d.repo, "run", d.repo) }
+        first.select { |d| d.action == :plan }.each { |d| run_plan(d.repo) }
         planner_for(already_ran: ran).cycle_plan[:runs].each do |d|
           next if @lock_skipped.include?(d.repo)
 
           run_repo(d.repo, "run", d.repo)
         end
         ping_end
+        emit(:fleet_end, status: @status, runs: @runs, plans: @plans,
+             skips: first.count { |d| d.action == :skip } + @lock_skipped.size)
         @status
       end
 
@@ -250,6 +266,9 @@ module Robur
           own = File.expand_path(repo) == SELF_CHECKOUT
           before = own ? self_head(repo) : nil
           status = spawn(repo, *argv)
+          # Turn attempts, spawn_error included — an operator counts what
+          # the cycle tried.
+          argv.first == "plan" ? @plans += 1 : @runs += 1
           @status = status if status.is_a?(Integer) && !status.zero?
           record_outcome(repo, status)
           note_self_update(repo, before) if own
@@ -295,6 +314,18 @@ module Robur
       def notify(repo, reason, msg)
         task_id = State.read_last_task(repo)&.first || "?"
         @notifier&.notify_once(repo, "#{task_id}\t#{reason}", msg)
+      end
+
+      # T6.2: telemetry is best-effort — a failed emit is logged and never
+      # fails the cycle it describes. (This rescue is exactly why every
+      # fleet kind MUST resolve in Observability::RENDER: without a lambda
+      # the KeyError lands here and the event silently vanishes.)
+      def emit(kind, **fields)
+        return unless @obs
+
+        @obs.emit(kind, **fields)
+      rescue StandardError => e
+        @out.puts "WARN: fleet telemetry failed (#{e.class}: #{e.message}) — cycle unaffected"
       end
 
       # A child that never started is this machine's fault (missing

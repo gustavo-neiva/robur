@@ -42,6 +42,11 @@ is where they are pinned; changing one is a coordination problem, not an edit.
   bash process that snapshots env + shell variables, sources the file, and
   snapshots again; the delta becomes: exported vars → the environment handed to
   spawned turns, plain assignments → config values (`Robur::Config.load_global`).
+- Fleet budget keys (`MAX_RUNS_PER_CYCLE`, `MAX_PLANS_PER_CYCLE`,
+  `AUTOPLAN_MIN_SECS`, `BACKOFF_BASE`, `BACKOFF_CAP`, `FLEET_INTERVAL`,
+  `HEALTHCHECK_URL`) are global-only for the same reason `NOTIFY_CMD` is: an
+  agent that could raise its own run budget from a repo conf it writes has
+  escaped the thing that bounds it.
 
 ## Gate
 

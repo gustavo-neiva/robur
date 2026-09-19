@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "config"
+require_relative "observability"
 require_relative "fleet/backoff"
 require_relative "fleet/cycle"
 require_relative "fleet/gate"
@@ -62,10 +63,15 @@ module Robur
 
     # The runner OBJECT behind cycle — the supervisor (T5.1) beats on the
     # same assembly repeatedly instead of running it once. The real
-    # Notifier (T5.3) is wired here, the one assembly every beat shares.
+    # Notifier (T5.3) is wired here, the one assembly every beat shares,
+    # and so is the fleet's Observability (T6.2): built against
+    # Paths.fleet_log_dir because the fleet has no repo dir, shared by
+    # every beat of the session.
     def cycle_runner(roster:, out: $stdout)
       base = planner_base(roster)
-      Cycle.new(**base, notifier: Notifier.new(clock: base[:clock]), out: out)
+      Paths.ensure_state_dir!(Paths.fleet_log_dir)
+      obs = Observability.new(Paths.fleet_log_dir, clock: base[:clock])
+      Cycle.new(**base, obs: obs, notifier: Notifier.new(clock: base[:clock]), out: out)
     end
 
     # Resolve the fleet budgets. A missing (or unreadable) conf yields the

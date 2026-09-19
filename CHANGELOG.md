@@ -1,5 +1,14 @@
 # Changelog
 
+## Milestone 6 — reading the fleet without a browser
+_2026-09-19 · in progress_
+
+- [x] T6.2 every cycle decision lands in events.jsonl, not just in prose
+      Add five RENDER kinds — `fleet_start`, `fleet_decision`, `fleet_spawn`, `fleet_exit`, `fleet_end` — and emit them from `Cycle#run`/`#spawn`/`#record_outcome` through the ONE `Robur::Observability`, built by `Fleet.cycle_runner` against `Paths.fleet_log_dir`. Telemetry is best-effort: a failed emit is warned and never fails the cycle.
+
+Also in this range:
+- T6.1 `robur fleet status` shows the whole fleet on one screen
+
 ## Milestone 5 — perpetual, and loud when it cannot be
 _2026-09-19 · 6 commits · +861/-25_
 

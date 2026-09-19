@@ -130,7 +130,7 @@ test/fleet/*_test.rb            one test file per class above
       constraints: Fleet::Render stays pure; reuse Robur::Render, do not reimplement bars
                    or duration formatting; read-only — status never writes.
 
-- [ ] T6.2 (normal, feat, serial) every cycle decision lands in events.jsonl, not just in prose
+- [x] T6.2 (normal, feat, serial) every cycle decision lands in events.jsonl, not just in prose
       touches: lib/robur/fleet/cycle.rb, lib/robur/observability.rb, test/fleet/cycle_test.rb
       do: Emit five events per cycle through the existing `Robur::Observability`,
           constructed against `Paths.fleet_log_dir`: `fleet_start` (roster size,
@@ -162,7 +162,7 @@ test/fleet/*_test.rb            one test file per class above
       constraints: use Robur::Observability, do not add a second event writer; every event
                    carries a run id; telemetry never raises out of the cycle.
 
-- [ ] T6.3 (trivial, docs, serial) README and the conf example document the fleet as a first-class half
+- [x] T6.3 (trivial, docs, serial) README and the conf example document the fleet as a first-class half
       touches: README.md, templates/robur.conf.example, AGENTS.md
       do: Add a "The fleet" section to `README.md` after "The mental model":
           `fleet.conf` is the roster — one repo path per line, `#` before a path

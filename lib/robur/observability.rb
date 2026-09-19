@@ -71,6 +71,20 @@ module Robur
          "out=#{f[:output]} cache_r=#{f[:cache_read]} msgs=#{f[:messages]} " \
          "cost=$#{format('%.6f', f[:cost])}"]
       },
+      # Fleet events (PLAN.fleet.md T6.2): the cycle's plan and outcomes as
+      # structured records plus one human line each, through the ONE
+      # Observability. A missing entry here would make Fleet::Cycle's
+      # best-effort rescue swallow every fleet event silently.
+      fleet_start: lambda { |f|
+        ["fleet start | roster=#{f[:roster]} | " \
+         "budgets=#{f[:budgets].map { |k, v| "#{k}=#{v}" }.join(' ')}"]
+      },
+      fleet_decision: ->(f) { ["  #{f[:repo]}: #{f[:action]} (#{f[:reason]})"] },
+      fleet_spawn: ->(f) { ["  #{f[:repo]}: spawn #{f[:argv].join(' ')}"] },
+      fleet_exit: ->(f) { ["  #{f[:repo]}: exit #{f[:status]} (#{f[:stop_reason]})"] },
+      fleet_end: lambda { |f|
+        ["fleet end | status=#{f[:status]} | runs=#{f[:runs]} plans=#{f[:plans]} skips=#{f[:skips]}"]
+      },
     }.freeze
 
     DEFAULT_CHEAP_MODEL = "<first-model>"

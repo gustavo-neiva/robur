@@ -415,5 +415,97 @@ class FleetCycleTest < Minitest::Test
     assert_equal 0, c.run
     assert_includes out.string, "WARN: healthcheck ping failed"
   end
+
+  # --- fleet telemetry (T6.2) --------------------------------------------
+
+  def obs_dir = File.join(@root, "fleetlog")
+
+  def read_events(dir = obs_dir)
+    File.readlines(File.join(dir, "events.jsonl")).map { |l| JSON.parse(l) }
+  end
+
+  # Acceptance, verbatim: a cycle over two repos, one run and one skipped
+  # for backoff — events.jsonl holds fleet_start, two fleet_decision
+  # records, one fleet_spawn, one fleet_exit and one fleet_end, all under
+  # one run id; loop.log holds one rendered human line per event, none
+  # blank. A missing RENDER lambda would KeyError, be swallowed by the
+  # best-effort rescue, and show up here as missing events.
+  def test_cycle_emits_the_full_event_sequence
+    a = make_repo("a")
+    b = make_repo("b")
+    Robur::State.write_loop_backoff(b, 1, Time.now.to_i + 9_999)
+    clock = ClockStub.new(Time.at(0))
+    obs = Robur::Observability.new(obs_dir, clock: clock)
+    assert_equal 0, cycle(spawner: ->(_argv) { 0 }, roster: roster(a, b),
+                          obs: obs, clock: clock).run
+    events = read_events
+    assert_equal %w[fleet_start fleet_decision fleet_decision fleet_spawn
+                    fleet_exit fleet_end], events.map { |e| e["kind"] }
+    run_ids = events.map { |e| e["run_id"] }
+    refute_nil run_ids.uniq.first
+    assert_equal 1, run_ids.uniq.size
+    start, = events
+    assert_equal 2, start["roster"]
+    assert_equal 4, start["budgets"]["max_runs"]
+    d1, d2 = events.select { |e| e["kind"] == "fleet_decision" }
+    assert_equal [a, "run", "runnable"], d1.values_at("repo", "action", "reason")
+    assert_equal [b, "skip", "backoff"], d2.values_at("repo", "action", "reason")
+    spawn, = events.select { |e| e["kind"] == "fleet_spawn" }
+    assert_equal [a, ["run", a]], spawn.values_at("repo", "argv")
+    exit_ev, = events.select { |e| e["kind"] == "fleet_exit" }
+    assert_equal [a, 0, "done"], exit_ev.values_at("repo", "status", "stop_reason")
+    end_ev, = events.select { |e| e["kind"] == "fleet_end" }
+    assert_equal [0, 1, 0, 1], end_ev.values_at("status", "runs", "plans", "skips")
+    lines = File.readlines(File.join(obs_dir, "loop.log"), chomp: true)
+    assert_equal events.size, lines.size
+    lines.each { |l| refute l.strip.empty?, "blank rendered line" }
+  end
+
+  # Every fleet kind must resolve in RENDER (no KeyError) and render at
+  # least one non-blank human line — the contract the loop.log reader and
+  # a later observability project both lean on.
+  def test_every_fleet_kind_resolves_in_render_with_a_non_blank_line
+    obs = Robur::Observability.new(obs_dir, clock: ClockStub.new(Time.at(0)))
+    cases = {
+      fleet_start: { roster: 2, budgets: { max_runs: 4 } },
+      fleet_decision: { repo: @repo, action: :run, reason: :runnable },
+      fleet_spawn: { repo: @repo, argv: ["run", @repo] },
+      fleet_exit: { repo: @repo, status: 0, stop_reason: "done" },
+      fleet_end: { status: 0, runs: 1, plans: 0, skips: 1 },
+    }
+    cases.each do |kind, fields|
+      before = File.foreach(File.join(obs_dir, "loop.log")).count
+    rescue Errno::ENOENT
+      before = 0
+    ensure
+      obs.emit(kind, **fields) # KeyError here = missing RENDER lambda
+      lines = File.readlines(File.join(obs_dir, "loop.log"), chomp: true)
+      assert lines.size > before, "#{kind} rendered no line"
+      assert lines[before..].all? { |l| !l.strip.empty? }
+    end
+  end
+
+  # Acceptance: an emit that raises does not change the cycle's exit
+  # status — telemetry is best-effort, the failure is logged.
+  def test_a_raising_emit_does_not_change_the_cycles_exit_status
+    raiser = Object.new
+    raiser.define_singleton_method(:emit) { |*| raise "telemetry down" }
+    out = StringIO.new
+    c = cycle(spawner: ->(_argv) { 0 }, roster: roster(@repo), obs: raiser, out: out)
+    assert_equal 0, c.run
+    assert_includes out.string, "WARN: fleet telemetry failed"
+    assert_includes out.string, "telemetry down"
+  end
+
+  # The ONE writer is wired once, in cycle_runner, against
+  # Paths.fleet_log_dir — the fleet has no repo dir of its own.
+  def test_cycle_runner_builds_observability_against_the_fleet_log_dir
+    with_pause_home do
+      c = Robur::Fleet.cycle_runner(roster: roster(@repo))
+      assert_kind_of Robur::Observability, c.obs
+      c.obs.emit(:fleet_end, status: 0, runs: 0, plans: 0, skips: 0)
+      assert File.file?(File.join(@root, "logs", "fleet", "events.jsonl"))
+    end
+  end
 end
 

@@ -26,6 +26,32 @@ Four things, and everything else follows:
 4. **The loop stops on purpose.** `ALL_DONE`, a human gate, a red gate that will
    not clear, or a progress stall. `.robur/stop_reason` says which.
 
+## The fleet
+
+One loop drives one repo. The fleet drives many — the same loop, fanned out
+over a roster.
+
+`fleet.conf` is the roster: one repo path per line. Put `#` before a path to
+park it. There are no add or remove verbs — you edit the file in an editor,
+like any other roster.
+
+```sh
+robur fleet --dry-run    # explains what the next cycle would do
+robur fleet              # run one cycle
+robur fleet --every 15m  # run cycles forever, one every 15 minutes
+```
+
+While a cycle runs you can steer it with the operator verbs: `robur fleet
+pause`, `resume`, `retry`, and `status`.
+
+**The fleet budget keys are global-only.** `MAX_RUNS_PER_CYCLE`,
+`MAX_PLANS_PER_CYCLE`, `AUTOPLAN_MIN_SECS`, `BACKOFF_BASE`, `BACKOFF_CAP`,
+`FLEET_INTERVAL`, and `HEALTHCHECK_URL` are read ONLY from the human-owned
+`~/.robur/conf`, never from a repo `.robur.conf`. The reason is the same trust
+boundary that keeps `NOTIFY_CMD` out of repo confs: an agent that could raise
+its own run budget from inside a repo it is writing has escaped the very thing
+that bounds it.
+
 ## Install
 
 ```sh
