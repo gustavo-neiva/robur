@@ -1,6 +1,16 @@
 # Changelog
 
 ## Milestone 6 — reading the fleet without a browser
+_2026-09-19_
+
+- [x] T6.1 `robur fleet status` shows the whole fleet on one screen
+      Add `robur fleet status`: one line per roster entry with name, verdict, open/done task counts, stop reason, backoff expiry as a relative duration, and whether a lock is currently held.
+- [x] T6.2 every cycle decision lands in events.jsonl, not just in prose
+      Emit five events per cycle through the existing `Robur::Observability`, constructed against `Paths.fleet_log_dir`: `fleet_start` (roster size, budgets), `fleet_decision` (repo, action, reason), `fleet_spawn` (repo, argv), `fleet_exit` (repo, status, stop_reason), `fleet_end` (status, runs, plans, skips).
+- [x] T6.3 README and the conf example document the fleet as a first-class half
+      Add a "The fleet" section to `README.md` after "The mental model": `fleet.conf` is the roster — one repo path per line, `#` before a path parks it, and you EDIT IT IN AN EDITOR, there are no add/remove verbs.
+
+## Milestone 6 — reading the fleet without a browser
 _2026-09-19 · in progress_
 
 - [x] T6.2 every cycle decision lands in events.jsonl, not just in prose
