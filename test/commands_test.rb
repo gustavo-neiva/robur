@@ -143,6 +143,17 @@ module Robur
       refute_includes out.string, "task T1.2"
     end
 
+    def test_doctor_allows_a_task_about_human_gating
+      Commands.init(@dir, emit: ->(_m) {})
+      File.write(File.join(@dir, "PLAN.md"),
+                 "# p\n\n- [ ] T1.1 (hard) a repo waiting on a human stops re-asking\n")
+      out = StringIO.new
+
+      Commands.doctor_report(@dir, out: out)
+
+      refute_includes out.string, "human-only but checked"
+    end
+
     def test_doctor_passes_a_human_only_task_that_is_parked
       Commands.init(@dir, emit: ->(_m) {})
       File.write(File.join(@dir, "PLAN.md"),

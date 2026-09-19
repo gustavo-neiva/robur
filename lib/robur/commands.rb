@@ -264,8 +264,12 @@ module Robur
     def human_task_lint(content, conf_values, pr_fail)
       token = (conf_values["HUMAN_TOKEN"] || "HUMAN_BLOCKED").to_s
       prose = /#{Regexp.escape(token)}|\ba human\b/i
+      # "waiting on a human", "blocked on a human" — the human is the object,
+      # so the line describes loop behaviour to build, not work for a human.
+      about = /\b(?:on|for|by|from|with|to) a human\b/i
       content.lines.each do |line|
         next unless line =~ /\A[[:space:]]*-?[[:space:]]*\[( |IN PROGRESS)\]/ && line =~ prose
+        next if line !~ /#{Regexp.escape(token)}/ && line =~ about
 
         id = Task.parse(line).id
         pr_fail.call("task #{id} is human-only but checked '[ ]' — the loop will re-dispatch it every run; " \
