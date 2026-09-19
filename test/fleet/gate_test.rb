@@ -112,6 +112,21 @@ class FleetGateTest < Minitest::Test
     refute with_repo(marker: "MACHINE").class_gated?
   end
 
+  # T2.2: the per-repo autoplan rate limit reads the stamp's mtime. No
+  # stamp = due (never planned); 1h-old with the 6h default = not due;
+  # 7h-old = due. Verbatim from the acceptance case.
+  def test_autoplan_due_reads_stamp_mtime_per_repo
+    gate = with_repo(open: 0)
+    now = Time.at(1_000_000_000)
+    assert gate.autoplan_due?(21_600, now), "missing stamp is due"
+    stamp = Robur::State.state_path(@repo, "autoplan.stamp")
+    Robur::State.write_raw(@repo, "autoplan.stamp", "")
+    File.utime(now - 3600, now - 3600, stamp)
+    refute gate.autoplan_due?(21_600, now), "1h-old stamp is not due at 6h"
+    File.utime(now - 7 * 3600, now - 7 * 3600, stamp)
+    assert gate.autoplan_due?(21_600, now), "7h-old stamp is due"
+  end
+
   def test_no_class_marker_not_gated
     refute with_repo(marker: nil).class_gated?
   end

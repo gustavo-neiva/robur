@@ -27,6 +27,23 @@ module Robur
       # runnable (../harbor/harbor/loop/tracker.py:5).
       def open_tasks = plan.counts[:open] + plan.counts[:in_progress]
 
+      # A caught-up repo is autoplan-eligible only if it has a tracker to
+      # top up (T2.2); a missing tracker counts 0 open and would otherwise
+      # read as caught-up.
+      def tracker? = File.file?(tracker_path)
+
+      # Per-repo autoplan rate limit (T2.2): due when no stamp exists (never
+      # planned) or the stamp is at least min_secs old at `now`. Reads mtime
+      # so the planner stays pure; the stamp is WRITTEN only after a real
+      # plan turn (T3.5) — stamping at decision time would rate-limit
+      # nothing.
+      def autoplan_due?(min_secs, now)
+        path = State.state_path(@repo, "autoplan.stamp")
+        return true unless File.file?(path)
+
+        now - File.mtime(path) >= min_secs
+      end
+
       # A human_blocked stop_reason is per-run state: re-checked against the
       # tracker every beat or a 15-minute loop re-fires the same unanswered
       # question forever (harbor measured 246 re-runs from one question).

@@ -139,7 +139,7 @@ test/fleet/*_test.rb            one test file per class above
       constraints: PURE — no File, no Dir, no spawn, no Time.now; clock is injected;
                    stdlib only.
 
-- [ ] T2.2 (normal, feat, serial) a caught-up repo tops up its own backlog, but not on every beat
+- [x] T2.2 (normal, feat, serial) a caught-up repo tops up its own backlog, but not on every beat
       touches: lib/robur/fleet/planner.rb, lib/robur/fleet/gate.rb, test/fleet/planner_test.rb
       do: A repo whose verdict is `:caught_up` and which has a tracker file is
           eligible for an unattended `robur plan --auto` turn. Emit it as a

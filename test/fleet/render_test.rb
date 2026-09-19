@@ -48,7 +48,9 @@ class FleetRenderTest < Minitest::Test
       assert_equal 4, lines.size
       assert_includes lines[0], "run"
       assert_includes lines[0], "2 open"
-      assert_includes lines[1], "skip:caught-up"
+      # caught-up + tracker + no stamp = due -> the cycle would emit a
+      # plan turn (T2.2)
+      assert_includes lines[1], "plan"
       # decisions walk roster.active in file order; parked rows are appended
       # last for visibility only (never decided by the planner).
       assert_includes lines[2], "skip:no-conf"

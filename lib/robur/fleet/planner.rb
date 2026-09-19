@@ -11,13 +11,21 @@ module Robur
     # reported `0 open` for repos the runner considered runnable.
     #
     # The planner never touches disk, the clock or a subprocess: every value
-    # it could want from the outside — the pause flag, the already-run set —
-    # is read by the CALLER and handed in as a value, and gates arrive
-    # through the injected `gate_for` lambda. `paused` is honoured in T2.3,
-    # `clock` in T2.2 (autoplan rate limit); declared now so this signature
-    # never grows an fs: later.
+    # it could want from the outside — the pause flag, the already-run set,
+    # the time — is read by the CALLER and handed in as a value (`clock` is
+    # the injected clock; its `now` drives the autoplan rate limit), and
+    # gates arrive through the injected `gate_for` lambda. The stamp itself
+    # is read on Gate (T2.2) and written only after a real plan turn (T3.5).
+    # `paused` is honoured in T2.3.
     class Planner
       Decision = Struct.new(:repo, :action, :reason, keyword_init: true)
+
+      # Autoplan rate limit (T2.2): ENV/global-conf only, never a repo-conf
+      # key. 6h — on a 15-minute beat an unstamped rule would draw 96 plan
+      # turns a day per caught-up repo, and caught-up planning is the
+      # estate's dominant cost line (harbor: 2,273 of 2,299 turns in four
+      # days were a caught-up repo being "planned" for nothing).
+      AUTOPLAN_MIN_SECS_DEFAULT = 21_600
 
       def initialize(roster:, gate_for:, budget:, clock:, paused: false, already_ran: [])
         @roster = roster
@@ -29,25 +37,51 @@ module Robur
       end
 
       # Ordered: roster.active in file order. A :runnable verdict runs until
-      # max_runs is spent, then skips with :max_runs; a repo run earlier this
-      # cycle skips with :once_per_cycle (it costs no budget — it already
-      # spent its own); every other verdict skips carrying the gate's reason.
+      # max_runs is spent, then skips with :max_runs; a caught-up repo with
+      # a tracker emits ONE unattended plan turn per rate-limit window,
+      # bounded by max_plans (T2.2); a repo run earlier this cycle skips
+      # with :once_per_cycle (it costs no budget — it already spent its
+      # own); every other verdict skips carrying the gate's reason — so a
+      # backed-off, human-blocked or class-gated repo is never auto-planned.
       def decisions
         runs = 0
+        plans = 0
+        min_secs = Integer(ENV.fetch("AUTOPLAN_MIN_SECS", AUTOPLAN_MIN_SECS_DEFAULT))
         @roster.active.filter_map do |entry|
           if @already_ran.include?(entry.path)
             Decision.new(repo: entry.path, action: :skip, reason: :once_per_cycle)
           else
-            verdict = @gate_for.(entry.path).verdict
-            if verdict == :runnable && runs < @budget.max_runs
-              runs += 1
-              Decision.new(repo: entry.path, action: :run, reason: verdict)
+            gate = @gate_for.(entry.path)
+            verdict = gate.verdict
+            if verdict == :runnable
+              if runs < @budget.max_runs
+                runs += 1
+                Decision.new(repo: entry.path, action: :run, reason: verdict)
+              else
+                Decision.new(repo: entry.path, action: :skip, reason: :max_runs)
+              end
+            elsif verdict == :caught_up && gate.tracker?
+              if !gate.autoplan_due?(min_secs, @clock.now)
+                Decision.new(repo: entry.path, action: :skip, reason: :autoplan_recent)
+              elsif plans < @budget.max_plans
+                plans += 1
+                Decision.new(repo: entry.path, action: :plan, reason: :caught_up)
+              else
+                Decision.new(repo: entry.path, action: :skip, reason: :max_plans)
+              end
             else
-              Decision.new(repo: entry.path, action: :skip,
-                           reason: verdict == :runnable ? :max_runs : verdict)
+              Decision.new(repo: entry.path, action: :skip, reason: verdict)
             end
           end
         end
+      end
+
+      # The cycle's spend, grouped off the ONE #decisions walk — never a
+      # second decision path.
+      def cycle_plan
+        ds = decisions
+        { runs: ds.select { |d| d.action == :run },
+          plans: ds.select { |d| d.action == :plan } }
       end
     end
   end
