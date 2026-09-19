@@ -1,5 +1,13 @@
 # Changelog
 
+## Milestone 4 — the operator's knobs
+_2026-09-19 · 2 commits · +99/-7_
+
+- [x] T4.1 `robur fleet pause` and `resume` stop and restart the beat — `6b31617`
+      Add `robur fleet pause` (create `Paths.fleet_paused_flag`) and `robur fleet resume` (unlink it, tolerating absence).
+- [x] T4.2 `robur fleet retry` clears every backoff so a fixed fleet runs now — `d8ca9f0`
+      Add `robur fleet retry`: for every active roster entry, call `Fleet::Backoff#clear!` and print how many were cleared.
+
 ## Milestone 3 — the cycle executes the plan
 _2026-09-19 · 4 commits · +537/-23_
 

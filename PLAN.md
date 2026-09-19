@@ -98,52 +98,6 @@ lib/robur/fleet/supervisor.rb   --every: the perpetual beat
 test/fleet/*_test.rb            one test file per class above
 ```
 
-## Milestone 4 — the operator's knobs
-
-> The two things a human does between beats that a text editor cannot do:
-> stop the beat, and clear a stale backoff ladder. Everything else about
-> `fleet.conf` and `PLAN.md` — adding, removing, parking, unparking a repo,
-> handing a parked task back — is a line edit in a human-owned file, and the
-> operator is already in an editor. These verbs existed in harbor only because
-> Telegram has no editor; a terminal does. See Non-goals.
-
-- [x] T4.1 (trivial, feat, serial) `robur fleet pause` and `resume` stop and restart the beat
-      touches: lib/robur/fleet.rb, lib/robur/cli.rb, test/fleet/cli_test.rb
-      do: Add `robur fleet pause` (create `Paths.fleet_paused_flag`) and
-          `robur fleet resume` (unlink it, tolerating absence). T2.3 already
-          makes the planner honour the flag, so this task only adds the two
-          verbs and their output lines. Print the resulting state so a human
-          gets confirmation rather than silence. Tagged trivial: two file
-          operations behind two subcommands.
-      snippet:
-          when "pause"  then FileUtils.touch(Paths.fleet_paused_flag)
-      accept:
-          Given no pause flag exists
-          When `robur fleet pause` then `robur fleet --dry-run` run
-          Then the dry run reports the fleet as paused
-          And after `robur fleet resume` it reports the normal board again
-      verify: ruby -Ilib -e 'Dir["test/**/*_test.rb"].each{|f| require File.expand_path(f)}'
-              — new test/fleet/cli_test.rb asserts pause, resume, and resume-when-absent.
-      constraints: flag path via Robur::Paths; resume must not raise when already resumed.
-
-- [x] T4.2 (trivial, feat, serial) `robur fleet retry` clears every backoff so a fixed fleet runs now
-      touches: lib/robur/fleet.rb, lib/robur/cli.rb, test/fleet/cli_test.rb
-      do: Add `robur fleet retry`: for every active roster entry, call
-          `Fleet::Backoff#clear!` and print how many were cleared. This is the
-          "I just fixed the thing that was failing, stop waiting" button — after
-          an environment fault every repo can be sitting on a 4h ladder for a
-          cause that no longer exists, and without this the only cure is waiting
-          it out. Parked repos are skipped. Tagged trivial: a loop and a delete.
-      snippet:
-          cleared = roster.active.count { |e| Backoff.new(e.path).clear! }
-      accept:
-          Given two active repos with backoff files and one parked repo with one
-          When `robur fleet retry` runs
-          Then it prints "cleared 2" and the parked repo's backoff file still exists
-      verify: ruby -Ilib -e 'Dir["test/**/*_test.rb"].each{|f| require File.expand_path(f)}'
-              — test/fleet/cli_test.rb asserts the count, the deletions, and the parked skip.
-      constraints: clears go through Fleet::Backoff, never File.unlink on a path built here.
-
 ## Milestone 5 — perpetual, and loud when it cannot be
 
 > The fleet becomes something you start once. A cycle is still a single
