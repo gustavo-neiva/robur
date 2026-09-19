@@ -1,5 +1,19 @@
 # Changelog
 
+## Milestone 1 — every reason a repo does not run, in one verdict
+_2026-09-19 · 3 commits · +137/-51_
+
+- [x] T1.1 a failed repo backs off on a doubling ladder capped below a day
+      Add `Fleet::Backoff.new(repo, base:, cap:, clock:)` over `Robur::State.read_loop_backoff` / `write_loop_backoff`, which already own the `count<TAB>until_epoch` format — do not parse that file here.
+- [x] T1.2 a repo waiting on a human stops re-asking the same question
+      Add `Gate#human_blocked?`.
+- [x] T1.3 a class HUMAN plan waits for approval before it ever runs — `61ec7cb`
+      Add `Gate#class_gated?`: true when the tracker's class marker is `HUMAN` and `Robur::State.state_path(repo, "plan-approved")` does not exist.
+- [x] T1.4 Gate#verdict names one reason, and the dry run prints it — `aa2661f`
+      Compose the checks into `Gate#verdict` -> a Symbol, evaluated in this fixed order so the reported reason is the most actionable one: `:no_conf` (not initialized), `:caught_up` (open_tasks == 0), `:backoff` (Backoff#active?), `:human_block` (human_blocked?), `:class_gate` (class_gated?), else `:runnable`.
+- [x] T1.5 the gate is proven against a real repo layout, not a mock — `b709057`
+      Add a fixture helper that builds a throwaway repo on disk — `.robur.conf`, a `PLAN.md` with a class marker and a mix of `[ ]`, `[IN PROGRESS]`, `[HUMAN]` and `[x]` lines, plus optional `.robur/stop_reason`, `.robur/last_task.state` and `.robur/loop-backoff` — and drive every `Gate` reader against it.
+
 ## Milestone 0 — the tracer bullet: one command answers "what happens next" (serial)
 _2026-09-19 · 47 commits_
 
