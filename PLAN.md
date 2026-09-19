@@ -129,7 +129,7 @@ test/fleet/*_test.rb            one test file per class above
               — new test/fleet/paths_test.rb asserts all three resolvers honour ROBUR_HOME.
       constraints: stdlib only; no new conf keys; create no files on disk from a path reader.
 
-- [ ] T0.2 (normal, feat, serial) the roster reads fleet.conf and keeps parked repos visible
+- [x] T0.2 (normal, feat, serial) the roster reads fleet.conf and keeps parked repos visible
       touches: lib/robur/fleet/roster.rb, test/fleet/roster_test.rb
       do: Add `Robur::Fleet::Roster`, the ONE parser of `fleet.conf` (one repo path
           per line, priority order, `#` comments). `Roster.new(path, fs:)` exposes
