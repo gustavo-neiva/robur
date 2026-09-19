@@ -234,6 +234,42 @@ class FleetCycleTest < Minitest::Test
     lease&.release
   end
 
+  # --- autoplan stamp (T3.5) ---------------------------------------------
+
+  # Acceptance: a caught-up repo whose plan turn spawned and exited 0
+  # producing no tasks — the stamp exists with an advanced mtime and no
+  # backoff was recorded: an honest empty plan is not a failure.
+  def test_plan_spawn_touches_the_autoplan_stamp_and_records_no_failure
+    c = make_repo("c", open: 0)
+    stamp = Robur::State.state_path(c, "autoplan.stamp")
+    FileUtils.touch(stamp, mtime: Time.at(0))
+    out = StringIO.new
+    plans = []
+    assert_equal 0, cycle(spawner: ->(argv) { plans << argv[2] if argv[2] == "plan"; 0 },
+                          roster: roster(c), out: out).run
+    assert_equal 1, plans.size # rate limit: exactly one plan turn
+    assert File.file?(stamp)
+    refute_equal Time.at(0), File.mtime(stamp)
+    assert_nil Robur::State.read_loop_backoff(c)
+    assert_includes out.string, "no open tasks"
+  end
+
+  # Acceptance: a repo skipped for lock contention never spawns, so no
+  # stamp is written — stamping a skip would silence its next six hours of
+  # planning for work never attempted.
+  def test_lock_skipped_repo_gets_no_autoplan_stamp
+    c = make_repo("c", open: 0)
+    lease = Robur::Fleet::Lock.acquire(c)
+    calls = []
+    out = StringIO.new
+    assert_equal 0, cycle(spawner: ->(argv) { calls << argv.last; 0 },
+                          roster: roster(c), out: out).run
+    assert_empty calls
+    refute File.file?(Robur::State.state_path(c, "autoplan.stamp"))
+  ensure
+    lease&.release
+  end
+
   # One repo raising must not abort the cycle: the raise is recorded as a
   # failure (cycle status 1) and the next repo still runs.
   def test_a_raising_repo_is_recorded_and_the_cycle_carries_on

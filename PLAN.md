@@ -232,7 +232,7 @@ test/fleet/*_test.rb            one test file per class above
       constraints: never spawn without a lease; always release in ensure; injected spawner
                    in tests — the suite must launch no real turn; stdlib only.
 
-- [ ] T3.5 (normal, feat, serial) the autoplan stamp is written only after a plan turn actually ran
+- [x] T3.5 (normal, feat, serial) the autoplan stamp is written only after a plan turn actually ran
       touches: lib/robur/fleet/cycle.rb, test/fleet/cycle_test.rb
       do: After a `:plan` decision spawns successfully, touch
           `State.state_path(repo, "autoplan.stamp")` so T2.2's per-repo rate

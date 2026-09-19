@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "fileutils"
 require "rbconfig"
 
 require_relative "gate"
@@ -120,7 +121,7 @@ module Robur
         first = planner_for.cycle_plan
         ran = []
         first[:runs].each { |d| ran << d.repo if run_repo(d.repo, "run", d.repo) }
-        first[:plans].each { |d| run_repo(d.repo, "plan", "--auto", d.repo) }
+        first[:plans].each { |d| run_plan(d.repo) }
         planner_for(already_ran: ran).cycle_plan[:runs].each do |d|
           next if @lock_skipped.include?(d.repo)
 
@@ -130,6 +131,23 @@ module Robur
       end
 
       private
+
+      # T3.5: the autoplan stamp is written only after a spawn that
+      # happened — a lock-skipped (or raising) repo never spawns, so it
+      # keeps its next rate-limit window. :spawn_error returns the sentinel,
+      # not an Integer, so an environment fault stamps nothing either. An
+      # empty plan (still 0 open after the turn) is a CORRECT outcome for a
+      # caught-up repo: log it plainly, touch nothing else — record_outcome
+      # already leaves exit 0 unbumped.
+      def run_plan(repo)
+        status = run_repo(repo, "plan", "--auto", repo)
+        return unless status.is_a?(Integer)
+
+        path = State.state_path(repo, "autoplan.stamp")
+        FileUtils.mkdir_p(File.dirname(path))
+        FileUtils.touch(path)
+        @out.puts "#{repo}: plan produced no open tasks — caught up" if Gate.new(repo).open_tasks.zero?
+      end
 
       # A fresh Planner per pass: decisions come from the ONE decision path
       # (design constraint 5); the second instance only carries the set.
