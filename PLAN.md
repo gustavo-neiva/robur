@@ -229,7 +229,7 @@ test/fleet/*_test.rb            one test file per class above
       constraints: all reads/writes/deletes via Robur::State; injected clock only, never
                    Time.now; stdlib only; no new repo-conf keys (design constraint 4).
 
-- [ ] T1.2 (hard, feat, serial) a repo waiting on a human stops re-asking the same question
+- [x] T1.2 (hard, feat, serial) a repo waiting on a human stops re-asking the same question
       touches: lib/robur/fleet/gate.rb, test/fleet/gate_test.rb
       do: Add `Gate#human_blocked?`. True only when BOTH: `State.read_stop_reason`
           is `"human_blocked"`, AND the task id in `State.read_last_task` is still
