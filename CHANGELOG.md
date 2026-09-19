@@ -1,5 +1,17 @@
 # Changelog
 
+## Milestone 2 — the planner decides a whole cycle, purely
+_2026-09-19 · 4 commits · +628/-17_
+
+- [x] T2.1 one pure planner produces the decisions both callers execute — `0f0ef8f`
+      Add `Fleet::Planner.new(roster:, gate_for:, budget:, clock:, paused: false, already_ran: [])` where `gate_for` is a lambda `repo -> Fleet::Gate` (dependency injection, so the planner never touches disk) and `budget` is a Struct of `max_runs`, `max_plans`.
+- [x] T2.2 a caught-up repo tops up its own backlog, but not on every beat — `ba77f15`
+      A repo whose verdict is `:caught_up` and which has a tracker file is eligible for an unattended `robur plan --auto` turn.
+- [x] T2.3 a paused fleet plans nothing and says so once — `1ba9ccb`
+      When the planner is constructed with `paused: true`, `#decisions` returns a single `:skip` decision per active repo with reason `:paused`, and `#cycle_plan` returns empty run and plan phases.
+- [x] T2.4 the fleet's budgets come from the human-owned conf, not from constants — `6d2d6a8`
+      Nothing yet reads the seven global keys, so every budget in M1-M2 is a hardcoded default.
+
 ## Milestone 1 — every reason a repo does not run, in one verdict
 _2026-09-19 · 3 commits · +137/-51_
 
