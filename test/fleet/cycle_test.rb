@@ -53,7 +53,7 @@ class FleetCycleTest < Minitest::Test
     end
   end
 
-  def cycle(spawner:, roster: [], notifier: nil, out: $stdout, http: nil,
+  def cycle(spawner:, roster: [], notifier: nil, out: $stdout, http: nil, obs: nil,
             healthcheck: "", paused: false, clock: ClockStub.new(Time.at(0)))
     Robur::Fleet::Cycle.new(
       roster: roster,
@@ -63,7 +63,7 @@ class FleetCycleTest < Minitest::Test
                                        backoff_cap: 2, interval: 3,
                                        healthcheck_url: healthcheck),
       clock: clock,
-      spawner: spawner, notifier: notifier, http: http, out: out,
+      spawner: spawner, notifier: notifier, http: http, obs: obs, out: out,
       paused: paused
     )
   end
@@ -116,8 +116,10 @@ class FleetCycleTest < Minitest::Test
 
   # --- record_outcome: the policy table (T3.3) ---------------------------
 
-  private
-
+  # NOT `private`: Minitest collects PUBLIC test_* methods only, so a
+  # `private` here silently hid the 26 tests below it — the whole policy
+  # table reported as passing by never running at all. A helper among them
+  # is harmless; it does not match /^test_/.
   def spy_notifier
     calls = []
     notifier = Object.new
@@ -275,6 +277,7 @@ class FleetCycleTest < Minitest::Test
   def test_plan_spawn_touches_the_autoplan_stamp_and_records_no_failure
     c = make_repo("c", open: 0)
     stamp = Robur::State.state_path(c, "autoplan.stamp")
+    FileUtils.mkdir_p(File.dirname(stamp))
     FileUtils.touch(stamp, mtime: Time.at(0))
     out = StringIO.new
     plans = []
@@ -325,9 +328,10 @@ class FleetCycleTest < Minitest::Test
     end
   end
 
-  # Notifier's key expiry is the whole throttle: an hour later the same
-  # fleet-level key is suppressed, nothing new is delivered.
-  def test_reminder_is_throttled_to_once_a_day
+  # The throttle is Notifier's key expiry (proved in notifier_test), so
+  # what Cycle owes it is ONE STABLE KEY: a key that moved with the clock
+  # would re-send every beat and there would be no throttle to have.
+  def test_reminder_reuses_one_key_so_the_notifier_can_throttle_it
     with_pause_home do
       FileUtils.touch(File.join(@root, "fleet.paused"),
                       mtime: Time.now - 9 * 86_400)
@@ -339,7 +343,9 @@ class FleetCycleTest < Minitest::Test
       clock = opts[:clock]
       clock.now += 3_600
       cycle(**opts).run
-      assert_equal 1, calls.size
+      assert_equal 2, calls.size # the spy has no throttle; the real Notifier does
+      assert_equal calls.first[1], calls.last[1]
+      assert_equal "fleet\tpaused", calls.first[1]
     end
   end
 
@@ -418,7 +424,12 @@ class FleetCycleTest < Minitest::Test
 
   # --- fleet telemetry (T6.2) --------------------------------------------
 
-  def obs_dir = File.join(@root, "fleetlog")
+  # Observability appends, it does not mkdir: the real wiring creates the
+  # dir in Fleet.cycle_runner (Paths.ensure_state_dir!), so a test that
+  # builds its own writer has to do the same.
+  def obs_dir
+    @obs_dir ||= File.join(@root, "fleetlog").tap { |d| FileUtils.mkdir_p(d) }
+  end
 
   def read_events(dir = obs_dir)
     File.readlines(File.join(dir, "events.jsonl")).map { |l| JSON.parse(l) }
@@ -453,7 +464,9 @@ class FleetCycleTest < Minitest::Test
     spawn, = events.select { |e| e["kind"] == "fleet_spawn" }
     assert_equal [a, ["run", a]], spawn.values_at("repo", "argv")
     exit_ev, = events.select { |e| e["kind"] == "fleet_exit" }
-    assert_equal [a, 0, "done"], exit_ev.values_at("repo", "status", "stop_reason")
+    # The stub spawner writes no stop file, so this is Gate's DERIVED
+    # fallback for a repo that still has open tasks.
+    assert_equal [a, 0, "stopped"], exit_ev.values_at("repo", "status", "stop_reason")
     end_ev, = events.select { |e| e["kind"] == "fleet_end" }
     assert_equal [0, 1, 0, 1], end_ev.values_at("status", "runs", "plans", "skips")
     lines = File.readlines(File.join(obs_dir, "loop.log"), chomp: true)
@@ -495,6 +508,29 @@ class FleetCycleTest < Minitest::Test
     assert_equal 0, c.run
     assert_includes out.string, "WARN: fleet telemetry failed"
     assert_includes out.string, "telemetry down"
+  end
+
+  # MAX_RUNS_PER_CYCLE bounds the CYCLE, not one pass. Six runnable repos
+  # against max_runs 4: the second pass must spend only what the first
+  # left, or a fresh planner silently authorizes 8 turns a beat.
+  def test_max_runs_is_a_cycle_cap_not_a_per_pass_cap
+    repos = (1..6).map { |i| make_repo("m#{i}") }
+    seen = []
+    c = cycle(spawner: ->(argv) { seen << argv.last; 0 }, roster: roster(*repos), out: StringIO.new)
+    c.run
+    assert_equal 4, seen.size, seen.map { |p| File.basename(p) }.inspect
+  end
+
+  # BACKOFF_BASE/BACKOFF_CAP are fleet budget keys, and bump! is their only
+  # consumer: a Backoff built without them ignores the operator's conf.
+  def test_bump_uses_the_budgets_backoff_base
+    Robur::State.write_stop_reason(@repo, "gate_red")
+    c = cycle(spawner: ->(_argv) { 1 }, roster: roster(@repo), out: StringIO.new)
+    c.run
+    # cycle()'s budget: base 1, cap 2 — the class defaults are 3600/14400.
+    count, until_ts = Robur::State.read_loop_backoff(@repo)
+    assert_equal 1, count
+    assert_operator until_ts - Time.now.to_i, :<=, 2
   end
 
   # The ONE writer is wired once, in cycle_runner, against
