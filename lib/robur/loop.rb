@@ -663,8 +663,12 @@ module Robur
       emit "HUMAN NEEDED: #{msg}"
       return if notify_cmd.to_s.empty?
 
-      pid = Process.spawn("sh", "-c", "#{notify_cmd} \"$1\"", "_", msg)
-      Process.detach(pid)
+      begin
+        pid = Process.spawn("sh", "-c", "#{notify_cmd} \"$1\"", "_", msg)
+        Process.detach(pid)
+      rescue Errno::ENOENT
+        nil # no shell on PATH (e.g. stripped env) — the emit above already told the human
+      end
     end
 
     def emit(msg)

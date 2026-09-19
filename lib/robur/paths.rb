@@ -161,6 +161,12 @@ module Robur
 
     def logs_dir = File.join(home, "logs")
 
+    # Fleet layer (PLAN.fleet.md): roster conf, pause flag, and the log
+    # DIRECTORY Observability writes loop.log + events.jsonl into.
+    def fleet_conf        = File.join(home, "fleet.conf")
+    def fleet_paused_flag = File.join(home, "fleet.paused")
+    def fleet_log_dir     = File.join(home, "logs", "fleet")
+
     # Both names are exported for spawned turns during the transition: an
     # agent or hook keyed on either one still fires.
     def loop_env_vars = [LOOP_ENV, LEGACY_LOOP_ENV].freeze

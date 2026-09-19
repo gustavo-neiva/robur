@@ -105,7 +105,7 @@ test/fleet/*_test.rb            one test file per class above
 > through every layer the rest of the plan thickens: Paths → Roster → Gate →
 > Render → CLI. Nothing here spawns a process or writes a file.
 
-- [ ] T0.1 (trivial, chore, serial) the fleet namespace loads and the gate stays green
+- [x] T0.1 (trivial, chore, serial) the fleet namespace loads and the gate stays green
       touches: lib/robur/fleet.rb, lib/robur/paths.rb, test/fleet/paths_test.rb
       do: Create the `Robur::Fleet` namespace module in `lib/robur/fleet.rb` (empty
           module body for now; later tasks add `Fleet.cycle` and `Fleet.dry_run`).
