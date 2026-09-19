@@ -84,13 +84,16 @@ module Robur
     def test_json_prompt_echo_quoting_the_token_does_not_early_kill
       echo = %({"type":"message_end","message":{"role":"user","content":[{"type":"text","text":"print the token STEP_COMPLETE on its own line. Otherwise ALL_DONE."}]}})
       file = File.join(Dir.mktmpdir, "turn.out")
+      # 3s, not 1s: the deadline must outlive a cold ruby spawn on a loaded
+      # machine, or the kill lands before the child's first write and the
+      # turn file is empty (suite-order flake).
       result = Turn.run(
         cmd: [RbConfig.ruby, "-e", "puts '#{echo}'; $stdout.flush; sleep 30"],
-        turn_file: file, turn_timeout: 1, stall_timeout: 10, poll_interval: 0.05,
+        turn_file: file, turn_timeout: 3, stall_timeout: 10, poll_interval: 0.05,
         early_tokens: ["STEP_COMPLETE", "ALL_DONE"]
       )
       assert_includes File.read(file), "STEP_COMPLETE"
-      assert_equal "deadline-1s", result.kill_reason
+      assert_equal "deadline-3s", result.kill_reason
     end
 
     def test_deadline_kill

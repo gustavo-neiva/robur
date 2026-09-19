@@ -53,6 +53,7 @@ module Robur
         watch   [REPO]  Live board in a 2nd terminal: refreshes step/%/milestones/model/ETA every 2s while `run` works.
         fleet            One cycle over the roster: run, auto-plan, run again. --dry-run prints the board only.
                         --every [DUR] keeps beating: DUR is 900, 15m or 2h (default FLEET_INTERVAL); Ctrl-C drains.
+                        fleet status: the whole fleet on one screen — verdicts, backoffs, locks, waiting-on-you.
                         fleet pause|resume: stop/start the beat (see 'fleet --dry-run').
                         fleet retry: clear every active repo's backoff now.
         stop    [REPO]  Signal a running loop to stop: bare = drain (after the current turn),
@@ -167,6 +168,12 @@ module Robur
     COMMANDS = %w[init new plan doctor run once selftest stats watch status stop models fanout
                   fanout-clean migrate-state changelog fleet].freeze
 
+    # `robur fleet <verb>` — a verb after `fleet` is a subcommand, not the
+    # dir positional and not the repo `status` command (T6.1). `status`
+    # collides with COMMANDS, so the pre-scan drops it; parse! re-captures
+    # it here and dispatch hands it to cmd_fleet.
+    FLEET_VERBS = %w[pause resume retry status].freeze
+
     # Flags that swallow the NEXT argv item as their value. Only the tolerant
     # pre-scan needs this; the authoritative parse is OptionParser and knows
     # its own arity.
@@ -260,6 +267,10 @@ module Robur
       end
       argv.each do |a|
         next if a == command || a == prescan_dir # subcommand / pre-scanned dir
+        if command == "fleet" && FLEET_VERBS.include?(a)
+          o[:fleet_verb] = a # e.g. `fleet -d X status`: the verb is not the dir
+          next
+        end
         if command == "new" && o["PROMPT_OVERRIDE"].nil?
           o["PROMPT_OVERRIDE"] = a # for `new`, the idea rides in the prompt slot
         else
@@ -314,7 +325,7 @@ module Robur
         warn_conf_issues(dir || ".")
         cmd_fanout_clean(dir)
       when "fleet"
-        cmd_fleet(dir)
+        cmd_fleet((@overrides || {})[:fleet_verb] || dir)
       when "stats"
         warn_conf_issues(dir || ".")
         cmd_stats(dir)
@@ -362,6 +373,9 @@ module Robur
       elsif verb == "retry"
         roster = Fleet::Roster.new(Paths.fleet_conf)
         puts "cleared #{roster.active.count { |e| Fleet::Backoff.new(e.path).clear! }}"
+        return 0
+      elsif verb == "status"
+        Fleet.status(roster: Fleet::Roster.new(Paths.fleet_conf))
         return 0
       end
       roster = Fleet::Roster.new(Paths.fleet_conf)

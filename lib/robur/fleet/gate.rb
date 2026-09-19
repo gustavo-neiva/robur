@@ -27,6 +27,8 @@ module Robur
       # runnable (../harbor/harbor/loop/tracker.py:5).
       def open_tasks = plan.counts[:open] + plan.counts[:in_progress]
 
+      def done_tasks = plan.counts[:done]
+
       # A caught-up repo is autoplan-eligible only if it has a tracker to
       # top up (T2.2); a missing tracker counts 0 open and would otherwise
       # read as caught-up.
@@ -85,6 +87,19 @@ module Robur
       # The loop's own last word, or a derived fallback when it never ran.
       def stop_reason
         State.read_stop_reason(@repo) || (open_tasks.zero? ? "done" : "stopped")
+      end
+
+      # What the human must answer when the verdict routes here (T6.1's
+      # waiting-on-you section): [task id, one-line question]. A parked
+      # [HUMAN] task carries its own question (the park step appended it to
+      # the line); a human_block stop blocks on the still-open task — that
+      # task's line IS the question; a class gate blocks on approval of the
+      # plan that would run the next task.
+      def waiting_on
+        return parked if (parked = plan.parked_task) && parked[1]
+
+        task = plan.next_task(:in_progress) || plan.next_task(:open)
+        [task&.id, task&.text]
       end
 
       private

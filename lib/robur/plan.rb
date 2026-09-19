@@ -186,6 +186,14 @@ module Robur
              @path)
     end
 
+    # The parked task's [id, question] — the question is what the park step
+    # appended to the line ("PARKED, needs human: <q>"); nil when the line
+    # predates parking. Read-only.
+    def parked_task
+      t = next_task(:parked) or return nil
+      [t.id, all_lines[t.lineno - 1][/PARKED, needs human:\s*(.+)/, 1]&.strip]
+    end
+
     # The `<!-- class: MACHINE -->` marker on the tracker's first line.
     def class_marker
       all_lines[0]&.match(/<!--\s*class:\s*(\w+)\s*-->/)&.send(:[], 1)

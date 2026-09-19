@@ -22,8 +22,14 @@ module Robur
       end
 
       def active?
+        remaining_secs.positive?
+      end
+
+      # Seconds until the backoff lifts, 0 when none is active. `now` is
+      # injectable so a status render is testable without sleeping (T6.1).
+      def remaining_secs(now = @clock.now.to_i)
         record = State.read_loop_backoff(@repo)
-        record && @clock.now.to_i < record[1]
+        record && now < record[1] ? record[1] - now : 0
       end
 
       # Doubles from base per consecutive failure, clamps at cap, persists

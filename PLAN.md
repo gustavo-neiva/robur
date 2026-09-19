@@ -254,7 +254,7 @@ test/fleet/*_test.rb            one test file per class above
 > what is waiting on me. All three are `(serial)`: they share `fleet.rb`,
 > `cli.rb`, `render.rb` and `cycle.rb` with milestones 0-5.
 
-- [ ] T6.1 (normal, feat, serial) `robur fleet status` shows the whole fleet on one screen
+- [x] T6.1 (normal, feat, serial) `robur fleet status` shows the whole fleet on one screen
       touches: lib/robur/fleet/render.rb, lib/robur/fleet.rb, lib/robur/cli.rb,
                test/fleet/render_test.rb
       do: Add `robur fleet status`: one line per roster entry with name, verdict,

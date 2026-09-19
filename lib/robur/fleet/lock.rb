@@ -50,6 +50,25 @@ module Robur
 
         line.to_i
       end
+
+      # True while another process holds the repo's flock (T6.1's status
+      # column). Probed with a non-blocking exclusive flock on a READ-ONLY
+      # handle and released immediately: the kernel hands it straight back
+      # and no byte is written, so status stays read-only. The kernel
+      # releases a dead holder's flock, so a stale file never reads held.
+      def held?(repo)
+        path = State.state_path(repo, "loop.lock")
+        return false unless File.file?(path)
+
+        f = File.open(path, "r")
+        f.flock(File::LOCK_EX | File::LOCK_NB)
+        f.flock(File::LOCK_UN)
+        false
+      rescue Errno::EWOULDBLOCK, Errno::EAGAIN
+        true
+      ensure
+        f.close if f
+      end
     end
   end
 end

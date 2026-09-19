@@ -113,5 +113,33 @@ module Robur
       out.puts Render.board(rows) unless rows.empty?
       0
     end
+
+    # Read-only whole-fleet board (T6.1): one line per roster entry — name,
+    # verdict, open/total tasks, backoff expiry as a relative duration, the
+    # loop's own stop reason, lock state — plus a `waiting on you` section
+    # for every repo whose verdict routes to a human. Gathers only: it
+    # never takes a lock, never writes, decides nothing (Gate reads,
+    # Render prints). Parked rows keep the dry-run convention: still
+    # listed, never dressed up as runnable.
+    def status(roster:, out: $stdout, now: Sys::Clock.new.now.to_i)
+      gates = Hash.new { |h, path| h[path] = Gate.new(path) }
+      rows = roster.entries.map do |e|
+        g = gates[e.path]
+        secs = Backoff.new(e.path).remaining_secs(now)
+        [File.basename(e.path),
+         e.parked ? "parked" : g.verdict.to_s.tr("_", "-"),
+         g.open_tasks, g.open_tasks + g.done_tasks,
+         secs.positive? ? secs : nil, g.stop_reason, Lock.held?(e.path)]
+      end
+      waiting = roster.entries.filter_map do |e|
+        g = gates[e.path]
+        next if e.parked || !%i[human_block class_gate].include?(g.verdict)
+
+        [File.basename(e.path), *g.waiting_on]
+      end
+      out.puts "fleet paused" if File.exist?(Paths.fleet_paused_flag)
+      out.puts Render.status(rows, waiting) unless rows.empty?
+      0
+    end
   end
 end
