@@ -156,7 +156,7 @@ module Robur
         ran = []
         first.select { |d| d.action == :run }.each { |d| ran << d.repo if run_repo(d.repo, "run", d.repo) }
         first.select { |d| d.action == :plan }.each { |d| run_plan(d.repo) }
-        planner_for(already_ran: ran).cycle_plan[:runs].each do |d|
+        planner_for(already_ran: ran, max_runs: @budget.max_runs - ran.size).cycle_plan[:runs].each do |d|
           next if @lock_skipped.include?(d.repo)
 
           run_repo(d.repo, "run", d.repo)
@@ -242,9 +242,15 @@ module Robur
       end
 
       # A fresh Planner per pass: decisions come from the ONE decision path
-      # (design constraint 5); the second instance only carries the set.
-      def planner_for(already_ran: [])
-        Planner.new(roster: @roster, gate_for: @gate_for, budget: @budget,
+      # (design constraint 5); the second instance only carries the set and
+      # the budget pass one LEFT. MAX_RUNS_PER_CYCLE is a cycle cap, not a
+      # per-pass one: harbor spends it off one counter on the shared _Cycle
+      # across both chain_from passes (runner.py:485), and a planner that
+      # restarts at 0 quietly authorizes twice the turns the global conf
+      # declared.
+      def planner_for(already_ran: [], max_runs: @budget.max_runs)
+        Planner.new(roster: @roster, gate_for: @gate_for,
+                    budget: Budget.new(**@budget.to_h.merge(max_runs: max_runs)),
                     clock: @clock, paused: @paused, already_ran: already_ran)
       end
 
@@ -303,8 +309,11 @@ module Robur
         nil
       end
 
+      # The ladder's shape is a fleet budget (BACKOFF_BASE/BACKOFF_CAP), and
+      # bump! is its ONLY consumer — active?/remaining_secs read the stored
+      # deadline. Omitting them here is what made both keys dead config.
       def bump(repo)
-        Backoff.new(repo).bump!
+        Backoff.new(repo, base: @budget.backoff_base, cap: @budget.backoff_cap).bump!
         :bumped
       end
 

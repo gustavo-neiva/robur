@@ -73,11 +73,16 @@ module Robur
       def class_gated? = plan.class_marker&.upcase == "HUMAN" && !approved?
 
       # One reason, most actionable first: backoff beats class_gate because
-      # backoff expires on its own while an approval cannot (task T1.4).
+      # backoff expires on its own while an approval cannot (task T1.4), and
+      # it beats caught_up because :caught_up is the AUTOPLAN-eligible
+      # verdict — a failing repo that happens to have 0 open tasks would
+      # otherwise draw an unattended plan turn every window while it is
+      # supposed to be cooling off (harbor's _auto_plan skips backed_off
+      # explicitly, runner.py:_auto_plan).
       def verdict
         return :no_conf unless initialized?
-        return :caught_up if open_tasks.zero?
         return :backoff if Backoff.new(@repo).active?
+        return :caught_up if open_tasks.zero?
         return :human_block if human_blocked?
         return :class_gate if class_gated?
 

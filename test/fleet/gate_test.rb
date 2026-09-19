@@ -163,6 +163,15 @@ class FleetGateTest < Minitest::Test
     assert_equal :backoff, gate.verdict
   end
 
+  # :caught_up is the autoplan-eligible verdict, so reading it while a
+  # backoff is active buys a failing repo an unattended plan turn every
+  # window instead of the silence it was sent to.
+  def test_verdict_backoff_beats_caught_up
+    gate = with_repo(open: 0, backoff: [1, Time.now.to_i + 3600])
+    assert_equal 0, gate.open_tasks
+    assert_equal :backoff, gate.verdict
+  end
+
   def test_stop_reason_from_state_when_present
     assert_equal "gate_red", with_repo(stop_reason: "gate_red").stop_reason
   end
