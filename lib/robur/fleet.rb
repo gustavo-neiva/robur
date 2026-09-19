@@ -8,6 +8,7 @@ require_relative "fleet/lock"
 require_relative "fleet/planner"
 require_relative "fleet/render"
 require_relative "fleet/roster"
+require_relative "fleet/supervisor"
 require_relative "paths"
 require_relative "sys"
 
@@ -55,7 +56,13 @@ module Robur
     # spawning and outcome recording belong to Cycle; this only assembles it
     # from the same base the board reads.
     def cycle(roster:, out: $stdout)
-      Cycle.new(**planner_base(roster), out: out).run
+      cycle_runner(roster: roster, out: out).run
+    end
+
+    # The runner OBJECT behind cycle — the supervisor (T5.1) beats on the
+    # same assembly repeatedly instead of running it once.
+    def cycle_runner(roster:, out: $stdout)
+      Cycle.new(**planner_base(roster), out: out)
     end
 
     # Resolve the fleet budgets. A missing (or unreadable) conf yields the

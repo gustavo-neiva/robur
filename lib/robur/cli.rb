@@ -52,6 +52,7 @@ module Robur
                         commit. One-off backfill; the loop archives one milestone per turn on its own.
         watch   [REPO]  Live board in a 2nd terminal: refreshes step/%/milestones/model/ETA every 2s while `run` works.
         fleet            One cycle over the roster: run, auto-plan, run again. --dry-run prints the board only.
+                        --every [DUR] keeps beating: DUR is 900, 15m or 2h (default FLEET_INTERVAL); Ctrl-C drains.
                         fleet pause|resume: stop/start the beat (see 'fleet --dry-run').
                         fleet retry: clear every active repo's backoff now.
         stop    [REPO]  Signal a running loop to stop: bare = drain (after the current turn),
@@ -235,6 +236,7 @@ module Robur
         p.on("--cheap") { o["CHEAP_MODE"] = "1" }
         p.on("--auto") { o["AUTO_PLAN"] = "1" }
         p.on("--dry-run") { o["FLEET_DRY_RUN"] = "1" }
+        p.on("--every [DUR]") { |v| o["FLEET_EVERY"] = v || "" }
         p.on("--apply") { o["MIGRATE_APPLY"] = "1" }
         p.on("--now") { o[:stop_now] = true }
         p.on("--clear") { o[:clear_stop] = true }
@@ -366,9 +368,33 @@ module Robur
       if (@overrides || {})["FLEET_DRY_RUN"] == "1"
         Fleet.dry_run(roster: roster, out: $stdout)
         0
+      elsif @overrides&.key?("FLEET_EVERY")
+        cmd_fleet_every(roster)
       else
         Fleet.cycle(roster: roster, out: $stdout)
       end
+    end
+
+    # robur fleet --every 15m — the perpetual beat (T5.1). The lifecycle is
+    # built against Paths.fleet_log_dir because the fleet has no repo dir:
+    # its stop file (and so `robur stop` on the fleet, later) lives there. A
+    # stale stop file from a previous session must not kill a fresh
+    # supervisor after one beat, so clear it first — same reason run does.
+    def cmd_fleet_every(roster)
+      spec = @overrides["FLEET_EVERY"]
+      interval = spec.empty? ? nil : begin
+        Fleet::Supervisor.parse_interval(spec)
+      rescue ArgumentError => e
+        die e.message
+      end
+      Paths.ensure_state_dir!(Paths.fleet_log_dir)
+      State.clear_stop(Paths.fleet_log_dir)
+      lifecycle = Robur::Lifecycle.new(Paths.fleet_log_dir).install!
+      puts "fleet: beating every #{interval || Fleet.budget.interval}s; Ctrl-C to drain"
+      Fleet::Supervisor.new(interval: interval,
+                            cycle: Fleet.cycle_runner(roster: roster, out: $stdout),
+                            lifecycle: lifecycle).run
+      0
     end
 
     def cmd_init(dir)

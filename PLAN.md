@@ -104,7 +104,7 @@ test/fleet/*_test.rb            one test file per class above
 > process-worth of work, so `robur fleet` stays cron/launchd-friendly; `--every`
 > adds the supervisor for the common case where you just want it running.
 
-- [ ] T5.1 (hard, feat, serial) `robur fleet --every 15m` keeps running and drains on Ctrl-C
+- [x] T5.1 (hard, feat, serial) `robur fleet --every 15m` keeps running and drains on Ctrl-C
       touches: lib/robur/fleet/supervisor.rb, lib/robur/cli.rb, test/fleet/supervisor_test.rb
       do: Add `Fleet::Supervisor.new(interval:, cycle:, lifecycle:, clock:)` and
           `#run`: execute one cycle, sleep the interval, repeat. `interval`

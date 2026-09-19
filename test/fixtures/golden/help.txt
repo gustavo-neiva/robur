@@ -21,6 +21,7 @@ Commands:
                   commit. One-off backfill; the loop archives one milestone per turn on its own.
   watch   [REPO]  Live board in a 2nd terminal: refreshes step/%/milestones/model/ETA every 2s while `run` works.
   fleet            One cycle over the roster: run, auto-plan, run again. --dry-run prints the board only.
+                  --every [DUR] keeps beating: DUR is 900, 15m or 2h (default FLEET_INTERVAL); Ctrl-C drains.
                   fleet pause|resume: stop/start the beat (see 'fleet --dry-run').
                   fleet retry: clear every active repo's backoff now.
   stop    [REPO]  Signal a running loop to stop: bare = drain (after the current turn),
