@@ -199,7 +199,7 @@ test/fleet/*_test.rb            one test file per class above
       constraints: backoff writes go through Fleet::Backoff; stop_reason via Gate;
                    an environment fault never backs off a repo; stdlib only.
 
-- [ ] T3.4 (normal, feat, serial) `robur fleet` runs a real cycle and returns the cycle's status
+- [x] T3.4 (normal, feat, serial) `robur fleet` runs a real cycle and returns the cycle's status
       touches: lib/robur/fleet/cycle.rb, lib/robur/fleet.rb, lib/robur/cli.rb,
                test/fleet/cycle_test.rb
       do: Add `Cycle#run` executing three phases in order: `cycle_plan[:runs]`,

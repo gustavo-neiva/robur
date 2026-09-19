@@ -2,6 +2,7 @@
 
 require_relative "config"
 require_relative "fleet/backoff"
+require_relative "fleet/cycle"
 require_relative "fleet/gate"
 require_relative "fleet/lock"
 require_relative "fleet/planner"
@@ -38,6 +39,25 @@ module Robur
 
     module_function
 
+    # The world-read every planning surface shares (T3.4): the ONE base the
+    # dry-run board and the real cycle both build their Planner from, so the
+    # board can never disagree with what would actually run (constraint 5).
+    def planner_base(roster)
+      { roster: roster,
+        gate_for: ->(repo) { Gate.new(repo) },
+        budget: budget,
+        clock: Sys::Clock.new,
+        paused: File.exist?(Paths.fleet_paused_flag) }
+    end
+
+    # The real beat (T3.4): one full cycle over the roster — run, plan
+    # top-up, run again — returning the cycle's status (0 green). Locking,
+    # spawning and outcome recording belong to Cycle; this only assembles it
+    # from the same base the board reads.
+    def cycle(roster:, out: $stdout)
+      Cycle.new(**planner_base(roster), out: out).run
+    end
+
     # Resolve the fleet budgets. A missing (or unreadable) conf yields the
     # defaults, never an exception; a value that does not parse as a number
     # falls back to its default rather than killing the beat.
@@ -68,15 +88,11 @@ module Robur
     # must see what they turned off); the planner never decides for parked
     # repos because it walks roster.active.
     def dry_run(roster:, out:)
-      # One flag read here (the planner never stats — design constraint 5);
-      # the pause is announced once in the header, not repeated per row.
-      paused = File.exist?(Paths.fleet_paused_flag)
-      gate_for = ->(repo) { Gate.new(repo) }
-      planner = Planner.new(roster: roster, gate_for: gate_for,
-                            budget: budget,
-                            clock: Sys::Clock.new,
-                            paused: paused)
-      rows = planner.decisions.map do |d|
+      base = planner_base(roster)
+      gate_for = base[:gate_for]
+      paused = base[:paused]
+      # The pause is announced once in the header, not repeated per row.
+      rows = Planner.new(**base).decisions.map do |d|
         label = d.action == :skip ? (paused ? "skip" : "skip:#{d.reason.to_s.tr('_', '-')}") : d.action.to_s
         [File.basename(d.repo), label, gate_for.(d.repo).open_tasks]
       end

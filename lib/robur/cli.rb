@@ -51,7 +51,7 @@ module Robur
         changelog [REPO] Move EVERY finished milestone out of the tracker into CHANGELOG.md and
                         commit. One-off backfill; the loop archives one milestone per turn on its own.
         watch   [REPO]  Live board in a 2nd terminal: refreshes step/%/milestones/model/ETA every 2s while `run` works.
-        fleet            Fleet board: --dry-run prints why each roster repo will or will not run.
+        fleet            One cycle over the roster: run, auto-plan, run again. --dry-run prints the board only.
         stop    [REPO]  Signal a running loop to stop: bare = drain (after the current turn),
                         --now = abort it mid-turn. --clear removes the request.
         models          Model config UX: list | add <provider/id> | remove <provider/id> |
@@ -341,16 +341,17 @@ module Robur
       0
     end
 
-    # robur fleet [--dry-run] — the fleet surface. --dry-run is the ONLY flag
-    # this stage accepts; a bare `robur fleet` is the real cycle (M3), stubbed
-    # until then. Read-only: the board never writes or spawns.
+    # robur fleet [--dry-run] — the fleet surface. Bare: one REAL cycle over
+    # the roster (T3.4), exiting with the cycle's status. --dry-run stays the
+    # read-only board: it decides and prints, never spawns.
     def cmd_fleet
-      unless (@overrides || {})["FLEET_DRY_RUN"] == "1"
-        puts "not implemented yet (M3)"
-        return 0
+      roster = Fleet::Roster.new(Paths.fleet_conf)
+      if (@overrides || {})["FLEET_DRY_RUN"] == "1"
+        Fleet.dry_run(roster: roster, out: $stdout)
+        0
+      else
+        Fleet.cycle(roster: roster, out: $stdout)
       end
-      Fleet.dry_run(roster: Fleet::Roster.new(Paths.fleet_conf), out: $stdout)
-      0
     end
 
     def cmd_init(dir)

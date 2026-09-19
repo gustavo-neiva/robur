@@ -3,6 +3,7 @@
 require "rbconfig"
 
 require_relative "gate"
+require_relative "planner"
 
 module Robur
   module Fleet
@@ -28,18 +29,26 @@ module Robur
         ran.nil? ? nil : $?.exitstatus
       end
 
-      # spawner is injected so no test ever launches a real turn. notifier
-      # is nil until T5.3 wires the real Notifier; only its #notify_once is
-      # called, so the wiring is literally passing the instance in.
-      def initialize(planner:, spawner: DEFAULT_SPAWNER, lock: Lock,
+      # The Cycle holds the PLANNER's base, not a planner: both run passes
+      # build their own fresh Planner (T3.4) so every pass re-reads the world
+      # through the gate factory — a lambda that news a Gate per call, never
+      # a cached verdict. spawner is injected so no test ever launches a real
+      # turn; notifier stays nil until T5.3 wires the real Notifier.
+      def initialize(roster:, gate_for:, budget:, clock:, paused: false,
+                     spawner: DEFAULT_SPAWNER, lock: Lock,
                      notifier: nil, out: $stdout)
-        @planner = planner
+        @roster = roster
+        @gate_for = gate_for
+        @budget = budget
+        @clock = clock
+        @paused = paused
         @spawner = spawner
         @lock = lock
         @notifier = notifier
         @out = out
         @status = 0
         @human_skipped = []
+        @lock_skipped = []
       end
 
       # Launch one child turn for repo as
@@ -99,7 +108,63 @@ module Robur
         end
       end
 
+      # The cycle (T3.4), in harbor's load-bearing order: run pass, plan
+      # top-up, run pass AGAIN. EXACTLY two run passes, never three — a plan
+      # turn only ADDS tasks, so a third finds nothing a second could not.
+      # The second pass is a NEW Planner over the same roster and budget with
+      # `already_ran:` set to the pass-one runs (the planner reads that as
+      # :skip :once_per_cycle); its fresh gates see the tasks the plan turns
+      # added. Returns 0 when every child exited 0, else the LAST nonzero
+      # status.
+      def run
+        first = planner_for.cycle_plan
+        ran = []
+        first[:runs].each { |d| ran << d.repo if run_repo(d.repo, "run", d.repo) }
+        first[:plans].each { |d| run_repo(d.repo, "plan", "--auto", d.repo) }
+        planner_for(already_ran: ran).cycle_plan[:runs].each do |d|
+          next if @lock_skipped.include?(d.repo)
+
+          run_repo(d.repo, "run", d.repo)
+        end
+        @status
+      end
+
       private
+
+      # A fresh Planner per pass: decisions come from the ONE decision path
+      # (design constraint 5); the second instance only carries the set.
+      def planner_for(already_ran: [])
+        Planner.new(roster: @roster, gate_for: @gate_for, budget: @budget,
+                    clock: @clock, paused: @paused, already_ran: already_ran)
+      end
+
+      # One repo, one lease, one child. A nil lease means someone else owns
+      # the checkout: log the holder pid and skip the repo FOR THE CYCLE
+      # (the set also filters the second run pass — harbor kept the same
+      # lock_skipped set). The lease is released in an ensure, always. A
+      # raise in one repo is recorded as a failure (@status = 1) and the
+      # cycle carries on. Returns the child's status (Integer or
+      # :spawn_error), or nil when the repo was skipped.
+      def run_repo(repo, *argv)
+        lease = @lock.acquire(repo)
+        unless lease
+          @lock_skipped << repo
+          @out.puts "#{repo}: lock held by pid #{@lock.holder_pid(repo) || '?'} — skipped for this cycle"
+          return nil
+        end
+        begin
+          status = spawn(repo, *argv)
+          @status = status if status.is_a?(Integer) && !status.zero?
+          record_outcome(repo, status)
+          status
+        rescue StandardError => e
+          @status = 1
+          @out.puts "ERROR: #{repo}: #{e.class}: #{e.message} — recorded as a failure, cycle continues"
+          nil
+        ensure
+          lease.release
+        end
+      end
 
       def bump(repo)
         Backoff.new(repo).bump!

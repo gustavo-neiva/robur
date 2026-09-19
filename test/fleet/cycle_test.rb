@@ -5,18 +5,50 @@ require "robur/fleet/cycle"
 require "robur/state"
 require "tmpdir"
 require "fileutils"
+require "stringio"
 
 class FleetCycleTest < Minitest::Test
   def setup
-    @repo = Dir.mktmpdir("robur-cycle")
+    @root = Dir.mktmpdir("robur-cycle")
+    @repo = make_repo("r")
   end
 
   def teardown
-    FileUtils.remove_entry(@repo)
+    FileUtils.remove_entry(@root)
   end
 
-  def cycle(spawner:)
-    Robur::Fleet::Cycle.new(planner: nil, spawner: spawner)
+  # A real on-disk repo: conf + MACHINE tracker with `open` tasks. open: 0
+  # reads as caught-up, the autoplan-eligible shape (T2.2).
+  def make_repo(name, open: 1)
+    dir = File.join(@root, name)
+    Dir.mkdir(dir)
+    File.write(File.join(dir, ".robur.conf"), "VERIFY_CMD=true\n")
+    lines = ["<!-- class: MACHINE -->", "# PLAN"]
+    (1..open).each { |i| lines << "- [ ] T#{i} open task #{i}" }
+    File.write(File.join(dir, "PLAN.md"), lines.join("\n").concat("\n"))
+    dir
+  end
+
+  # A real Roster over a real fleet.conf — the one parser, not a stub.
+  def roster(*repos)
+    conf = File.join(@root, "fleet.conf")
+    File.write(conf, repos.join("\n").concat("\n"))
+    Robur::Fleet::Roster.new(conf)
+  end
+
+  ClockStub = Struct.new(:now)
+
+  def cycle(spawner:, roster: [], notifier: nil, out: $stdout)
+    Robur::Fleet::Cycle.new(
+      roster: roster,
+      gate_for: ->(repo) { Robur::Fleet::Gate.new(repo) },
+      budget: Robur::Fleet::Budget.new(max_runs: 4, max_plans: 4,
+                                       autoplan_min_secs: 0, backoff_base: 1,
+                                       backoff_cap: 2, interval: 3,
+                                       healthcheck_url: ""),
+      clock: ClockStub.new(Time.at(0)),
+      spawner: spawner, notifier: notifier, out: out
+    )
   end
 
   # Acceptance: the exe resolved from the live process is a real,
@@ -56,6 +88,8 @@ class FleetCycleTest < Minitest::Test
   end
 
   # --- record_outcome: the policy table (T3.3) ---------------------------
+
+  private
 
   def spy_notifier
     calls = []
@@ -102,7 +136,7 @@ class FleetCycleTest < Minitest::Test
   # notifier hook fires (T5.3 wires the real Notifier).
   def test_human_blocked_skips_the_repo_for_the_cycle_and_notifies
     notifier, calls = spy_notifier
-    cyc = Robur::Fleet::Cycle.new(planner: nil, spawner: ->(_a) { 1 }, notifier: notifier)
+    cyc = cycle(spawner: ->(_a) { 1 }, notifier: notifier)
     Robur::State.write_stop_reason(@repo, "human_blocked")
     assert_equal :skipped, cyc.record_outcome(@repo, 1)
     assert_equal [@repo], cyc.human_skipped
@@ -134,22 +168,88 @@ class FleetCycleTest < Minitest::Test
   # file is touched and the cycle is red — a child that never started is a
   # property of this machine, not of any repo.
   def test_spawn_error_fails_the_cycle_and_backs_off_no_repo
-    repos = [@repo, "#{this_dir}/r2", "#{this_dir}/r3"]
-    repos[1, 2].each { |r| Dir.mkdir(r) }
+    repos = [@repo, make_repo("r2"), make_repo("r3")]
     cyc = cycle(spawner: ->(_a) { nil })
     results = repos.map { |r| cyc.record_outcome(r, :spawn_error) }
     assert_equal %i[environment environment environment], results
     refute_equal 0, cyc.status
     repos.each { |r| assert_nil Robur::State.read_loop_backoff(r) }
-  ensure
-    repos[1, 2].each { |r| FileUtils.remove_entry(r) rescue nil }
   end
 
-  private
+  # --- Cycle#run: the three-phase cycle (T3.4) ---------------------------
 
-  # This test class's tmpdir root — siblings r2/r3 live beside it so the
-  # 3-repo roster test needs no second mktmpdir lifecycle.
-  def this_dir
-    @this_dir ||= File.dirname(@repo)
+  # Acceptance, verbatim: two runnable repos, an injected spawner returning
+  # 0 then 1 — both repos were spawned and the exit status is 1. The second
+  # run pass skips both (:once_per_cycle), so exactly two spawns happened.
+  def test_cycle_runs_both_repos_and_returns_the_last_nonzero_status
+    a = make_repo("a")
+    b = make_repo("b")
+    seen = []
+    n = 0
+    spawner = lambda do |argv|
+      seen << argv.last
+      (n += 1) == 1 ? 0 : 1
+    end
+    assert_equal 1, cycle(spawner: spawner, roster: roster(a, b)).run
+    assert_equal [a, b], seen
+  end
+
+  # The three phases in order: run pass, plan top-up (`plan --auto`), run
+  # pass again. Repo c is caught up in pass one; its plan turn (the injected
+  # spawner) ADDS a task, the fresh gates of pass three see it, and c runs —
+  # while a and b, already run, are never spawned again. Exactly two run
+  # passes: the plan turn could give a third pass nothing new.
+  def test_full_cycle_run_plan_run_again_in_order
+    a = make_repo("a")
+    b = make_repo("b")
+    c = make_repo("c", open: 0)
+    calls = []
+    spawner = lambda do |argv|
+      calls << argv[2..]
+      if argv[2] == "plan"
+        File.write(File.join(argv.last, "PLAN.md"),
+                   "<!-- class: MACHINE -->\n# PLAN\n- [ ] T9 planned task\n")
+      end
+      0
+    end
+    assert_equal 0, cycle(spawner: spawner, roster: roster(a, b, c)).run
+    assert_equal [["run", a], ["run", b], ["plan", "--auto", c], ["run", c]], calls
+  end
+
+  # A nil lease logs the holder pid and the repo never spawns — not in pass
+  # one, and the lock-skipped set keeps pass three off it too.
+  def test_lock_held_repo_is_skipped_without_spawning_for_the_cycle
+    a = make_repo("a")
+    b = make_repo("b")
+    lease = Robur::Fleet::Lock.acquire(b)
+    refute_nil lease
+    calls = []
+    out = StringIO.new
+    status = cycle(spawner: ->(argv) { calls << argv.last; 0 },
+                   roster: roster(a, b), out: out).run
+    assert_equal 0, status
+    assert_equal [a], calls
+    assert_includes out.string, "lock held by pid #{Process.pid}"
+  ensure
+    lease&.release
+  end
+
+  # One repo raising must not abort the cycle: the raise is recorded as a
+  # failure (cycle status 1) and the next repo still runs.
+  def test_a_raising_repo_is_recorded_and_the_cycle_carries_on
+    a = make_repo("a")
+    b = make_repo("b")
+    calls = []
+    spawner = lambda do |argv|
+      raise "boom" if argv.last == a
+
+      calls << argv.last
+      0
+    end
+    out = StringIO.new
+    assert_equal 1, cycle(spawner: spawner, roster: roster(a, b), out: out).run
+    assert_equal [b], calls
+    assert_includes out.string, "boom"
   end
 end
+
