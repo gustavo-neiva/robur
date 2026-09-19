@@ -11,6 +11,11 @@ module Robur
     # lets the current cycle finish and exits, a second raises the level to
     # abort.
     class Supervisor
+      # T5.5: exiting 75 instead of 0 tells launchd/systemd "clean but please
+      # respawn" — the one legitimate mid-life exit, used only after a green
+      # cycle updated robur's own checkout (see #run).
+      RESTART_EXIT_STATUS = 75
+
       # "900" | "15m" | "2h" -> seconds. Anything else (including 0, which
       # would busy-loop) raises: a typo'd "15m" becoming 15s beats 900x too
       # fast, so this must fail loud, not fall back.
@@ -35,12 +40,23 @@ module Robur
 
       def run(out: $stdout)
         loop do
+          green = false
           begin
-            @cycle.run
+            green = @cycle.run.zero?
           rescue StandardError => e
             out.puts "fleet cycle raised: #{e.class}: #{e.message} — next beat in #{@interval}s"
           end
           break if @lifecycle.stop_requested?
+          # T5.5: the ONE legitimate mid-life exit. A green cycle whose turn
+          # committed to robur's own checkout (Cycle#self_updated?) leaves
+          # this process running code that no longer matches disk — beat no
+          # further, exit 75 so the daemon respawns into the new code. A red
+          # cycle NEVER restarts: exiting nonzero on a failure would just
+          # loop the crash. A raising cycle never sets green.
+          if green && @cycle.self_updated?
+            out.puts "fleet: robur's own checkout updated — exiting #{RESTART_EXIT_STATUS} for respawn into the new code"
+            return RESTART_EXIT_STATUS
+          end
           @lifecycle.sleep(@interval)
           break if @lifecycle.stop_requested?
         end

@@ -24,6 +24,11 @@ module Robur
       # expression is the one line design constraint 6 rests on.
       EXE = File.expand_path("../../../exe/robur", __dir__)
 
+      # T5.5: the checkout THIS process's code lives in. A roster entry equal
+      # to it is watched for HEAD movement — a turn committing there makes
+      # every Fleet::* class in memory stale, and the supervisor must respawn.
+      SELF_CHECKOUT = File.expand_path("../..", EXE)
+
       # T5.4: a pause older than this is almost always forgotten, not
       # intended — harbor sat paused 30 hours with every dashboard green.
       PAUSE_REMINDER_DAYS = 7
@@ -42,7 +47,7 @@ module Robur
       # a cached verdict. spawner and notifier are injected so no test ever
       # launches a real turn or spawns NOTIFY_CMD.
       def initialize(roster:, gate_for:, budget:, clock:, paused: false,
-                     spawner: DEFAULT_SPAWNER, lock: Lock,
+                     spawner: DEFAULT_SPAWNER, lock: Lock, proc: Sys::Proc.new,
                      notifier: nil, http: nil, out: $stdout)
         @roster = roster
         @gate_for = gate_for
@@ -51,10 +56,12 @@ module Robur
         @paused = paused
         @spawner = spawner
         @lock = lock
+        @proc = proc
         @notifier = notifier
         @http = http || Sys::Http.new
         @out = out
         @status = 0
+        @self_updated = false
         @human_skipped = []
         @lock_skipped = []
       end
@@ -69,6 +76,10 @@ module Robur
       end
 
       attr_reader :status, :human_skipped
+
+      # T5.5: a spawn into SELF_CHECKOUT moved HEAD — the code this process
+      # is running no longer matches disk.
+      def self_updated? = @self_updated
 
       # The outcome policy (ported from harbor runner._run_repo): the
       # stop_reason the child left behind decides the repo's ladder.
@@ -236,9 +247,12 @@ module Robur
           return nil
         end
         begin
+          own = File.expand_path(repo) == SELF_CHECKOUT
+          before = own ? self_head(repo) : nil
           status = spawn(repo, *argv)
           @status = status if status.is_a?(Integer) && !status.zero?
           record_outcome(repo, status)
+          note_self_update(repo, before) if own
           status
         rescue StandardError => e
           @status = 1
@@ -247,6 +261,27 @@ module Robur
         ensure
           lease.release
         end
+      end
+
+      # T5.5: only the checkout this process runs from can outdate the code
+      # in memory, so ONLY that repo gets the before/after rev-parse pair —
+      # a commit in any other repo must never stop the supervisor. A
+      # DIFFERENT sha after the spawn is the signal (advance or sideways
+      # move alike: stale is stale); unreadable HEAD is nil and stamps
+      # nothing. Git goes through the injected Sys::Proc, so no test ever
+      # shells out.
+      def note_self_update(repo, before)
+        return if before.nil? || self_head(repo) == before
+
+        @self_updated = true
+        @out.puts "#{repo}: robur's own checkout moved (#{before[0, 7]}..) — supervisor will restart after this cycle"
+      end
+
+      def self_head(repo)
+        out, _err, st = @proc.capture("git", "-C", repo, "rev-parse", "HEAD")
+        st.success? ? out.strip : nil
+      rescue StandardError
+        nil
       end
 
       def bump(repo)

@@ -10,20 +10,25 @@ require "tmpdir"
 # without waiting out the interval when a stop lands during the sleep. All
 # fakes are injected — no real sleeping, no real signals.
 class FleetSupervisorTest < Minitest::Test
-  # Raises on call N (nil = never), returns 0 otherwise.
+  # Raises on call N (nil = never), otherwise returns exit_status and
+  # reports self_updated? (T5.5) — the two things Supervisor reads back.
   class StubCycle
     attr_reader :calls
 
-    def initialize(raise_on: nil)
+    def initialize(raise_on: nil, exit_status: 0, self_updated: false)
       @calls = 0
       @raise_on = raise_on
+      @exit_status = exit_status
+      @self_updated = self_updated
     end
 
     def run
       @calls += 1
       raise "boom" if @calls == @raise_on
-      0
+      @exit_status
     end
+
+    def self_updated? = @self_updated
   end
 
   # stop_requested? flips true once @sleeps reaches the threshold; sleep is
@@ -98,6 +103,40 @@ class FleetSupervisorTest < Minitest::Test
     assert_raises(ArgumentError) { Robur::Fleet::Supervisor.parse_interval("abc") }
     assert_raises(ArgumentError) { Robur::Fleet::Supervisor.parse_interval("15x") }
     assert_raises(ArgumentError) { Robur::Fleet::Supervisor.parse_interval("0") }
+  end
+
+  # T5.5: a GREEN cycle whose turn committed to robur's own checkout ends
+  # the run immediately — no further sleep, exit 75 for daemon respawn.
+  def test_green_self_update_exits_restart_status
+    cycle = StubCycle.new(self_updated: true)
+    life = StubLifecycle.new(stop_after_sleeps: 99)
+    out, = capture_io do
+      assert_equal Robur::Fleet::Supervisor::RESTART_EXIT_STATUS,
+                   Robur::Fleet::Supervisor.new(interval: 1, cycle: cycle, lifecycle: life).run
+    end
+    assert_equal 1, cycle.calls
+    assert_equal 0, life.sleeps
+    assert_includes out, "75"
+  end
+
+  # A commit in any OTHER repo never sets self_updated?: the supervisor
+  # keeps beating normally and exits 0.
+  def test_other_repo_commit_keeps_beating
+    cycle = StubCycle.new(self_updated: false)
+    life = StubLifecycle.new(stop_after_sleeps: 2)
+    assert_equal 0, Robur::Fleet::Supervisor.new(interval: 1, cycle: cycle, lifecycle: life).run
+    assert_equal 2, cycle.calls
+    assert_equal 2, life.sleeps
+  end
+
+  # A RED cycle that touched its own checkout keeps beating — restarting on
+  # a failure would just loop the crash.
+  def test_red_self_update_keeps_beating
+    cycle = StubCycle.new(exit_status: 1, self_updated: true)
+    life = StubLifecycle.new(stop_after_sleeps: 2)
+    assert_equal 0, Robur::Fleet::Supervisor.new(interval: 1, cycle: cycle, lifecycle: life).run
+    assert_equal 2, cycle.calls
+    assert_equal 2, life.sleeps
   end
 
   # Real Lifecycle integration, still no real sleep: a stop file present

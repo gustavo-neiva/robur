@@ -218,7 +218,7 @@ test/fleet/*_test.rb            one test file per class above
       constraints: never resume the fleet; reuse Fleet::Notifier's dedupe, do not add a
                    stamp file; flag path via Robur::Paths; stdlib only.
 
-- [ ] T5.5 (hard, feat, serial) the supervisor restarts itself after a turn rewrites its own code
+- [x] T5.5 (hard, feat, serial) the supervisor restarts itself after a turn rewrites its own code
       touches: lib/robur/fleet/supervisor.rb, lib/robur/fleet/cycle.rb,
                test/fleet/supervisor_test.rb
       do: A long-lived `--every` supervisor holds robur's code in memory, so the
