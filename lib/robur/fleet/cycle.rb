@@ -3,6 +3,8 @@
 require "fileutils"
 require "rbconfig"
 
+require_relative "../paths"
+require_relative "../sys"
 require_relative "gate"
 require_relative "planner"
 
@@ -37,7 +39,7 @@ module Robur
       # turn; notifier stays nil until T5.3 wires the real Notifier.
       def initialize(roster:, gate_for:, budget:, clock:, paused: false,
                      spawner: DEFAULT_SPAWNER, lock: Lock,
-                     notifier: nil, out: $stdout)
+                     notifier: nil, http: nil, out: $stdout)
         @roster = roster
         @gate_for = gate_for
         @budget = budget
@@ -46,6 +48,7 @@ module Robur
         @spawner = spawner
         @lock = lock
         @notifier = notifier
+        @http = http || Sys::Http.new
         @out = out
         @status = 0
         @human_skipped = []
@@ -118,6 +121,7 @@ module Robur
       # added. Returns 0 when every child exited 0, else the LAST nonzero
       # status.
       def run
+        ping_start
         first = planner_for.cycle_plan
         ran = []
         first[:runs].each { |d| ran << d.repo if run_repo(d.repo, "run", d.repo) }
@@ -127,10 +131,46 @@ module Robur
 
           run_repo(d.repo, "run", d.repo)
         end
+        ping_end
         @status
       end
 
       private
+
+      # T5.2 dead-man pair, ported from harbor runner.run_cycle: /start FIRST
+      # thing (before the pause check — a deliberate pause is not a dead
+      # schedule), then the bare URL closes the pair on a green cycle and
+      # /fail on a red one. The pair is the point: a start-only ping cannot
+      # tell a healthy cycle from one that HANGS. A failed ping is logged and
+      # never fails the cycle — losing the watcher must not become the outage.
+      def ping_start
+        url = @budget.healthcheck_url
+        if url.to_s.empty?
+          # Not a routine line: 2026-09-05..07 harbor ran blind for two days
+          # because this switch was silently off after a path change, and the
+          # switch was the only thing watching.
+          @out.puts "WARNING: HEALTHCHECK_URL unset (set it in #{Paths.global_conf} or ENV) — "\
+                    "dead-man switch OFF; a hung or failing fleet cycle cannot alert anyone"
+          return
+        end
+        ping("#{url}/start", "healthcheck /start pinged (schedule alive)")
+      end
+
+      def ping_end
+        url = @budget.healthcheck_url
+        return if url.to_s.empty?
+
+        green = @status.zero?
+        ping(green ? url : "#{url}/fail",
+             green ? "healthcheck pinged (cycle green)" : "healthcheck /fail pinged (cycle red)")
+      end
+
+      def ping(url, ok_msg)
+        @http.get(url)
+        @out.puts ok_msg
+      rescue StandardError => e
+        @out.puts "WARN: healthcheck ping failed (#{e.class}: #{e.message}) — cycle outcome unaffected"
+      end
 
       # T3.5: the autoplan stamp is written only after a spawn that
       # happened — a lock-skipped (or raising) repo never spawns, so it

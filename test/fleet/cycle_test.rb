@@ -38,16 +38,32 @@ class FleetCycleTest < Minitest::Test
 
   ClockStub = Struct.new(:now)
 
-  def cycle(spawner:, roster: [], notifier: nil, out: $stdout)
+  # Records the URLs it was handed, in order — the dead-man pair is an
+  # ORDERED pair, so the stub must be order-true.
+  HttpStub = Struct.new(:calls) do
+    def get(uri, _headers: {})
+      calls << uri
+      Net::HTTPOK
+    end
+  end
+
+  HttpRaiser = Class.new do
+    def get(*)
+      raise Errno::ECONNREFUSED
+    end
+  end
+
+  def cycle(spawner:, roster: [], notifier: nil, out: $stdout, http: nil,
+            healthcheck: "")
     Robur::Fleet::Cycle.new(
       roster: roster,
       gate_for: ->(repo) { Robur::Fleet::Gate.new(repo) },
       budget: Robur::Fleet::Budget.new(max_runs: 4, max_plans: 4,
                                        autoplan_min_secs: 0, backoff_base: 1,
                                        backoff_cap: 2, interval: 3,
-                                       healthcheck_url: ""),
+                                       healthcheck_url: healthcheck),
       clock: ClockStub.new(Time.at(0)),
-      spawner: spawner, notifier: notifier, out: out
+      spawner: spawner, notifier: notifier, http: http, out: out
     )
   end
 
@@ -286,6 +302,47 @@ class FleetCycleTest < Minitest::Test
     assert_equal 1, cycle(spawner: spawner, roster: roster(a, b), out: out).run
     assert_equal [b], calls
     assert_includes out.string, "boom"
+  end
+
+  # T5.2 acceptance: green cycle closes the pair with the bare URL, in
+  # order — /start first, bare URL second.
+  def test_healthcheck_pair_on_green_cycle
+    http = HttpStub.new([])
+    out = StringIO.new
+    c = cycle(spawner: ->(_argv) { 0 }, roster: roster(@repo),
+              http: http, healthcheck: "https://hc.example/hook", out: out)
+    assert_equal 0, c.run
+    assert_equal ["https://hc.example/hook/start", "https://hc.example/hook"], http.calls
+    assert_includes out.string, "healthcheck"
+  end
+
+  # A red cycle closes the pair with /fail instead.
+  def test_healthcheck_fail_variant_on_red_cycle
+    http = HttpStub.new([])
+    c = cycle(spawner: ->(_argv) { 1 }, roster: roster(@repo),
+              http: http, healthcheck: "https://hc.example/hook")
+    assert_equal 1, c.run
+    assert_equal ["https://hc.example/hook/start", "https://hc.example/hook/fail"], http.calls
+  end
+
+  # Unset key = the two-days-blind failure mode: a LOUD warning naming the
+  # global conf, not a routine line.
+  def test_unset_healthcheck_url_warns_loudly_naming_global_conf
+    out = StringIO.new
+    cycle(spawner: ->(_argv) { 0 }, roster: roster(@repo), out: out).run
+    assert_includes out.string, "WARNING"
+    assert_includes out.string, "HEALTHCHECK_URL"
+    assert_includes out.string, Robur::Paths.global_conf
+  end
+
+  # The watcher must never become the outage: an Http raise is logged and
+  # the cycle's outcome is untouched.
+  def test_raising_http_does_not_fail_the_cycle
+    out = StringIO.new
+    c = cycle(spawner: ->(_argv) { 0 }, roster: roster(@repo),
+              http: HttpRaiser.new, healthcheck: "https://hc.example/hook", out: out)
+    assert_equal 0, c.run
+    assert_includes out.string, "WARN: healthcheck ping failed"
   end
 end
 

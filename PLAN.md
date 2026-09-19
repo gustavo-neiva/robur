@@ -133,7 +133,7 @@ test/fleet/*_test.rb            one test file per class above
       constraints: use Robur::Lifecycle#sleep, never Kernel.sleep; a raising cycle never
                    ends the supervisor; stdlib only.
 
-- [ ] T5.2 (normal, feat, serial) a dead-man ping proves the beat is alive, not just that it started
+- [x] T5.2 (normal, feat, serial) a dead-man ping proves the beat is alive, not just that it started
       touches: lib/robur/fleet/cycle.rb, test/fleet/cycle_test.rb
       do: When `HEALTHCHECK_URL` is set in the global conf or ENV, ping
           `<url>/start` FIRST thing in `Cycle#run`, then close the pair at the
