@@ -210,7 +210,7 @@ test/fleet/*_test.rb            one test file per class above
               backoff-beats-class-gate precedence case.
       constraints: Gate stays read-only and decides nothing about budgets; stdlib only.
 
-- [ ] T1.5 (normal, test, serial) the gate is proven against a real repo layout, not a mock
+- [x] T1.5 (normal, test, serial) the gate is proven against a real repo layout, not a mock
       touches: test/fleet/gate_test.rb, test/fixtures/fleet/README.md
       do: Add a fixture helper that builds a throwaway repo on disk — `.robur.conf`,
           a `PLAN.md` with a class marker and a mix of `[ ]`, `[IN PROGRESS]`,

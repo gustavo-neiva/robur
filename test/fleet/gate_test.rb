@@ -2,108 +2,106 @@
 
 require_relative "../test_helper"
 require "robur/fleet/gate"
+require "robur/state"
 require "tmpdir"
 require "fileutils"
 
 class FleetGateTest < Minitest::Test
   def setup
-    @repo = Dir.mktmpdir
+    @repo = Dir.mktmpdir("robur-gate")
   end
 
   def teardown
     FileUtils.remove_entry(@repo)
   end
 
-  def init_repo(tracker: "PLAN.md", conf: "VERIFY_CMD=true\n")
+  # T1.5: a real on-disk repo layout, not a stub. Writes .robur.conf, a
+  # PLAN.md with a class marker and a mix of `[ ]`, `[IN PROGRESS]`,
+  # `[HUMAN]` and `[x]` lines, plus optional `.robur/` state files
+  # (stop_reason:, last_task: [id, status], backoff: [count, until_epoch]).
+  # Every Gate reader below is driven against this fixture.
+  def with_repo(open: 1, in_progress: 0, marker: "MACHINE", tracker: "PLAN.md", **state)
+    conf = "VERIFY_CMD=true\n"
+    conf += "TRACKER_FILE=#{tracker}\n" unless tracker == "PLAN.md"
     File.write(File.join(@repo, ".robur.conf"), conf)
-    File.write(File.join(@repo, tracker), <<~PLAN)
-      <!-- class: MACHINE -->
-      # PLAN
-      - [ ] T1 one
-      - [ ] T2 two
-      - [IN PROGRESS] T3 three
-      - [x] T4 four
-    PLAN
+
+    lines = ["# PLAN"]
+    lines.unshift("<!-- class: #{marker} -->") if marker
+    (1..open).each { |i| lines << "- [ ] T#{i} open task #{i}" }
+    (1..in_progress).each { |i| lines << "- [IN PROGRESS] W#{i} wip task #{i}" }
+    lines << "- [HUMAN] H1 parked on a human answer"
+    lines << "- [x] D1 done task"
+    File.write(File.join(@repo, tracker), lines.join("\n").concat("\n"))
+
+    Robur::State.write_stop_reason(@repo, state[:stop_reason]) if state[:stop_reason]
+    Robur::State.write_last_task(@repo, *state[:last_task]) if state[:last_task]
+    Robur::State.write_loop_backoff(@repo, *state[:backoff]) if state[:backoff]
+    Robur::Fleet::Gate.new(@repo)
   end
 
-  def gate = Robur::Fleet::Gate.new(@repo)
-
   def test_initialized_when_repo_conf_exists
-    init_repo
-    assert gate.initialized?
+    assert with_repo.initialized?
   end
 
   def test_not_initialized_without_repo_conf
-    refute gate.initialized?
+    refute Robur::Fleet::Gate.new(@repo).initialized?
   end
 
   def test_open_tasks_counts_open_plus_in_progress
-    init_repo
-    assert_equal 3, gate.open_tasks
+    assert_equal 3, with_repo(open: 2, in_progress: 1).open_tasks
   end
 
+  # The acceptance case, verbatim: 1 open + 1 IN PROGRESS -> 2.
+  def test_open_tasks_on_the_acceptance_fixture
+    assert_equal 2, with_repo(open: 1, in_progress: 1).open_tasks
+  end
+
+  # A repo that renamed its tracker must be counted through the conf, not a
+  # hardcoded PLAN.md — the wrong-file read this whole fixture exists to catch.
   def test_repo_whose_tracker_is_not_plan_md_is_still_counted
-    init_repo(tracker: "TRACKER.md", conf: "VERIFY_CMD=true\nTRACKER_FILE=TRACKER.md\n")
-    assert_equal 3, gate.open_tasks
+    assert_equal 2, with_repo(open: 1, in_progress: 1, tracker: "TRACKER.md").open_tasks
   end
 
   def test_missing_tracker_counts_zero_not_raise
-    File.write(File.join(@repo, ".robur.conf"), "VERIFY_CMD=true\n")
+    gate = with_repo
+    File.delete(File.join(@repo, "PLAN.md"))
     assert_equal 0, gate.open_tasks
   end
 
-  def human_blocked_tracker(checkbox)
-    init_repo
-    File.write(File.join(@repo, "PLAN.md"), <<~PLAN)
-      <!-- class: MACHINE -->
-      # PLAN
-      - [#{checkbox}] T3.1 ask the human something
-    PLAN
-    Robur::State.write_stop_reason(@repo, "human_blocked")
-    Robur::State.write_last_task(@repo, "T3.1", "running")
-  end
-
   def test_human_blocked_when_task_still_open
-    human_blocked_tracker(" ")
+    gate = with_repo(stop_reason: "human_blocked", last_task: ["T1", "running"])
     assert gate.human_blocked?
   end
 
   def test_human_blocked_when_task_in_progress
-    human_blocked_tracker("IN PROGRESS")
+    gate = with_repo(in_progress: 1, stop_reason: "human_blocked", last_task: ["W1", "running"])
     assert gate.human_blocked?
   end
 
   def test_not_human_blocked_when_task_parked
-    human_blocked_tracker("HUMAN")
+    gate = with_repo(stop_reason: "human_blocked", last_task: ["H1", "running"])
     refute gate.human_blocked?
   end
 
   def test_not_human_blocked_when_task_done
-    human_blocked_tracker("x")
+    gate = with_repo(stop_reason: "human_blocked", last_task: ["D1", "running"])
     refute gate.human_blocked?
   end
 
   def test_human_blocked_still_true_with_missing_or_unknown_task_id
-    human_blocked_tracker(" ")
-    Robur::State.write_last_task(@repo, "?", "running")
+    gate = with_repo(stop_reason: "human_blocked", last_task: ["?", "running"])
     assert gate.human_blocked?
     File.delete(File.join(@repo, ".robur", "last_task.state"))
     assert gate.human_blocked?
   end
 
   def test_not_human_blocked_when_stop_reason_differs
-    human_blocked_tracker(" ")
-    Robur::State.write_stop_reason(@repo, "gate_red")
+    gate = with_repo(stop_reason: "gate_red", last_task: ["T1", "running"])
     refute gate.human_blocked?
   end
 
-  def human_tracker
-    init_repo
-    File.write(File.join(@repo, "PLAN.md"), "<!-- class: HUMAN -->\n# PLAN\n- [ ] T1 one\n")
-  end
-
   def test_human_class_gated_until_approved
-    human_tracker
+    gate = with_repo(marker: "HUMAN")
     assert gate.class_gated?
     FileUtils.mkdir_p(File.join(@repo, ".robur"))
     FileUtils.touch(File.join(@repo, ".robur", "plan-approved"))
@@ -111,24 +109,15 @@ class FleetGateTest < Minitest::Test
   end
 
   def test_machine_class_not_gated
-    init_repo
-    refute gate.class_gated?
+    refute with_repo(marker: "MACHINE").class_gated?
   end
 
   def test_no_class_marker_not_gated
-    init_repo
-    File.write(File.join(@repo, "PLAN.md"), "# PLAN\n- [ ] T1 one\n")
-    refute gate.class_gated?
-  end
-
-  def verdict_repo(backoff: false)
-    init_repo
-    Robur::State.write_loop_backoff(@repo, 1, Time.now.to_i + 3600) if backoff
+    refute with_repo(marker: nil).class_gated?
   end
 
   def test_verdict_runnable_when_nothing_blocks
-    verdict_repo
-    assert_equal :runnable, gate.verdict
+    assert_equal :runnable, with_repo.verdict
   end
 
   def test_verdict_no_conf_when_not_initialized
@@ -136,45 +125,35 @@ class FleetGateTest < Minitest::Test
   end
 
   def test_verdict_caught_up_when_no_open_tasks
-    verdict_repo
-    File.write(File.join(@repo, "PLAN.md"), "<!-- class: MACHINE -->\n- [x] a\n")
-    assert_equal :caught_up, gate.verdict
+    assert_equal :caught_up, with_repo(open: 0).verdict
   end
 
   def test_verdict_backoff_when_backoff_active
-    verdict_repo(backoff: true)
+    gate = with_repo(backoff: [1, Time.now.to_i + 3600])
     assert_equal :backoff, gate.verdict
   end
 
   def test_verdict_human_block_when_waiting_on_human
-    verdict_repo
-    human_blocked_tracker(" ")
+    gate = with_repo(stop_reason: "human_blocked", last_task: ["T1", "running"])
     assert_equal :human_block, gate.verdict
   end
 
   def test_verdict_class_gate_when_human_plan_unapproved
-    verdict_repo
-    human_tracker
-    assert_equal :class_gate, gate.verdict
+    assert_equal :class_gate, with_repo(marker: "HUMAN").verdict
   end
 
   # Order is the point: backoff expires on its own, an approval does not.
   def test_verdict_backoff_beats_class_gate
-    verdict_repo(backoff: true)
-    human_tracker
+    gate = with_repo(marker: "HUMAN", backoff: [1, Time.now.to_i + 3600])
     assert_equal :backoff, gate.verdict
   end
 
   def test_stop_reason_from_state_when_present
-    verdict_repo
-    Robur::State.write_stop_reason(@repo, "gate_red")
-    assert_equal "gate_red", gate.stop_reason
+    assert_equal "gate_red", with_repo(stop_reason: "gate_red").stop_reason
   end
 
   def test_stop_reason_falls_back_by_open_tasks
-    verdict_repo
-    assert_equal "stopped", gate.stop_reason
-    File.write(File.join(@repo, "PLAN.md"), "<!-- class: MACHINE -->\n- [x] a\n")
-    assert_equal "done", gate.stop_reason
+    assert_equal "stopped", with_repo.stop_reason
+    assert_equal "done", with_repo(open: 0).stop_reason
   end
 end
