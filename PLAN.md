@@ -196,7 +196,7 @@ test/fleet/*_test.rb            one test file per class above
 > read over `Robur::State` and `Robur::Plan`; the gate reports, it never
 > decides and never writes. All tasks are `(serial)` — they share `gate.rb`.
 
-- [ ] T1.1 (normal, feat, serial) a failed repo backs off on a doubling ladder capped below a day
+- [x] T1.1 (normal, feat, serial) a failed repo backs off on a doubling ladder capped below a day
       touches: lib/robur/fleet/backoff.rb, lib/robur/state.rb, test/fleet/backoff_test.rb
       do: Add `Fleet::Backoff.new(repo, base:, cap:, clock:)` over
           `Robur::State.read_loop_backoff` / `write_loop_backoff`, which already
