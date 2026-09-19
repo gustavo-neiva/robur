@@ -130,7 +130,7 @@ test/fleet/*_test.rb            one test file per class above
       constraints: lock path via Robur::State/Paths; never block, never break a lock;
                    always release in an ensure; stdlib only.
 
-- [ ] T3.2 (hard, feat, serial) a child turn is spawned from the running ruby, never from $PATH
+- [x] T3.2 (hard, feat, serial) a child turn is spawned from the running ruby, never from $PATH
       touches: lib/robur/fleet/cycle.rb, test/fleet/cycle_test.rb
       do: Add `Fleet::Cycle.new(planner:, spawner:, lock: Fleet::Lock, out:)` and
           `#spawn(repo, *argv)` returning the child's exit status. The DEFAULT
