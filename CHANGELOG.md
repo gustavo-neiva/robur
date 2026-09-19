@@ -1,5 +1,19 @@
 # Changelog
 
+## Milestone 3 — the cycle executes the plan
+_2026-09-19 · 4 commits · +537/-23_
+
+- [x] T3.1 one writer per checkout, and a busy repo is skipped not queued
+      Add `Fleet::Lock.acquire(repo)` -> a `Lease` with `#release`, or `nil` immediately when the checkout is already locked.
+- [x] T3.2 a child turn is spawned from the running ruby, never from $PATH — `5819b8a`
+      Add `Fleet::Cycle.new(planner:, spawner:, lock: Fleet::Lock, out:)` and `#spawn(repo, *argv)` returning the child's exit status.
+- [x] T3.3 a repo's stop reason decides its backoff, and a deliberate stop costs nothing — `e7296fc`
+      Add `Cycle#record_outcome(repo, exit_status)` applying the policy table below, reading `Gate#stop_reason` after the child exits.
+- [x] T3.4 `robur fleet` runs a real cycle and returns the cycle's status — `7d4c5e1`
+      Add `Cycle#run` executing three phases in order: `cycle_plan[:runs]`, then `cycle_plan[:plans]` (`spawn(repo, "plan", "--auto", repo)`), then a SECOND run pass.
+- [x] T3.5 the autoplan stamp is written only after a plan turn actually ran — `d3f008c`
+      After a `:plan` decision spawns successfully, touch `State.state_path(repo, "autoplan.stamp")` so T2.2's per-repo rate limit advances.
+
 ## Milestone 2 — the planner decides a whole cycle, purely
 _2026-09-19 · 4 commits · +628/-17_
 
