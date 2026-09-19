@@ -164,7 +164,7 @@ test/fleet/*_test.rb            one test file per class above
       constraints: never `system("robur", ...)` or exec a bare name; never $0/$PROGRAM_NAME;
                    injected spawner in tests; stdlib only (RbConfig is stdlib).
 
-- [ ] T3.3 (hard, feat, serial) a repo's stop reason decides its backoff, and a deliberate stop costs nothing
+- [x] T3.3 (hard, feat, serial) a repo's stop reason decides its backoff, and a deliberate stop costs nothing
       touches: lib/robur/fleet/cycle.rb, test/fleet/cycle_test.rb
       do: Add `Cycle#record_outcome(repo, exit_status)` applying the policy table
           below, reading `Gate#stop_reason` after the child exits. `done` clears
