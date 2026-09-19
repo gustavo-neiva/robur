@@ -130,6 +130,30 @@ module Robur
       refute_path_exists File.join(@dir, Paths::REPO_CONF)
     end
 
+    def test_doctor_flags_a_human_only_task_left_open
+      Commands.init(@dir, emit: ->(_m) {})
+      File.write(File.join(@dir, "PLAN.md"),
+                 "# p\n\n- [ ] T1.1 (trivial) a human re-audits this before it closes\n- [ ] T1.2 (normal) real work\n")
+      out = StringIO.new
+
+      problems = Commands.doctor_report(@dir, out: out)
+
+      assert_operator problems, :positive?
+      assert_includes out.string, "task T1.1 is human-only but checked '[ ]'"
+      refute_includes out.string, "task T1.2"
+    end
+
+    def test_doctor_passes_a_human_only_task_that_is_parked
+      Commands.init(@dir, emit: ->(_m) {})
+      File.write(File.join(@dir, "PLAN.md"),
+                 "# p\n\n- [HUMAN] T1.1 a human re-audits this — PARKED, needs human: re-audit?\n- [ ] T1.2 (normal) real work\n")
+      out = StringIO.new
+
+      Commands.doctor_report(@dir, out: out)
+
+      refute_includes out.string, "human-only but checked"
+    end
+
     def test_doctor_flags_mid_rebase
       Commands.init(@dir, emit: ->(_m) {})
       FileUtils.mkdir_p(File.join(@dir, ".git", "rebase-merge"))

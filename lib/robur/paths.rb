@@ -51,9 +51,16 @@ module Robur
     LEGACY_BRANCH_NS   = "ratchet"
     WORKTREE_PREFIX    = "robur-wt-"
     LEGACY_WT_PREFIX   = "ratchet-wt-"
-    COMMIT_SCOPE       = "robur"
 
     module_function
+
+    # The conventional-commit scope for a commit robur makes in this repo.
+    # The repo's own name, not "robur": the scope answers "what changed", and
+    # every commit in every driven repo reading `feat(robur)` made the tool
+    # look like the subject of work it only drove.
+    def commit_scope(repo_dir)
+      File.basename(File.expand_path(repo_dir.to_s)).gsub(/[^A-Za-z0-9._-]/, "-")
+    end
 
     # The repo's state directory. Prefers `.robur/`; falls back to a
     # pre-existing `.ratchet/` so an un-migrated repo is read correctly.

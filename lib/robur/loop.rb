@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "digest"
 require "json"
 require "open3"
 require "robur/config"
@@ -29,6 +30,17 @@ module Robur
   # sleep is injectable so the all-benched ladder is testable.
   module Loop
     BACKOFF_LADDER = [900, 3600, 14400].freeze
+
+    # Turn classes whose turn is allowed to commit. Everything else — a human
+    # gate, an empty response, a provider failure — leaves the tree staged for
+    # the next turn's gate instead.
+    #
+    # The gate stages the WHOLE tree, so a turn that did no work still commits
+    # whatever is lying in it. In production that was an operator's unreviewed
+    # interactive edits, committed under the loop's task id by a turn whose
+    # only output was HUMAN_BLOCKED. A turn that produced nothing commits
+    # nothing; the work is not lost, the next turn's gate still owns it.
+    COMMITTING_CLASSES = %i[step done timeout].freeze
 
     module_function
 
@@ -85,6 +97,12 @@ module Robur
                thinking: thinking_banner, verify_cmd: conf["VERIFY_CMD"],
                commit_each_turn: conf["COMMIT_EACH_TURN"], push_on_done: conf["PUSH_ON_DONE"],
                open_pr: conf["OPEN_PR"], log_dir: log_dir)
+      # A run row only exists once the epilogue runs, and a SIGKILL (or a
+      # reboot) never reaches it: the single most expensive run on record left
+      # no row at all. Stamp the start now — a "run_start" with no matching
+      # "run" IS the crash signal. Readers that filter on event == "run"
+      # ignore it.
+      CLI.metrics_append(dir, "run_start", "-", "-", flat.first, "running", 0, "-", 0, 0, "0.000000")
 
       # Life is installed BEFORE auto_plan_pr0 so its wait_for_merge poll
       # (poll_secs default 300, timeout 3 days) is interruptible too (T1.4).
@@ -107,6 +125,18 @@ module Robur
       end
 
       report_unclean_start(dir, obs)
+
+      if (foreign = foreign_dirty_tree(dir))
+        emit "refusing to run: the working tree holds changes this loop did not leave (#{foreign})."
+        emit "The commit gate stages the WHOLE tree, so those changes would land under the loop's task id."
+        emit "Commit, stash or discard them — or set ROBUR_ALLOW_DIRTY=1 to run anyway."
+        obs.notify_human "#{File.basename(dir)}: loop refused to start — #{foreign} uncommitted change(s) it did not make. Commit or stash them."
+        stop_reason = "dirty_tree"
+        File.write(Paths.state_file(dir, "stop_reason"), "#{stop_reason}\n")
+        obs.emit(:stopped, reason: stop_reason, turns: 0)
+        obs.emit(:run_end, turns: 0)
+        return 1
+      end
 
       begin
         loop do
@@ -212,6 +242,7 @@ module Robur
                             stall_timeout: conf["STALL_TIMEOUT"].to_i,
                             poll_interval: (ENV["POLL_INTERVAL"] || conf["POLL_INTERVAL"] || 3).to_i,
                             early_tokens: [conf["STEP_TOKEN"], conf["DONE_TOKEN"]],
+                            message_cap: Observability.runaway_messages,
                             stop_check: -> { life.level })
           if result.kill_reason == "stop-requested"
             emit "stop requested mid-turn — salvaging green work and stopping."
@@ -266,7 +297,13 @@ module Robur
             klass = :step
           end
 
-          commit_result = commit_turn(turn, model, conf, plan, dir, task)
+          commit_result =
+            if COMMITTING_CLASSES.include?(klass)
+              commit_turn(turn, model, conf, plan, dir, task)
+            else
+              emit "#{klass} turn did no work — not committing; the tree is left for the next turn's gate."
+              CommitGate::Result.new(committed: false, block_reason: nil, verify_cmd_empty: false)
+            end
           obs.emit_event(:gate_result,
                          status: commit_result.committed ? "green" : commit_result.block_reason ? "red" : "skipped",
                          reason: commit_result.block_reason || (commit_result.committed ? "committed" : "no-op"))
@@ -343,9 +380,6 @@ module Robur
             stop_reason = "done"
             break
           when :human
-            if dirty && commit_result.committed
-              emit "salvaged green work before human-gate stop"
-            end
             emit "agent signaled #{conf["HUMAN_TOKEN"]} — needs a human decision; stopping this repo."
             # This branch used to `emit "HUMAN NEEDED: …"` and break — the line
             # reached loop.log and nothing else, which is why a production repo
@@ -436,11 +470,15 @@ module Robur
             end
             life.sleep(conf["SHORT_SLEEP"].to_i, sleep_it: sleep_it)
           when :empty
-            # Exit-0-no-output (audit fix #3): NOT a strike — bench immediately.
-            # 1,574 production turns like this hid inside :transient, retried forever.
-            health.bench!(model)
-            obs.emit_event(:model_benched, model: model, seconds: conf["COOLDOWN"].to_i, reason: "empty output")
-            emit "model #{model} EMPTY OUTPUT (exit 0, nothing said) — benching #{conf["COOLDOWN"]}s, no strike."
+            # Exit-0-no-output (audit fix #3) must not hide inside :transient
+            # and retry forever — but one empty response is a provider hiccup,
+            # not a dead model. Benching on the first one cost ~260 model-hours
+            # of cooldown in 18 days for 65 hiccups, so it strikes like a
+            # transient and benches at MAX_TRANSIENT.
+            benched = health.strike!(model)
+            obs.emit_event(:model_strike, model: model, reason: "empty output", benched: benched)
+            emit "model #{model} EMPTY OUTPUT (exit 0, nothing said) — strike; backing off #{conf["SHORT_SLEEP"]}s."
+            emit "benching #{model} after #{conf["MAX_TRANSIENT"]} empty responses." if benched
             if once
               stop_reason = "once"
               emit "--once: stopping."
@@ -498,12 +536,56 @@ module Robur
         obs.emit(:stopped, reason: stop_reason, turns: turn)
         obs.emit(:run_end, turns: turn)
         File.write(Paths.state_file(dir, "stop_reason"), "#{stop_reason}\n")
+        # Whatever the tree looks like now is the loop's own doing; anything
+        # different at the next start came from outside (foreign_dirty_tree).
+        stamp_tree(dir)
         state = File.file?(Paths.state_file(dir, "last_task.state")) ? File.read(Paths.state_file(dir, "last_task.state")) : ""
         CLI.metrics_append(dir, "run", "-", "-", last_model, stop_reason, CLI.elapsed_int(run_start),
                            state[/\A[^\t]*/].to_s, run_toks[:in], run_toks[:out], format("%.6f", run_toks[:cost]))
       end
 
       stop_reason == "gate_red" || stop_reason == "human_blocked" ? 1 : 0
+    end
+
+    # The tree fingerprint the loop left behind: `git status --porcelain` is
+    # the same view the commit gate stages, so equal fingerprints mean "nobody
+    # touched this tree since the loop last looked".
+    def tree_fingerprint(dir)
+      return nil unless File.directory?(File.join(dir, ".git"))
+
+      out, = Open3.capture3("git", "-C", dir, "status", "--porcelain")
+      Digest::SHA256.hexdigest(out)
+    end
+
+    def stamp_tree(dir)
+      fp = tree_fingerprint(dir)
+      File.write(Paths.state_file(dir, "tree.stamp"), "#{fp}\n") if fp
+    rescue StandardError
+      nil
+    end
+
+    # Count of uncommitted changes the loop cannot account for, or nil when
+    # the tree is clean, matches the fingerprint the last run left, or has
+    # never been fingerprinted (first run on this repo adopts what it finds).
+    #
+    # A human editing the repo in a parallel session is invisible to a turn,
+    # but not to the commit gate: it stages the whole tree, so the loop
+    # committed an operator's unreviewed work under its own task id. The tree
+    # is shared state; the loop yields it rather than guessing.
+    def foreign_dirty_tree(dir)
+      return nil if ENV["ROBUR_ALLOW_DIRTY"] == "1"
+
+      out, = Open3.capture3("git", "-C", dir, "status", "--porcelain")
+      return nil if out.to_s.strip.empty?
+
+      stamp_path = Paths.state_file(dir, "tree.stamp")
+      unless File.file?(stamp_path)
+        stamp_tree(dir) # adopt: no previous run to compare against
+        return nil
+      end
+      return nil if File.read(stamp_path).strip == Digest::SHA256.hexdigest(out)
+
+      out.lines.count
     end
 
     # Startup residue check: a turn SIGKILLed before its commit gate leaves
@@ -542,7 +624,7 @@ module Robur
       return unless File.directory?(File.join(dir, ".git"))
 
       repo.add(tracker)
-      repo.commit("loop(#{Paths::COMMIT_SCOPE}): task #{task.id} BLOCKED \u2014 no progress in #{stalls} turns") unless repo.staged_files.empty?
+      repo.commit("loop(#{Paths.commit_scope(dir)}): task #{task.id} BLOCKED \u2014 no progress in #{stalls} turns") unless repo.staged_files.empty?
     end
 
     # HUMAN_PARK_TOKEN handling: the frozen grammar's HUMAN checkbox, so
@@ -565,7 +647,7 @@ module Robur
       return unless File.directory?(File.join(dir, ".git"))
 
       repo.add(tracker)
-      repo.commit("loop(#{Paths::COMMIT_SCOPE}): task #{task.id} PARKED \u2014 needs human") unless repo.staged_files.empty?
+      repo.commit("loop(#{Paths.commit_scope(dir)}): task #{task.id} PARKED \u2014 needs human") unless repo.staged_files.empty?
     end
 
     # The gate-status FIRST line of last_turn.note is ALWAYS derived from whether this turn committed, so the next turn's
@@ -755,7 +837,7 @@ module Robur
       repo.add(Plan::CHANGELOG_FILE)
       return names if repo.staged_files.empty?
 
-      repo.commit("docs(#{Paths::COMMIT_SCOPE}): changelog for #{names.join(", ")}")
+      repo.commit("docs(#{Paths.commit_scope(dir)}): changelog for #{names.join(", ")}")
       names
     end
 
@@ -775,7 +857,7 @@ module Robur
       repo.add(conf["TRACKER_FILE"] || "PLAN.md")
       return if repo.staged_files.empty?
 
-      repo.commit("review(#{Paths::COMMIT_SCOPE}): fix tasks from review cycle #{cycle_count}")
+      repo.commit("review(#{Paths.commit_scope(dir)}): fix tasks from review cycle #{cycle_count}")
       emit "  review-injected tasks committed"
     end
 

@@ -38,7 +38,10 @@ class EncodingTest < Minitest::Test
     # No LANG/LC_* at all, and a minimal PATH — this is what launchd hands a
     # process. unsetenv_others: true means only the keys below exist; nothing
     # from this test's own environment leaks through.
-    env = {"PATH" => "/usr/bin:/bin", "HOME" => ENV["HOME"]}
+    # HOME is a throwaway, not the operator's: doctor writes its log dir
+    # under $HOME/.robur, and unsetenv_others drops the suite's ROBUR_HOME
+    # fence, so the real home collected a stray dir per run.
+    env = {"PATH" => "/usr/bin:/bin", "HOME" => @dir}
     out, err, status = Open3.capture3(env, RbConfig.ruby, EXE, "doctor", @dir,
                                        unsetenv_others: true, chdir: @dir)
 

@@ -469,12 +469,13 @@ module Robur
         real_home = File.join(dir, "home", ".robur")
         FileUtils.mkdir_p(real_home)
         metrics = File.join(dir, "isolated.tsv")
+        fenced_home = ENV["ROBUR_HOME"]  # the suite-wide fence, restored below
         ENV["ROBUR_HOME"] = real_home
         ENV["ROBUR_METRICS"] = metrics
         begin
           obs(dir).metrics_append("/repo/x", "run", "-", "-", "none", "done", 1, "?", 0, 0, "0.000000")
         ensure
-          ENV.delete("ROBUR_HOME")
+          fenced_home ? ENV["ROBUR_HOME"] = fenced_home : ENV.delete("ROBUR_HOME")
           ENV.delete("ROBUR_METRICS")
         end
         assert File.exist?(metrics)

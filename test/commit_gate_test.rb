@@ -48,9 +48,22 @@ module Robur
       result = gate(dir).run(turn: 3, model: "acme/model")
       assert result.committed
       out, = Open3.capture3("git", "-C", dir, "log", "--format=%s%n%b", "-1")
-      assert_equal "feat(#{Paths::COMMIT_SCOPE}): T1.1 do the thing", out.lines.first.chomp
+      assert_equal "feat(#{Paths.commit_scope(dir)}): T1.1 do the thing", out.lines.first.chomp
       assert_includes out, "Autonomous loop turn 3. verify: green."
       assert_includes out, "model: acme/model"
+    end
+
+    # The scope names the repo that changed, not the tool that drove it.
+    def test_commit_scope_is_the_repo_name
+      dir = File.join(Dir.mktmpdir, "agroclaro")
+      FileUtils.mkdir_p(dir)
+      git(dir, "init", "-q", "-b", "main")
+      git(dir, "config", "user.email", "t@example.com")
+      git(dir, "config", "user.name", "T")
+      File.write(File.join(dir, "new.txt"), "hello\n")
+      assert gate(dir).run(turn: 1, model: "m").committed
+      out, = Open3.capture3("git", "-C", dir, "log", "--format=%s", "-1")
+      assert_equal "feat(agroclaro): T1.1 do the thing\n", out
     end
 
     # A task with no kind tag predates the required-kind rule and must still
@@ -61,7 +74,7 @@ module Robur
       plan = fake_plan("- [x] T2.9 (normal) untagged legacy task")
       assert CommitGate.new(dir, plan: plan, config: config).run(turn: 1, model: "m").committed
       out, = Open3.capture3("git", "-C", dir, "log", "--format=%s", "-1")
-      assert_equal "auto(#{Paths::COMMIT_SCOPE}): T2.9 untagged legacy task\n", out
+      assert_equal "auto(#{Paths.commit_scope(dir)}): T2.9 untagged legacy task\n", out
     end
 
     # The dispatched task is the fallback when the turn staged no tracker
@@ -76,7 +89,7 @@ module Robur
                           .run(turn: 1, model: "m", task: dispatched)
       assert result.committed
       out, = Open3.capture3("git", "-C", dir, "log", "--format=%s", "-1")
-      assert_equal "fix(#{Paths::COMMIT_SCOPE}): T7.7 repair the thing\n", out
+      assert_equal "fix(#{Paths.commit_scope(dir)}): T7.7 repair the thing\n", out
     end
 
     # The body used to claim "verify: green." on the two paths that ran no

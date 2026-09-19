@@ -15,10 +15,15 @@ class ConfigTest < Minitest::Test
   def with_home(home, dir_name = Robur::Paths::HOME_DIR)
     FileUtils.mkdir_p(File.join(home, dir_name))
     old = ENV["HOME"]
+    old_robur_home = ENV["ROBUR_HOME"]
     ENV["HOME"] = home
+    # The suite-wide ROBUR_HOME fence outranks $HOME in Paths.home, so it has
+    # to move with it or the scratch global conf is never read.
+    ENV["ROBUR_HOME"] = File.join(home, dir_name)
     yield File.join(home, dir_name, "conf")
   ensure
     ENV["HOME"] = old
+    old_robur_home ? ENV["ROBUR_HOME"] = old_robur_home : ENV.delete("ROBUR_HOME")
   end
 
   def test_global_conf_env_and_values_match_bash_source

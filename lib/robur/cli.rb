@@ -963,7 +963,8 @@ module Robur
                         turn_timeout: conf["TURN_TIMEOUT"].to_i,
                         stall_timeout: conf["STALL_TIMEOUT"].to_i,
                         poll_interval: (ENV["POLL_INTERVAL"] || conf["POLL_INTERVAL"] || 3).to_i,
-                        early_tokens: [conf["STEP_TOKEN"], conf["DONE_TOKEN"]])
+                        early_tokens: [conf["STEP_TOKEN"], conf["DONE_TOKEN"]],
+                        message_cap: Observability.runaway_messages)
       status = result.kill_reason ? 128 + (result.status.termsig || 0) : result.status.exitstatus
       deadline = !result.kill_reason.nil? && result.kill_reason != "token-seen"
       klass = Classifier.classify(turn_out, step_token: conf["STEP_TOKEN"], done_token: conf["DONE_TOKEN"],
@@ -1010,7 +1011,16 @@ module Robur
       # ALL_DONE with open tasks is mid-work, not done.
       klass = :step if klass == :done && (plan.open? || plan.in_progress?)
 
-      commit_result = commit_turn(turn, model, conf, plan, dir)
+      # Same rule as the run loop: a turn that produced nothing commits
+      # nothing, because the gate stages the whole tree and would otherwise
+      # commit whatever a human left in it (Loop::COMMITTING_CLASSES).
+      commit_result =
+        if Loop::COMMITTING_CLASSES.include?(klass)
+          commit_turn(turn, model, conf, plan, dir)
+        else
+          emit "#{klass} turn did no work — not committing; the tree is left for the next turn's gate."
+          CommitGate::Result.new(committed: false, block_reason: nil, verify_cmd_empty: false)
+        end
       case klass
       when :done
         emit "agent signaled #{conf["DONE_TOKEN"]} — all work complete."
@@ -1058,8 +1068,8 @@ module Robur
         emit "--once: stopping."
         return ["once", model]
       when :empty
-        health.bench!(model)
-        emit "model #{model} EMPTY OUTPUT (exit 0, nothing said) — benching #{conf["COOLDOWN"]}s, no strike."
+        health.strike!(model)
+        emit "model #{model} EMPTY OUTPUT (exit 0, nothing said) — strike 1/#{conf["MAX_TRANSIENT"]}; backing off #{conf["SHORT_SLEEP"]}s."
         emit "--once: stopping."
         return ["once", model]
       else # :transient

@@ -506,7 +506,7 @@ module Robur
       assert_equal "abcd1234", base_sha
       assert_equal 1, cycle
       assert_equal 0, errors
-      assert_equal ["review(robur): fix tasks from review cycle 1"], repo.commit_calls
+      assert_equal ["review(#{Paths.commit_scope(dir)}): fix tasks from review cycle 1"], repo.commit_calls
       assert(log_lines.any? { |l| l.include?("review-fail | m=M1 | cycle=1") })
     ensure
       FileUtils.remove_entry(dir) if dir

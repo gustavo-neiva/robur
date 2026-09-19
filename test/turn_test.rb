@@ -5,13 +5,36 @@ require "robur/turn"
 
 module Robur
   class TurnTest < Minitest::Test
-    def run_turn(cmd, turn_timeout: 2, stall_timeout: 2, poll: 0.2)
+    def run_turn(cmd, turn_timeout: 2, stall_timeout: 2, poll: 0.2, message_cap: nil)
       file = File.join(Dir.mktmpdir, "turn.out")
       result = Turn.run(
         cmd: cmd, turn_file: file, turn_timeout: turn_timeout,
-        stall_timeout: stall_timeout, poll_interval: poll
+        stall_timeout: stall_timeout, poll_interval: poll, message_cap: message_cap
       )
       [result, File.read(file)]
+    end
+
+    # A turn that keeps talking to the model burns quota inside ONE turn, so
+    # a per-run ceiling never fires: the watchdog counts round-trips live.
+    def test_runaway_message_count_kills_the_turn
+      result, out = run_turn(
+        [RbConfig.ruby, "-e", '20.times { puts %q({"type":"message_end"}); $stdout.flush }; sleep 30'],
+        turn_timeout: 30, stall_timeout: 30, poll: 0.1, message_cap: 5
+      )
+      assert_match(/\Arunaway-\d+msg\z/, result.kill_reason)
+      assert_predicate result.status, :signaled?
+      refute_empty out
+    end
+
+    # The rewind that makes a split marker countable must not count a whole
+    # marker twice when it lands at a window boundary.
+    def test_message_markers_are_counted_once_across_windows
+      file = File.join(Dir.mktmpdir, "turn.out")
+      File.write(file, "a\"message_end\"b\"message_end\"c")
+      first = Turn.count_marker(file, from: 0)
+      File.write(file, File.read(file) + "\"message_end\"")
+      assert_equal 2, first
+      assert_equal 1, Turn.count_marker(file, from: 29)
     end
 
     # token_in? scans only bytes past last_size; a token written one byte at

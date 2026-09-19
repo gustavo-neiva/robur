@@ -15,9 +15,16 @@ module Robur
     # completion token appears — pi can idle 10-30s after printing it, which
     # is hours of wall-clock across a run).
     # early_tokens: array of tokens (step/done) that end the turn early.
+    # message_cap: round-trip ceiling. A turn that keeps talking to the model
+    # forever is only stopped by TURN_TIMEOUT today, which is how one turn
+    # made ~1,100 round-trips and moved 20M prompt-side tokens to emit 716.
+    # `"message_end"` in the streamed json is one completed round-trip
+    # (healthy turns log 4-6); nil disables the kill.
+    MESSAGE_MARKER = "message_end"
+
     def self.run(cmd:, turn_file:, turn_timeout:, stall_timeout:, poll_interval:,
                  chdir: nil, proc: Sys::Proc.new, clock: Sys::Clock.new, early_tokens: nil,
-                 stop_check: nil)
+                 stop_check: nil, message_cap: nil)
       File.open(turn_file, "w") do |f|
         # The turn runs with the repo as cwd: an agent started elsewhere
         # edits the wrong tree and the loop never makes progress.
@@ -33,6 +40,8 @@ module Robur
         # rewound by max_token-1 so a token straddling a poll boundary is
         # still seen.
         max_token = early_tokens.to_a.map { |t| t.to_s.bytesize }.max.to_i
+        messages = 0
+        counted_to = 0
 
         loop do
           # Liveness check first: a process that already exited must never
@@ -59,6 +68,15 @@ module Robur
             reason = "token-seen"
             detected = now
             break
+          end
+          if message_cap && sz > counted_to
+            messages += count_marker(turn_file, from: counted_to)
+            counted_to = sz
+            if messages >= message_cap
+              reason = "runaway-#{messages}msg"
+              detected = now
+              break
+            end
           end
           if now - start >= turn_timeout
             reason = "deadline-#{turn_timeout}s"
@@ -113,6 +131,21 @@ module Robur
       return [] unless pi_json?(agent_cmd)
 
       CONTEXT_PROFILES.fetch(kind, CONTEXT_PROFILES[:step])
+    end
+
+    # Round-trip markers in the bytes past `from`. Rewound by the marker
+    # length minus one so a marker split across two polls is still counted
+    # once (the overlap cannot double-count: a whole marker needs all its
+    # bytes, and the rewound window holds at most marker-1 of the old ones).
+    def self.count_marker(turn_file, from: 0)
+      start = [from - (MESSAGE_MARKER.bytesize - 1), 0].max
+      content = File.open(turn_file, "rb") do |f|
+        f.seek(start) if start.positive?
+        f.read
+      end
+      content ? content.scan(MESSAGE_MARKER).size : 0
+    rescue StandardError
+      0
     end
 
     # Scan the turn file (binary-safe) for any early-exit token, reading only

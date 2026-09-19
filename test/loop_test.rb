@@ -80,6 +80,26 @@ class LoopTest < Minitest::Test
     git(repo, "log", "--format=%s")[0].lines.map(&:strip)
   end
 
+  # The commit gate stages the whole tree, so edits the loop did not make
+  # would be committed under its task id. A tree that no longer matches the
+  # fingerprint the last run left is the operator's; the loop yields it.
+  def test_run_refuses_a_dirty_tree_it_did_not_leave
+    repo = make_repo
+    Robur::Paths.ensure_state_dir!(repo)
+    # The fingerprint a previous run left; the tree has moved on since.
+    File.write(Robur::Paths.state_file(repo, "tree.stamp"), "#{"0" * 64}\n")
+    File.write(File.join(repo, "human_wip.txt"), "unreviewed work\n")
+
+    notified = []
+    code = stub_notify(notified) { Robur::Loop.run(repo, sleep_it: ->(_s) {}) }
+
+    assert_equal 1, code
+    assert_equal "dirty_tree\n", File.read(Robur::Paths.state_file(repo, "stop_reason"))
+    refute_includes commits(repo).join, "human_wip"
+    assert_path_exists File.join(repo, "human_wip.txt")
+    refute_empty notified, "a refused start must reach the human, not just loop.log"
+  end
+
   # T2.2: a turn killed before its commit gate leaves files staged; the next
   # run must NAME them in loop.log and leave them staged (no reset/checkout).
   def test_unclean_start_reports_staged_files_and_leaves_them
@@ -381,7 +401,7 @@ class LoopTest < Minitest::Test
     assert_equal :parked, plan.next_task(:parked).status
     assert_equal "T1.1", plan.next_task(:parked).id
     refute plan.open?, "the parked task must not be picked up as open again"
-    assert_includes commits(repo), "loop(robur): task T1.1 PARKED \u2014 needs human"
+    assert_includes commits(repo), "loop(#{Robur::Paths.commit_scope(repo)}): task T1.1 PARKED \u2014 needs human"
     assert notified.any? { |m| m.include?("T1.1") && m.include?("account has the real balance") },
            "the park must notify with the task and the extracted question, got #{notified.inspect}"
   end
@@ -397,7 +417,7 @@ class LoopTest < Minitest::Test
     assert_match(/\A- \[HUMAN\] T1\.1/, line)
     assert_includes line, "PARKED, needs human: which account balance?"
     assert_equal :parked, Robur::Plan.new(File.join(repo, "PLAN.md")).next_task(:parked).status
-    assert_includes commits(repo), "loop(robur): task T1.1 PARKED \u2014 needs human"
+    assert_includes commits(repo), "loop(#{Robur::Paths.commit_scope(repo)}): task T1.1 PARKED \u2014 needs human"
   end
 
   def test_all_benched_backoff_ladder
@@ -530,11 +550,13 @@ class LoopTest < Minitest::Test
     end
     assert_equal "boom", error.message
     assert_equal "crashed\n", File.read(Robur::Paths.state_file(repo, "stop_reason"))
-    run_rows = File.readlines(File.join(@home, "metrics.tsv"))
-                    .map { |l| l.chomp.split("\t", -1) }
-                    .select { |r| r[2] == "run" }
+    rows = File.readlines(File.join(@home, "metrics.tsv")).map { |l| l.chomp.split("\t", -1) }
+    run_rows = rows.select { |r| r[2] == "run" }
     assert_equal 1, run_rows.size
     assert_equal "crashed", run_rows[0][6]
+    # The start marker is what a SIGKILLed run (no epilogue at all) leaves
+    # behind: a run_start with no matching run row.
+    assert_equal 1, rows.count { |r| r[2] == "run_start" }
   end
 
   # T0.4: a fresh run must clear a STALE verdict from an earlier run before
@@ -634,8 +656,9 @@ class LoopTest < Minitest::Test
   # within one second and the loop drains with stop_reason "stopped".
   def test_stop_file_interrupts_all_benched_backoff
     repo = make_repo
-    # Empty-output agent: :empty benches the model immediately, so turn 2
-    # hits the all-benched ladder backoff (900s on rung 1).
+    # Empty-output agent: :empty strikes, so the model benches at
+    # MAX_TRANSIENT and the loop then hits the all-benched ladder backoff
+    # (900s on rung 1).
     agent = File.join(repo, "empty-agent")
     File.write(agent, "#!/bin/sh\nexit 0\n")
     FileUtils.chmod(0o755, agent)

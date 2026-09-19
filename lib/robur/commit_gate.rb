@@ -140,7 +140,7 @@ module Robur
       completed = @plan.completed_task(task)
       subject = completed ? "#{completed.id} #{completed.text.gsub("**", "").strip}" : "step"
       kind = completed&.kind || "auto"
-      committed = @repo.commit("#{kind}(#{Paths::COMMIT_SCOPE}): #{subject}",
+      committed = @repo.commit("#{kind}(#{Paths.commit_scope(@dir)}): #{subject}",
                                 "Autonomous loop turn #{turn}. #{gate_note}.\nmodel: #{model}")
       if committed
         @emit.call("  committed: #{subject}")

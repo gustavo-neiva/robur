@@ -221,6 +221,7 @@ module Robur
         else
           pr_fail.call("tracker '#{tr}' has NO tasks (empty/unparsed) — add work")
         end
+        human_task_lint(content, conf_values, pr_fail)
       else
         pr_fail.call("no tracker found (PLAN.md/TODO.md/TASKS.md) — run: #{PROG} init #{dir}")
       end
@@ -260,6 +261,23 @@ module Robur
         out.puts "doctor: #{problems} problem(s). Fix before running the loop."
       end
       problems
+    end
+
+    # A task whose own headline says a human must do it, still checked `[ ]`,
+    # is dispatched on every single run: the turn prints HUMAN_BLOCKED, the
+    # loop stops, the scheduler re-runs it, forever (one such task cost 246
+    # re-runs). `[HUMAN]` is the grammar that parks it — the loop skips a
+    # parked task and the operator still sees it as open work.
+    def human_task_lint(content, conf_values, pr_fail)
+      token = (conf_values["HUMAN_TOKEN"] || "HUMAN_BLOCKED").to_s
+      prose = /#{Regexp.escape(token)}|\ba human\b/i
+      content.lines.each do |line|
+        next unless line =~ /\A[[:space:]]*-?[[:space:]]*\[( |IN PROGRESS)\]/ && line =~ prose
+
+        id = Task.parse(line).id
+        pr_fail.call("task #{id} is human-only but checked '[ ]' — the loop will re-dispatch it every run; " \
+                     "mark it '- [HUMAN] #{id} … PARKED, needs human: <question>'")
+      end
     end
 
     def mid_operation_check(dir, pr_fail)
@@ -484,7 +502,7 @@ module Robur
         emit.call("  nothing plan-staged to commit (idempotent plan turn).")
         return
       end
-      _out2, _err2, commit_status = Open3.capture3("git", "-C", dir, "commit", "-q", "-m", "plan(#{Paths::COMMIT_SCOPE}): refresh #{tracker_file}")
+      _out2, _err2, commit_status = Open3.capture3("git", "-C", dir, "commit", "-q", "-m", "plan(#{Paths.commit_scope(dir)}): refresh #{tracker_file}")
       if commit_status.success?
         emit.call("  plan-committed: #{tracker_file} (+ LEARNINGS.md if changed)")
       else
