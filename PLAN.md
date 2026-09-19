@@ -171,7 +171,7 @@ test/fleet/*_test.rb            one test file per class above
       constraints: planner stays pure (the stamp read lives on Gate); injected clock;
                    AUTOPLAN_MIN_SECS is global/ENV only, never a repo-conf key.
 
-- [ ] T2.3 (normal, feat, serial) a paused fleet plans nothing and says so once
+- [x] T2.3 (normal, feat, serial) a paused fleet plans nothing and says so once
       touches: lib/robur/fleet/planner.rb, lib/robur/fleet.rb, test/fleet/planner_test.rb
       do: When the planner is constructed with `paused: true`, `#decisions`
           returns a single `:skip` decision per active repo with reason

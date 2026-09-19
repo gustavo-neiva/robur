@@ -16,7 +16,6 @@ module Robur
     # the injected clock; its `now` drives the autoplan rate limit), and
     # gates arrive through the injected `gate_for` lambda. The stamp itself
     # is read on Gate (T2.2) and written only after a real plan turn (T3.5).
-    # `paused` is honoured in T2.3.
     class Planner
       Decision = Struct.new(:repo, :action, :reason, keyword_init: true)
 
@@ -43,7 +42,13 @@ module Robur
       # with :once_per_cycle (it costs no budget — it already spent its
       # own); every other verdict skips carrying the gate's reason — so a
       # backed-off, human-blocked or class-gated repo is never auto-planned.
+      # Paused (T2.3): the CALLER stats the flag and hands it in; every
+      # active repo skips with :paused, so cycle_plan spends nothing.
       def decisions
+        if @paused
+          return @roster.active.map { |e| Decision.new(repo: e.path, action: :skip, reason: :paused) }
+        end
+
         runs = 0
         plans = 0
         min_secs = Integer(ENV.fetch("AUTOPLAN_MIN_SECS", AUTOPLAN_MIN_SECS_DEFAULT))

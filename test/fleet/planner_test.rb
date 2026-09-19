@@ -27,13 +27,14 @@ class FleetPlannerTest < Minitest::Test
     ENV["AUTOPLAN_MIN_SECS"] = @env_min_secs
   end
 
-  def planner(already_ran: [], max_runs: @runs, max_plans: 4, now: Time.at(1_000_000_000))
+  def planner(already_ran: [], max_runs: @runs, max_plans: 4, now: Time.at(1_000_000_000), paused: false)
     Robur::Fleet::Planner.new(
       roster: @roster,
       gate_for: ->(repo) { @verdicts.fetch(repo) { GateStub.new(:runnable, true, false) } },
       budget: Robur::Fleet::Budget.new(max_runs: max_runs, max_plans: max_plans),
       clock: Struct.new(:now).new(now),
-      already_ran: already_ran
+      already_ran: already_ran,
+      paused: paused
     )
   end
 
@@ -143,6 +144,20 @@ class FleetPlannerTest < Minitest::Test
     assert_equal(%i[run], cp[:runs].map(&:action))
     assert_equal(%i[plan], cp[:plans].map(&:action))
     assert_equal(%w[/r/a], cp[:plans].map(&:repo))
+  end
+
+  # T2.3: paused -> every active repo skips with :paused and the cycle
+  # spends nothing. The caller stats the flag (purity test below enforces
+  # the planner never does); dry_run passes Paths.fleet_paused_flag.
+  def test_paused_skips_every_active_repo_and_plans_nothing
+    active("/r/a", "/r/b")
+    p = planner(paused: true)
+    d = p.decisions
+    assert_equal(%i[skip skip], d.map(&:action))
+    assert_equal(%i[paused paused], d.map(&:reason))
+    cp = p.cycle_plan
+    assert_empty cp[:runs]
+    assert_empty cp[:plans]
   end
 
   def test_decisions_are_keyword_structs

@@ -4,6 +4,7 @@ require_relative "fleet/gate"
 require_relative "fleet/planner"
 require_relative "fleet/render"
 require_relative "fleet/roster"
+require_relative "paths"
 require_relative "sys"
 
 module Robur
@@ -22,17 +23,22 @@ module Robur
     # must see what they turned off); the planner never decides for parked
     # repos because it walks roster.active.
     def dry_run(roster:, out:)
+      # One flag read here (the planner never stats — design constraint 5);
+      # the pause is announced once in the header, not repeated per row.
+      paused = File.exist?(Paths.fleet_paused_flag)
       gate_for = ->(repo) { Gate.new(repo) }
       planner = Planner.new(roster: roster, gate_for: gate_for,
                             budget: Budget.new(max_runs: 4, max_plans: 4),
-                            clock: Sys::Clock.new) # ponytail: hardcoded defaults until T2.4's Fleet.budget
+                            clock: Sys::Clock.new, # ponytail: hardcoded defaults until T2.4's Fleet.budget
+                            paused: paused)
       rows = planner.decisions.map do |d|
-        label = d.action == :skip ? "skip:#{d.reason.to_s.tr('_', '-')}" : d.action.to_s
+        label = d.action == :skip ? (paused ? "skip" : "skip:#{d.reason.to_s.tr('_', '-')}") : d.action.to_s
         [File.basename(d.repo), label, gate_for.(d.repo).open_tasks]
       end
       roster.entries.select(&:parked).each do |e|
         rows << [File.basename(e.path), "skip:parked", gate_for.(e.path).open_tasks]
       end
+      out.puts "fleet paused" if paused
       out.puts Render.board(rows) unless rows.empty?
       0
     end
