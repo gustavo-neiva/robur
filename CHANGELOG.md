@@ -1,5 +1,22 @@
 # Changelog
 
+## Milestone 5 — perpetual, and loud when it cannot be
+_2026-09-19 · 6 commits · +861/-25_
+
+- [x] T5.1 `robur fleet --every 15m` keeps running and drains on Ctrl-C — `ff81458`
+      Add `Fleet::Supervisor.new(interval:, cycle:, lifecycle:, clock:)` and `#run`: execute one cycle, sleep the interval, repeat.
+- [x] T5.2 a dead-man ping proves the beat is alive, not just that it started — `06929f5`
+      When `HEALTHCHECK_URL` is set in the global conf or ENV, ping `<url>/start` FIRST thing in `Cycle#run`, then close the pair at the end: the bare URL on a green cycle, `<url>/fail` on a red one.
+- [x] T5.3 a repo blocked on a human nudges daily, not every beat and not once ever — `506113e`
+      Add `Fleet::Notifier.new(clock:)` with `#notify_once(repo, key, msg)`: send unless `State.state_path(repo, "last_notified")` already holds `key` AND its mtime is newer than `RENOTIFY_SECS` (86400); write the marker either way.
+- [x] T5.4 a fleet paused long enough to be forgotten says so — `c177b32`
+      When the pause flag is older than `PAUSE_REMINDER_DAYS` (7), notify once a day through T5.3's `Notifier` naming how long it has been paused, then carry on skipping the cycle.
+- [x] T5.5 the supervisor restarts itself after a turn rewrites its own code — `69cd404`
+      A long-lived `--every` supervisor holds robur's code in memory, so the moment a turn commits to robur's OWN checkout the fleet keeps running the old `Fleet::*` forever — it cannot pick up the fix it just wrote.
+
+Also in this range:
+- `d7e1344` feat(robur): T6.1 `robur fleet status` shows the whole fleet on one screen
+
 ## Milestone 4 — the operator's knobs
 _2026-09-19 · 2 commits · +99/-7_
 
