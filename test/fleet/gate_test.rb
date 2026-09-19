@@ -120,4 +120,61 @@ class FleetGateTest < Minitest::Test
     File.write(File.join(@repo, "PLAN.md"), "# PLAN\n- [ ] T1 one\n")
     refute gate.class_gated?
   end
+
+  def verdict_repo(backoff: false)
+    init_repo
+    Robur::State.write_loop_backoff(@repo, 1, Time.now.to_i + 3600) if backoff
+  end
+
+  def test_verdict_runnable_when_nothing_blocks
+    verdict_repo
+    assert_equal :runnable, gate.verdict
+  end
+
+  def test_verdict_no_conf_when_not_initialized
+    assert_equal :no_conf, Robur::Fleet::Gate.new(@repo).verdict
+  end
+
+  def test_verdict_caught_up_when_no_open_tasks
+    verdict_repo
+    File.write(File.join(@repo, "PLAN.md"), "<!-- class: MACHINE -->\n- [x] a\n")
+    assert_equal :caught_up, gate.verdict
+  end
+
+  def test_verdict_backoff_when_backoff_active
+    verdict_repo(backoff: true)
+    assert_equal :backoff, gate.verdict
+  end
+
+  def test_verdict_human_block_when_waiting_on_human
+    verdict_repo
+    human_blocked_tracker(" ")
+    assert_equal :human_block, gate.verdict
+  end
+
+  def test_verdict_class_gate_when_human_plan_unapproved
+    verdict_repo
+    human_tracker
+    assert_equal :class_gate, gate.verdict
+  end
+
+  # Order is the point: backoff expires on its own, an approval does not.
+  def test_verdict_backoff_beats_class_gate
+    verdict_repo(backoff: true)
+    human_tracker
+    assert_equal :backoff, gate.verdict
+  end
+
+  def test_stop_reason_from_state_when_present
+    verdict_repo
+    Robur::State.write_stop_reason(@repo, "gate_red")
+    assert_equal "gate_red", gate.stop_reason
+  end
+
+  def test_stop_reason_falls_back_by_open_tasks
+    verdict_repo
+    assert_equal "stopped", gate.stop_reason
+    File.write(File.join(@repo, "PLAN.md"), "<!-- class: MACHINE -->\n- [x] a\n")
+    assert_equal "done", gate.stop_reason
+  end
 end

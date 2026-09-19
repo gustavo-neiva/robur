@@ -185,7 +185,7 @@ test/fleet/*_test.rb            one test file per class above
               — test/fleet/gate_test.rb adds HUMAN-gated, HUMAN-approved, MACHINE, and no-marker.
       constraints: read-only; use Robur::Plan#class_marker, never a new regex; stdlib only.
 
-- [ ] T1.4 (normal, feat, serial) Gate#verdict names one reason, and the dry run prints it
+- [x] T1.4 (normal, feat, serial) Gate#verdict names one reason, and the dry run prints it
       touches: lib/robur/fleet/gate.rb, lib/robur/fleet.rb, test/fleet/gate_test.rb
       do: Compose the checks into `Gate#verdict` -> a Symbol, evaluated in this
           fixed order so the reported reason is the most actionable one:

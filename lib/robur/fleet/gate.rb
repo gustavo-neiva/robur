@@ -5,11 +5,17 @@ require_relative "../plan"
 require_relative "../config"
 require_relative "../paths"
 require_relative "../state"
+require_relative "backoff"
 
 module Robur
   module Fleet
     # One repo's verdict inputs: PURE reads, no decisions, no writes.
     class Gate
+      REASONS = { no_conf: "not robur-initialized", caught_up: "no open tasks",
+                  backoff: "backed off after a failure",
+                  human_block: "waiting on a human answer",
+                  class_gate: "HUMAN plan awaiting approval",
+                  runnable: "ready to run" }.freeze
       def initialize(repo)
         @repo = repo
       end
@@ -46,6 +52,23 @@ module Robur
       # MACHINE marker or no marker is not gated. Approval is a marker file
       # the human (or the parked-task turn) drops in .robur/.
       def class_gated? = plan.class_marker&.upcase == "HUMAN" && !approved?
+
+      # One reason, most actionable first: backoff beats class_gate because
+      # backoff expires on its own while an approval cannot (task T1.4).
+      def verdict
+        return :no_conf unless initialized?
+        return :caught_up if open_tasks.zero?
+        return :backoff if Backoff.new(@repo).active?
+        return :human_block if human_blocked?
+        return :class_gate if class_gated?
+
+        :runnable
+      end
+
+      # The loop's own last word, or a derived fallback when it never ran.
+      def stop_reason
+        State.read_stop_reason(@repo) || (open_tasks.zero? ? "done" : "stopped")
+      end
 
       private
 

@@ -1,6 +1,5 @@
 # frozen_string_literal: true
 
-require_relative "fleet/backoff"
 require_relative "fleet/gate"
 require_relative "fleet/render"
 require_relative "fleet/roster"
@@ -17,14 +16,9 @@ module Robur
     def dry_run(roster:, out:)
       rows = roster.entries.map do |e|
         g = Gate.new(e.path)
-        n = g.open_tasks
-        verdict =
-          if e.parked           then "skip:parked"
-          elsif !g.initialized? then "skip:no-conf"
-          elsif n.zero?         then "skip:caught-up"
-          else "run"
-          end
-        [File.basename(e.path), verdict, n]
+        v = g.verdict
+        verdict = e.parked ? "skip:parked" : (v == :runnable ? "run" : "skip:#{v.to_s.tr('_', '-')}")
+        [File.basename(e.path), verdict, g.open_tasks]
       end
       out.puts Render.board(rows) unless rows.empty?
       0
