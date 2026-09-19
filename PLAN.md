@@ -163,7 +163,7 @@ test/fleet/*_test.rb            one test file per class above
               — test/fleet/gate_test.rb adds the four cases: open, in-progress, parked, done.
       constraints: read-only; reads go through Robur::State and Robur::Plan; stdlib only.
 
-- [ ] T1.3 (normal, feat, serial) a class HUMAN plan waits for approval before it ever runs
+- [x] T1.3 (normal, feat, serial) a class HUMAN plan waits for approval before it ever runs
       touches: lib/robur/fleet/gate.rb, test/fleet/gate_test.rb
       do: Add `Gate#class_gated?`: true when the tracker's class marker is `HUMAN`
           and `Robur::State.state_path(repo, "plan-approved")` does not exist.

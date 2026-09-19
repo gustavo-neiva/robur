@@ -96,4 +96,28 @@ class FleetGateTest < Minitest::Test
     Robur::State.write_stop_reason(@repo, "gate_red")
     refute gate.human_blocked?
   end
+
+  def human_tracker
+    init_repo
+    File.write(File.join(@repo, "PLAN.md"), "<!-- class: HUMAN -->\n# PLAN\n- [ ] T1 one\n")
+  end
+
+  def test_human_class_gated_until_approved
+    human_tracker
+    assert gate.class_gated?
+    FileUtils.mkdir_p(File.join(@repo, ".robur"))
+    FileUtils.touch(File.join(@repo, ".robur", "plan-approved"))
+    refute gate.class_gated?
+  end
+
+  def test_machine_class_not_gated
+    init_repo
+    refute gate.class_gated?
+  end
+
+  def test_no_class_marker_not_gated
+    init_repo
+    File.write(File.join(@repo, "PLAN.md"), "# PLAN\n- [ ] T1 one\n")
+    refute gate.class_gated?
+  end
 end

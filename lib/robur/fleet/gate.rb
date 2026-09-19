@@ -40,7 +40,16 @@ module Robur
         false
       end
 
+      # A class HUMAN plan runs only after a human approves it: money,
+      # strategy or outward-facing work must not run unattended. Marker is
+      # read by Plan#class_marker (first line only — prose never gates); a
+      # MACHINE marker or no marker is not gated. Approval is a marker file
+      # the human (or the parked-task turn) drops in .robur/.
+      def class_gated? = plan.class_marker&.upcase == "HUMAN" && !approved?
+
       private
+
+      def approved? = File.file?(State.state_path(@repo, "plan-approved"))
 
       # Gate OWNS the tracker path and resolves it through the conf, never a
       # literal: TRACKER_FILE is an allowlisted repo key with NO entry in
