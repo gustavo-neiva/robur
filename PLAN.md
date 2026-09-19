@@ -105,7 +105,7 @@ test/fleet/*_test.rb            one test file per class above
 > effects. `--dry-run` and the real cycle both consume its output, so they can
 > never disagree. Tasks share `planner.rb` and are `(serial)`.
 
-- [ ] T2.1 (hard, feat, serial) one pure planner produces the decisions both callers execute
+- [x] T2.1 (hard, feat, serial) one pure planner produces the decisions both callers execute
       touches: lib/robur/fleet/planner.rb, lib/robur/fleet.rb, test/fleet/planner_test.rb
       do: Add `Fleet::Planner.new(roster:, gate_for:, budget:, clock:, paused:
           false, already_ran: [])` where `gate_for` is a lambda

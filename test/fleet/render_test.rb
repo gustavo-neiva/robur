@@ -49,8 +49,10 @@ class FleetRenderTest < Minitest::Test
       assert_includes lines[0], "run"
       assert_includes lines[0], "2 open"
       assert_includes lines[1], "skip:caught-up"
-      assert_includes lines[2], "skip:parked"
-      assert_includes lines[3], "skip:no-conf"
+      # decisions walk roster.active in file order; parked rows are appended
+      # last for visibility only (never decided by the planner).
+      assert_includes lines[2], "skip:no-conf"
+      assert_includes lines[3], "skip:parked"
       # read-only: nothing new on disk but the conf itself
       assert_equal before, Dir[File.join(home, "**", "*")].sort
     end
