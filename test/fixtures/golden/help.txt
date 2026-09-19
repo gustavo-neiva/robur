@@ -21,6 +21,7 @@ Commands:
                   commit. One-off backfill; the loop archives one milestone per turn on its own.
   watch   [REPO]  Live board in a 2nd terminal: refreshes step/%/milestones/model/ETA every 2s while `run` works.
   fleet            One cycle over the roster: run, auto-plan, run again. --dry-run prints the board only.
+                  fleet pause|resume: stop/start the beat (see 'fleet --dry-run').
   stop    [REPO]  Signal a running loop to stop: bare = drain (after the current turn),
                   --now = abort it mid-turn. --clear removes the request.
   models          Model config UX: list | add <provider/id> | remove <provider/id> |

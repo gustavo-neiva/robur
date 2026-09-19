@@ -52,6 +52,7 @@ module Robur
                         commit. One-off backfill; the loop archives one milestone per turn on its own.
         watch   [REPO]  Live board in a 2nd terminal: refreshes step/%/milestones/model/ETA every 2s while `run` works.
         fleet            One cycle over the roster: run, auto-plan, run again. --dry-run prints the board only.
+                        fleet pause|resume: stop/start the beat (see 'fleet --dry-run').
         stop    [REPO]  Signal a running loop to stop: bare = drain (after the current turn),
                         --now = abort it mid-turn. --clear removes the request.
         models          Model config UX: list | add <provider/id> | remove <provider/id> |
@@ -310,7 +311,7 @@ module Robur
         warn_conf_issues(dir || ".")
         cmd_fanout_clean(dir)
       when "fleet"
-        cmd_fleet
+        cmd_fleet(dir)
       when "stats"
         warn_conf_issues(dir || ".")
         cmd_stats(dir)
@@ -341,10 +342,21 @@ module Robur
       0
     end
 
-    # robur fleet [--dry-run] — the fleet surface. Bare: one REAL cycle over
-    # the roster (T3.4), exiting with the cycle's status. --dry-run stays the
-    # read-only board: it decides and prints, never spawns.
-    def cmd_fleet
+    # robur fleet [pause|resume] [--dry-run] — the fleet surface. Bare: one
+    # REAL cycle over the roster (T3.4), exiting with the cycle's status.
+    # --dry-run stays the read-only board: it decides and prints, never
+    # spawns. pause/resume touch/remove the beat flag; both print the
+    # resulting state so the operator gets confirmation, not silence.
+    def cmd_fleet(verb = nil)
+      if verb == "pause"
+        FileUtils.touch(Paths.fleet_paused_flag)
+        puts "fleet paused"
+        return 0
+      elsif verb == "resume"
+        FileUtils.rm_f(Paths.fleet_paused_flag)
+        puts "fleet resumed"
+        return 0
+      end
       roster = Fleet::Roster.new(Paths.fleet_conf)
       if (@overrides || {})["FLEET_DRY_RUN"] == "1"
         Fleet.dry_run(roster: roster, out: $stdout)

@@ -107,7 +107,7 @@ test/fleet/*_test.rb            one test file per class above
 > operator is already in an editor. These verbs existed in harbor only because
 > Telegram has no editor; a terminal does. See Non-goals.
 
-- [ ] T4.1 (trivial, feat, serial) `robur fleet pause` and `resume` stop and restart the beat
+- [x] T4.1 (trivial, feat, serial) `robur fleet pause` and `resume` stop and restart the beat
       touches: lib/robur/fleet.rb, lib/robur/cli.rb, test/fleet/cli_test.rb
       do: Add `robur fleet pause` (create `Paths.fleet_paused_flag`) and
           `robur fleet resume` (unlink it, tolerating absence). T2.3 already
