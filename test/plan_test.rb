@@ -51,32 +51,59 @@ class PlanTest < Minitest::Test
     assert_equal "MACHINE", own_plan.class_marker
   end
 
-  def test_completed_list_strips_marker_and_bold
-    entry = own_plan.completed_list.find { |l| l.start_with?("T1.1") }
+# Fixture tracker, same reason as task_block above: a tracker with NOTHING
+# completed yet is a legitimate state (a freshly written plan is exactly
+# that), so reading the live tracker made this die on an empty `find`
+# rather than on anything completed_list got wrong.
+def test_completed_list_strips_marker_and_bold
+  Dir.mktmpdir do |dir|
+    file = File.join(dir, "PLAN.md")
+    File.write(file, "# Plan\n\n## M1\n- [x] **T1.1** (normal, feat) do the thing\n")
+    entry = Robur::Plan.new(file).completed_list.find { |l| l.start_with?("T1.1") }
+
+    refute_nil entry
     refute entry.match?(/\[x\]/)
     refute entry.include?("**")
   end
+end
 
   # Precedence: staged [x] diff line (hard evidence) → the dispatched task →
   # newest [x] in the file. Tier tags are stripped; the id survives, because
   # the changelog joins entries to commits by exactly that id.
+  #
+  # Fixture tracker for the same reason as above — and the last-resort case
+  # used to assert against an id recomputed from the live PLAN.md by the test
+  # itself, which is vacuous when both sides are empty and red the moment the
+  # tracker has no [x] line at all.
   def test_completed_task_prefers_staged_diff_then_dispatched_then_newest_done
-    staged = Object.new
-    def staged.capture(*) = ["+++ b/PLAN.md\n+- [x] T9.9 (normal, feat) freshly staged task", nil, nil]
-    task = Robur::Plan.new("PLAN.md", proc: staged).completed_task
-    assert_equal "T9.9", task.id
-    assert_equal "freshly staged task", task.text
-    assert_equal "feat", task.kind
+    Dir.mktmpdir do |dir|
+      file = File.join(dir, "PLAN.md")
+      File.write(file, <<~PLAN)
+        # Plan
 
-    noop = Object.new
-    def noop.capture(*) = ["", nil, nil]
-    # No staged [x] line, but the loop dispatched a task — that outranks the
-    # "newest [x] anywhere" guess, which attributes work to an unrelated task.
-    dispatched = Robur::Task.parse("- [ ] T5.5 (normal, fix) the dispatched one")
-    assert_equal "T5.5", Robur::Plan.new("PLAN.md", proc: noop).completed_task(dispatched).id
+        ## M1
+        - [x] T1.1 (normal, feat) an older done task
+        - [x] T2.2 (normal, fix) the newest done task
+        - [ ] T3.3 (normal) still open
+      PLAN
 
-    newest_done = File.readlines("PLAN.md").grep(/\A- \[x\] (\S+)/) { Regexp.last_match(1) }.last
-    assert_equal newest_done, Robur::Plan.new("PLAN.md", proc: noop).completed_task.id
+      staged = Object.new
+      def staged.capture(*) = ["+++ b/PLAN.md\n+- [x] T9.9 (normal, feat) freshly staged task", nil, nil]
+      task = Robur::Plan.new(file, proc: staged).completed_task
+      assert_equal "T9.9", task.id
+      assert_equal "freshly staged task", task.text
+      assert_equal "feat", task.kind
+
+      noop = Object.new
+      def noop.capture(*) = ["", nil, nil]
+      # No staged [x] line, but the loop dispatched a task — that outranks the
+      # "newest [x] anywhere" guess, which attributes work to an unrelated task.
+      dispatched = Robur::Task.parse("- [ ] T5.5 (normal, fix) the dispatched one")
+      assert_equal "T5.5", Robur::Plan.new(file, proc: noop).completed_task(dispatched).id
+
+      # Last resort: the NEWEST [x] in the file — the last one, not the first.
+      assert_equal "T2.2", Robur::Plan.new(file, proc: noop).completed_task.id
+    end
   end
 
   def test_heading_skip_rule
