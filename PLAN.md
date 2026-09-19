@@ -155,7 +155,7 @@ test/fleet/*_test.rb            one test file per class above
               "~" expansion, a relative path, and a missing file (returns []).
       constraints: never write the conf in this task; stdlib only; no new conf keys.
 
-- [ ] T0.3 (normal, feat, serial) `robur fleet --dry-run` prints why each repo will or will not run
+- [x] T0.3 (normal, feat, serial) `robur fleet --dry-run` prints why each repo will or will not run
       touches: lib/robur/fleet/gate.rb, lib/robur/fleet/render.rb, lib/robur/fleet.rb,
                lib/robur/cli.rb, exe/robur, test/fleet/gate_test.rb, test/fleet/render_test.rb
       do: THE TRACER BULLET — thin, but end to end. Add `Fleet::Gate.new(repo)`
