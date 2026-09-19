@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require_relative "fleet/backoff"
 require_relative "fleet/gate"
 require_relative "fleet/render"
 require_relative "fleet/roster"

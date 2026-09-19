@@ -37,6 +37,14 @@ module Robur
       nil
     end
 
+    # True when the file was deleted, false when there was none — callers
+    # count the truthy returns to report how many repos cleared.
+    def clear_loop_backoff(repo_dir)
+      File.unlink(state_path(repo_dir, "loop-backoff"))
+      true
+    rescue Errno::ENOENT
+      false
+    end
     # loop-backoff: "count<TAB>until_epoch".
     def read_loop_backoff(repo_dir)
       count, until_epoch = tab_fields(repo_dir, "loop-backoff", 2)
