@@ -191,7 +191,7 @@ test/fleet/*_test.rb            one test file per class above
       constraints: delivery via Observability#notify_human, never a second spawn path;
                    NOTIFY_CMD never added to Config::ALLOWLIST; injected clock; no HTTP.
 
-- [ ] T5.4 (normal, feat, serial) a fleet paused long enough to be forgotten says so
+- [x] T5.4 (normal, feat, serial) a fleet paused long enough to be forgotten says so
       touches: lib/robur/fleet/cycle.rb, test/fleet/cycle_test.rb
       do: When the pause flag is older than `PAUSE_REMINDER_DAYS` (7), notify
           once a day through T5.3's `Notifier` naming how long it has been

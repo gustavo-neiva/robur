@@ -54,7 +54,7 @@ class FleetCycleTest < Minitest::Test
   end
 
   def cycle(spawner:, roster: [], notifier: nil, out: $stdout, http: nil,
-            healthcheck: "")
+            healthcheck: "", paused: false, clock: ClockStub.new(Time.at(0)))
     Robur::Fleet::Cycle.new(
       roster: roster,
       gate_for: ->(repo) { Robur::Fleet::Gate.new(repo) },
@@ -62,9 +62,20 @@ class FleetCycleTest < Minitest::Test
                                        autoplan_min_secs: 0, backoff_base: 1,
                                        backoff_cap: 2, interval: 3,
                                        healthcheck_url: healthcheck),
-      clock: ClockStub.new(Time.at(0)),
-      spawner: spawner, notifier: notifier, http: http, out: out
+      clock: clock,
+      spawner: spawner, notifier: notifier, http: http, out: out,
+      paused: paused
     )
+  end
+
+  # The pause flag (T5.4) is Paths.home-relative; swap the real home for
+  # this test's root for the block's duration, as config_test does.
+  def with_pause_home
+    old = ENV["ROBUR_HOME"]
+    ENV["ROBUR_HOME"] = @root
+    yield
+  ensure
+    old ? ENV["ROBUR_HOME"] = old : ENV.delete("ROBUR_HOME")
   end
 
   # Acceptance: the exe resolved from the live process is a real,
@@ -290,6 +301,60 @@ class FleetCycleTest < Minitest::Test
     refute File.file?(Robur::State.state_path(c, "autoplan.stamp"))
   ensure
     lease&.release
+  end
+
+  # --- paused-fleet reminder (T5.4) --------------------------------------
+
+  # Acceptance: a 9-day-old pause flag notifies once naming the age, and
+  # the cycle still skips — no repo ever spawns, the cycle stays green.
+  def test_nine_day_old_pause_notifies_once_and_the_cycle_still_skips
+    with_pause_home do
+      FileUtils.touch(File.join(@root, "fleet.paused"),
+                      mtime: Time.now - 9 * 86_400)
+      notifier, calls = spy_notifier
+      seen = []
+      out = StringIO.new
+      c = cycle(spawner: ->(argv) { seen << argv.last; 0 },
+                roster: roster(@repo), notifier: notifier,
+                clock: ClockStub.new(Time.now), paused: true, out: out)
+      assert_equal 0, c.run
+      assert_empty seen
+      assert_equal 1, calls.size
+      assert_includes calls.first[2], "paused 9 days"
+      assert_includes out.string, "paused 9 days"
+    end
+  end
+
+  # Notifier's key expiry is the whole throttle: an hour later the same
+  # fleet-level key is suppressed, nothing new is delivered.
+  def test_reminder_is_throttled_to_once_a_day
+    with_pause_home do
+      FileUtils.touch(File.join(@root, "fleet.paused"),
+                      mtime: Time.now - 9 * 86_400)
+      notifier, calls = spy_notifier
+      opts = { spawner: ->(_argv) { 0 }, roster: roster(@repo),
+               notifier: notifier, clock: ClockStub.new(Time.now),
+               paused: true }
+      cycle(**opts).run
+      clock = opts[:clock]
+      clock.now += 3_600
+      cycle(**opts).run
+      assert_equal 1, calls.size
+    end
+  end
+
+  # Acceptance: a 2-day-old pause is under the threshold — nothing at all.
+  def test_two_day_old_pause_sends_nothing
+    with_pause_home do
+      FileUtils.touch(File.join(@root, "fleet.paused"),
+                      mtime: Time.now - 2 * 86_400)
+      notifier, calls = spy_notifier
+      c = cycle(spawner: ->(_argv) { 0 }, roster: roster(@repo),
+                notifier: notifier, clock: ClockStub.new(Time.now),
+                paused: true)
+      assert_equal 0, c.run
+      assert_empty calls
+    end
   end
 
   # One repo raising must not abort the cycle: the raise is recorded as a

@@ -24,6 +24,10 @@ module Robur
       # expression is the one line design constraint 6 rests on.
       EXE = File.expand_path("../../../exe/robur", __dir__)
 
+      # T5.4: a pause older than this is almost always forgotten, not
+      # intended — harbor sat paused 30 hours with every dashboard green.
+      PAUSE_REMINDER_DAYS = 7
+
       # `system` returns NIL when the child never started and FALSE when it
       # ran and failed; only the nil case maps to the distinct sentinel
       # :spawn_error (T3.3 must not charge an environment fault to a repo).
@@ -122,6 +126,7 @@ module Robur
       # status.
       def run
         ping_start
+        pause_reminder
         first = planner_for.cycle_plan
         ran = []
         first[:runs].each { |d| ran << d.repo if run_repo(d.repo, "run", d.repo) }
@@ -170,6 +175,26 @@ module Robur
         @out.puts ok_msg
       rescue StandardError => e
         @out.puts "WARN: healthcheck ping failed (#{e.class}: #{e.message}) — cycle outcome unaffected"
+      end
+
+      # T5.4 closes the hole T5.2 opens on purpose: the /start ping fires
+      # BEFORE the pause check, so a paused fleet reads green to every
+      # dashboard forever. The flag's own mtime is the record (no new stamp
+      # file) and Notifier's key expiry is the once-a-day throttle; the
+      # fleet-level key lives under Paths.home, beside the flag itself.
+      # It never resumes anything — only `robur fleet resume` does.
+      def pause_reminder
+        return unless @paused
+
+        flag = Paths.fleet_paused_flag
+        return unless File.file?(flag)
+
+        days = ((@clock.now - File.mtime(flag)) / 86_400).to_i
+        return if days < PAUSE_REMINDER_DAYS
+
+        msg = "fleet paused #{days} days — resume with `robur fleet resume` if unintended"
+        @notifier&.notify_once(Paths.home, "fleet\tpaused", msg)
+        @out.puts msg
       end
 
       # T3.5: the autoplan stamp is written only after a spawn that
