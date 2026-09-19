@@ -160,7 +160,7 @@ test/fleet/*_test.rb            one test file per class above
       constraints: HEALTHCHECK_URL is global-conf/ENV only, never a repo-conf key;
                    injected Sys::Http; a ping failure must never raise out of the cycle.
 
-- [ ] T5.3 (normal, feat, serial) a repo blocked on a human nudges daily, not every beat and not once ever
+- [x] T5.3 (normal, feat, serial) a repo blocked on a human nudges daily, not every beat and not once ever
       touches: lib/robur/fleet/notifier.rb, lib/robur/fleet/cycle.rb, test/fleet/notifier_test.rb
       do: Add `Fleet::Notifier.new(clock:)` with `#notify_once(repo, key, msg)`:
           send unless `State.state_path(repo, "last_notified")` already holds

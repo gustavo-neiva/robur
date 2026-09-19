@@ -35,8 +35,8 @@ module Robur
       # The Cycle holds the PLANNER's base, not a planner: both run passes
       # build their own fresh Planner (T3.4) so every pass re-reads the world
       # through the gate factory — a lambda that news a Gate per call, never
-      # a cached verdict. spawner is injected so no test ever launches a real
-      # turn; notifier stays nil until T5.3 wires the real Notifier.
+      # a cached verdict. spawner and notifier are injected so no test ever
+      # launches a real turn or spawns NOTIFY_CMD.
       def initialize(roster:, gate_for:, budget:, clock:, paused: false,
                      spawner: DEFAULT_SPAWNER, lock: Lock,
                      notifier: nil, http: nil, out: $stdout)
@@ -229,8 +229,12 @@ module Robur
         :bumped
       end
 
-      def notify(repo, key, msg)
-        @notifier&.notify_once(repo, key, msg)
+      # T5.3: the dedupe key is "<task_id>\t<reason>" — a new task or a new
+      # reason must always notify (Notifier holds the 24h half). "?" matches
+      # Gate's missing-id shape.
+      def notify(repo, reason, msg)
+        task_id = State.read_last_task(repo)&.first || "?"
+        @notifier&.notify_once(repo, "#{task_id}\t#{reason}", msg)
       end
 
       # A child that never started is this machine's fault (missing

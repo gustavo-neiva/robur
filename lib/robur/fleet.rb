@@ -5,6 +5,7 @@ require_relative "fleet/backoff"
 require_relative "fleet/cycle"
 require_relative "fleet/gate"
 require_relative "fleet/lock"
+require_relative "fleet/notifier"
 require_relative "fleet/planner"
 require_relative "fleet/render"
 require_relative "fleet/roster"
@@ -60,9 +61,11 @@ module Robur
     end
 
     # The runner OBJECT behind cycle — the supervisor (T5.1) beats on the
-    # same assembly repeatedly instead of running it once.
+    # same assembly repeatedly instead of running it once. The real
+    # Notifier (T5.3) is wired here, the one assembly every beat shares.
     def cycle_runner(roster:, out: $stdout)
-      Cycle.new(**planner_base(roster), out: out)
+      base = planner_base(roster)
+      Cycle.new(**base, notifier: Notifier.new(clock: base[:clock]), out: out)
     end
 
     # Resolve the fleet budgets. A missing (or unreadable) conf yields the

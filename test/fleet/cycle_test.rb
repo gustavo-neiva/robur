@@ -138,27 +138,33 @@ class FleetCycleTest < Minitest::Test
   end
 
   # Acceptance: with stop_reason "gate_red" the backoff count increments by
-  # one. The real child exits 1 for gate_red.
+  # one. The real child exits 1 for gate_red. The T5.3 notify key carries
+  # the task id too.
   def test_gate_red_bumps_the_ladder_by_one
-    cyc = cycle(spawner: ->(_a) { 1 })
+    notifier, calls = spy_notifier
+    cyc = cycle(spawner: ->(_a) { 1 }, notifier: notifier)
     Robur::State.write_stop_reason(@repo, "gate_red")
+    Robur::State.write_last_task(@repo, "T9", "running")
     assert_equal :bumped, cyc.record_outcome(@repo, 1)
     assert_equal 1, Robur::State.read_loop_backoff(@repo)[0]
+    assert_equal "T9\tgate_red", calls.first[1]
     cyc.record_outcome(@repo, 1)
     assert_equal 2, Robur::State.read_loop_backoff(@repo)[0]
   end
 
   # human_blocked: the repo is skipped for the rest of the cycle and the
-  # notifier hook fires (T5.3 wires the real Notifier).
+  # notifier hook fires with the T5.3 key "<task_id>\t<reason>" — a changed
+  # task id re-notifies immediately (Notifier holds the 24h half).
   def test_human_blocked_skips_the_repo_for_the_cycle_and_notifies
     notifier, calls = spy_notifier
     cyc = cycle(spawner: ->(_a) { 1 }, notifier: notifier)
     Robur::State.write_stop_reason(@repo, "human_blocked")
+    Robur::State.write_last_task(@repo, "T3.1", "running")
     assert_equal :skipped, cyc.record_outcome(@repo, 1)
     assert_equal [@repo], cyc.human_skipped
     assert_equal 1, calls.size
     assert_equal @repo, calls.first[0]
-    assert_equal "human_blocked", calls.first[1]
+    assert_equal "T3.1\thuman_blocked", calls.first[1]
   end
 
   def test_progress_stalled_and_review_exceeded_bump
