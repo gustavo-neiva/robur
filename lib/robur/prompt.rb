@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "paths"
+require_relative "sys"
 
 module Robur
   # Per-turn prompt builder: the base do-one-step instruction, the current
@@ -51,23 +52,15 @@ module Robur
     def self.note_text(log_dir)
       return nil unless log_dir
 
-      text = read_scrubbed(File.join(log_dir, "last_turn.note")).to_s.rstrip
+      text = Sys.read_scrubbed(File.join(log_dir, "last_turn.note")).to_s.rstrip
       text unless text.empty?
     end
 
     def self.verify_tail(log_dir)
-      out = read_scrubbed(File.join(log_dir, "last_verify.out")).to_s
+      out = Sys.read_scrubbed(File.join(log_dir, "last_verify.out")).to_s
       return nil if out.empty?
 
       "Last verify output (tail):\n```\n#{out.lines.map(&:chomp).last(TAIL_LINES).join("\n")}\n```"
-    end
-
-    # Production logs contain invalid UTF-8 bytes; a missing or unreadable
-    # file is an absent section, never a raise.
-    def self.read_scrubbed(path)
-      File.read(path, mode: "rb").force_encoding("UTF-8").scrub
-    rescue StandardError
-      nil
     end
   end
 end

@@ -49,10 +49,6 @@ module Robur
       n
     end
 
-    def completed_list
-      done_lines.map { |l| l.sub(/\A[[:space:]]*-?[[:space:]]*\[x\][[:space:]]*/, "").gsub("**", "") }
-    end
-
     # [x] tasks under the named `## ` milestone, in `[x] text` form — only
     # the leading dash is stripped, the checkbox is kept. The literal `-` is
     # required: a bare `[x]` with no dash does not count.

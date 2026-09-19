@@ -153,10 +153,6 @@ module Robur
       status&.success? || false
     end
 
-    def worktree_prune
-      git("worktree", "prune")
-    end
-
     def branch_delete_d(branch)
       _out, _err, status = git("branch", "-D", branch)
       status&.success? || false

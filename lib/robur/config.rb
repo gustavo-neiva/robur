@@ -134,7 +134,7 @@ module Robur
       key =~ /\ACOOLDOWN_[A-Z0-9]/
     end
 
-# SHA-256 hex of the file, or the literal 'none' when the file is missing.
+    # SHA-256 hex of the file, or the literal 'none' when the file is missing.
     # Doctor pins this against .robur/conf.hash so repo-contract tampering is
     # detected.
     def conf_hash(path)

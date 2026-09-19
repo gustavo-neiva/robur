@@ -4,10 +4,6 @@ module Robur
   # Parses one PLAN.md task line per the frozen tracker grammar:
   #   "- [ ] T1.2 (normal, serial) title"
   class Task
-    ID_RE = /\A([A-Z]+(?:\d+(?:\.\d+)?|-[\w-]+))\z/
-    STATUS_RE = /\A\s*-\s+\[( |x|X|HUMAN)\]\s*/ # leading checkbox
-    MARKER_RE = /\A\s*-\s+\[( |x|X|)\]\s*|\A\s*-\s+\[IN PROGRESS\]\s*|\A\s*-\s+\[HUMAN\]\s*/
-
     # Conventional-commit types, carried as a NON-FIRST tag so tier routing is
     # untouched: Tier.from_tag reads tags.first only and defaults anything it
     # does not know to "build", so `(normal, feat)` routes exactly as

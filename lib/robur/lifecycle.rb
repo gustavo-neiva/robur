@@ -19,7 +19,6 @@ module Robur
     def abort? = level >= 2
 
     def install!
-      @start_level = level
       trap("INT") { @signals += 1 }
       trap("TERM") { @signals += 1 }
       self

@@ -119,9 +119,8 @@ module Robur
           )
           captured = "#{out}#{err}"
           # The FULL verify output goes to last_verify.out beside loop.log,
-          # on pass AND fail — a chatty
-          # VERIFY_CMD would otherwise flood loop.log; only the last 40 lines
-          # are tailed in on RED (below).
+          # on pass AND fail — a chatty VERIFY_CMD would otherwise flood
+          # loop.log; only the last 40 lines are tailed in on RED (below).
           unless @loop_log.nil?
             File.write(File.join(File.dirname(@loop_log), "last_verify.out"), captured)
           end

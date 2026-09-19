@@ -18,7 +18,6 @@ module Robur
 
     module_function
 
-    # detect_verify_cmd DIR -> proposes a green gate from the stack, or "".
     def detect_verify_cmd(dir)
       if File.file?(File.join(dir, "package.json"))
         File.read(File.join(dir, "package.json")).include?('"test"') ? "npm test" : 'node -e "console.log(1)"'
@@ -31,12 +30,10 @@ module Robur
       end
     end
 
-    # detect_tracker_file DIR -> the tracker path (PLAN.md > TODO.md > TASKS.md), or "".
     def detect_tracker_file(dir)
       %w[PLAN.md TODO.md TASKS.md].find { |f| File.file?(File.join(dir, f)) } || ""
     end
 
-    # ----------------------------- init ---------------------------------------
     def init(dir, emit: ->(m) { puts m })
       raise "not a directory: #{dir}" unless File.directory?(dir)
 
@@ -142,7 +139,6 @@ module Robur
       end
     end
 
-    # ----------------------------- doctor -------------------------------------
     # The doctor body, printable to any IO so `once` can run it quiet first.
     def doctor_report(dir, out: $stdout)
       problems = 0
@@ -248,9 +244,6 @@ module Robur
 
       required_tools_check(conf_values, pr_ok, pr_fail)
 
-      pr_ok.call("pi registry cache missing/stale — model validation skipped (refresh: #{PROG} models list)")
-      pr_ok.call("rank source: none (unranked no-join: 0)")
-
       out.puts "---"
       tier_routing_report(out, conf_values)
 
@@ -343,7 +336,6 @@ module Robur
       end
     end
 
-    # ----------------------------- new ----------------------------------------
     def new_repo(idea, dir, emit: ->(m) { puts m })
       raise "usage: #{PROG} new \"<idea>\" [DIR]" if idea.to_s.empty?
 
@@ -411,7 +403,6 @@ module Robur
       emit.call("  (#{PROG} never auto-runs the loop after a plan — you review first.)")
     end
 
-    # ----------------------------- plan ---------------------------------------
     # ONE plan-drafting turn, then STOP for human review (unless auto). Commits
     # ONLY the tracker + LEARNINGS.md — a plan turn never lands code.
     def plan(dir, conf, auto: false, turn_out:, emit: ->(m) { puts m })

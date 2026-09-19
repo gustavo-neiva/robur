@@ -10,8 +10,6 @@ doctor: <TMP>/repo
   ok   VERIFY_CMD is set: 'true'
   ok   tokens: defined in conf (prompt delivery)
   ok   gitleaks: <present or absent on this host>
-  ok   pi registry cache missing/stale — model validation skipped (refresh: robur models list)
-  ok   rank source: none (unranked no-join: 0)
 ---
 tier routing:
   PLAN  : → MODELS (flat) (thinking=)

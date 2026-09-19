@@ -175,42 +175,4 @@ module Robur
       false
     end
   end
-
-  module Sys
-    class Proc
-      def spawn(cmd, out:, err:, chdir: nil)
-        opts = { out: out, err: err }
-        opts[:chdir] = chdir if chdir
-        Process.spawn(*cmd, **opts)
-      end
-
-      def reap(pid)
-        Process.wait(pid)
-        $?
-      end
-
-      # TERM, then poll for the exit instead of sleeping the whole grace out:
-      # a TERM-responsive child dies in milliseconds and used to cost 2s every
-      # time. A child that traps TERM still gets KILL at the ceiling, so the
-      # escalation and the resulting wstatus are unchanged. Returns the reaped
-      # status, or nil if there was nothing to reap (caller reaps instead).
-      GRACE = 2.0
-      TICK = 0.05
-
-      def kill(pid)
-        Process.kill("TERM", pid)
-        deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + GRACE
-        while Process.clock_gettime(Process::CLOCK_MONOTONIC) < deadline
-          _, status = Process.waitpid2(pid, Process::WNOHANG)
-          return status if status
-
-          sleep(TICK)
-        end
-        Process.kill("KILL", pid)
-        Process.waitpid2(pid)[1]
-      rescue Errno::ESRCH, Errno::ECHILD
-        nil
-      end
-    end
-  end
 end

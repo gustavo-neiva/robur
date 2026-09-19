@@ -83,8 +83,6 @@ module Robur
       task_attempts = TaskAttempts.new(conf["MAX_TASK_ATTEMPTS"].to_i)
       obs = Observability.new(log_dir)
 
-      emit = ->(m) { CLI.emit(m) }
-
       session_id = conf["SESSION_NAME"].to_s.empty? ? "robur-#{CLI.project_slug(dir)}" : "robur-#{conf["SESSION_NAME"]}"
       resume = conf["RESUME_SESSION"] == "1" ? "yes" : "no"
       thinking_banner = conf["THINKING"].to_s.empty? ? "inherit" : conf["THINKING"]
@@ -102,7 +100,7 @@ module Robur
       # no row at all. Stamp the start now — a "run_start" with no matching
       # "run" IS the crash signal. Readers that filter on event == "run"
       # ignore it.
-      CLI.metrics_append(dir, "run_start", "-", "-", flat.first, "running", 0, "-", 0, 0, "0.000000")
+      obs.metrics_append(dir, "run_start", "-", "-", flat.first, "running", 0, "-", 0, 0, "0.000000")
 
       # Life is installed BEFORE auto_plan_pr0 so its wait_for_merge poll
       # (poll_secs default 300, timeout 3 days) is interruptible too (T1.4).
@@ -266,7 +264,7 @@ module Robur
           tin = detail[:input] + detail[:cache_read] + detail[:cache_write]
           tout = detail[:output]
           cost = format("%.6f", detail[:cost])
-          CLI.metrics_append(dir, "turn", turn, tier, model, klass, took, task ? task.id : "?", tin, tout, cost,
+          obs.metrics_append(dir, "turn", turn, tier, model, klass, took, task ? task.id : "?", tin, tout, cost,
                              usage: detail)
           run_toks[:in] += tin
           run_toks[:out] += tout
@@ -540,7 +538,7 @@ module Robur
         # different at the next start came from outside (foreign_dirty_tree).
         stamp_tree(dir)
         state = File.file?(Paths.state_file(dir, "last_task.state")) ? File.read(Paths.state_file(dir, "last_task.state")) : ""
-        CLI.metrics_append(dir, "run", "-", "-", last_model, stop_reason, CLI.elapsed_int(run_start),
+        obs.metrics_append(dir, "run", "-", "-", last_model, stop_reason, CLI.elapsed_int(run_start),
                            state[/\A[^\t]*/].to_s, run_toks[:in], run_toks[:out], format("%.6f", run_toks[:cost]))
       end
 

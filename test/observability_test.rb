@@ -435,7 +435,6 @@ module Robur
 
         assert_equal 10, Observability.avg_turn_secs(log)
         assert_includes Observability.stats(dir, cheap_model: "acme/a"), "turns started         : 1"
-        assert_equal 10, Robur::CLI.avg_turn_secs(log)
       end
     end
 

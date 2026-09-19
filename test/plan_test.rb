@@ -51,22 +51,6 @@ class PlanTest < Minitest::Test
     assert_equal "MACHINE", own_plan.class_marker
   end
 
-# Fixture tracker, same reason as task_block above: a tracker with NOTHING
-# completed yet is a legitimate state (a freshly written plan is exactly
-# that), so reading the live tracker made this die on an empty `find`
-# rather than on anything completed_list got wrong.
-def test_completed_list_strips_marker_and_bold
-  Dir.mktmpdir do |dir|
-    file = File.join(dir, "PLAN.md")
-    File.write(file, "# Plan\n\n## M1\n- [x] **T1.1** (normal, feat) do the thing\n")
-    entry = Robur::Plan.new(file).completed_list.find { |l| l.start_with?("T1.1") }
-
-    refute_nil entry
-    refute entry.match?(/\[x\]/)
-    refute entry.include?("**")
-  end
-end
-
   # Precedence: staged [x] diff line (hard evidence) → the dispatched task →
   # newest [x] in the file. Tier tags are stripped; the id survives, because
   # the changelog joins entries to commits by exactly that id.

@@ -386,13 +386,9 @@ module Robur
 
     def cmd_plan(dir)
       dir = File.expand_path(dir || Dir.pwd)
-      log_dir = File.join(Paths.logs_dir, project_slug(dir))
-      FileUtils.mkdir_p(log_dir)
-      Paths.ensure_state_dir!(dir)
-      File.write(Paths.state_file(dir, "last-log"), "#{log_dir}\n")
+      log_dir = wire_logs!(dir)
       conf = Robur::Config.load(dir, @overrides || {}).values
       @quiet = conf["QUIET"] == "1"
-      @loop_log = File.join(log_dir, "loop.log")
       turn_out = File.join(log_dir, "last_turn.out")
       Commands.plan(dir, conf, auto: conf["AUTO_PLAN"] == "1", turn_out: turn_out, emit: method(:emit))
       0 # exit code, not Commands.plan's own return value
@@ -416,13 +412,9 @@ module Robur
     # message wins over a missing loop.log.
     def cmd_stats(dir)
       dir = File.expand_path(dir || Dir.pwd)
-      log_dir = File.join(Paths.logs_dir, project_slug(dir))
-      FileUtils.mkdir_p(log_dir)
-      Paths.ensure_state_dir!(dir)
-      File.write(Paths.state_file(dir, "last-log"), "#{log_dir}\n")
+      log_dir = wire_logs!(dir)
       conf = Config.load(dir, @overrides || {}).values
       @quiet = conf["QUIET"] == "1"
-      @loop_log = File.join(log_dir, "loop.log")
       chain = conf["MODELS"].to_s
       flat = chain.split(",").reject(&:empty?)
       die "no models configured (MODELS='#{chain}')" if flat.empty?
@@ -477,10 +469,7 @@ module Robur
     # counts rather than implying it read a tracker it was never pointed at.
     def cmd_status(dir)
       dir = File.expand_path(dir || Dir.pwd)
-      log_dir = File.join(Paths.logs_dir, project_slug(dir))
-      FileUtils.mkdir_p(log_dir)
-      Paths.ensure_state_dir!(dir)
-      File.write(Paths.state_file(dir, "last-log"), "#{log_dir}\n")
+      log_dir = wire_logs!(dir)
       log = File.join(log_dir, "loop.log")
       unless File.file?(log)
         puts "status: no loop.log found at #{log} (nothing run here yet?)"
@@ -496,9 +485,7 @@ module Robur
     # is what made it flicker.
     def cmd_watch(dir)
       dir = File.expand_path(dir || Dir.pwd)
-      log_dir = File.join(Paths.logs_dir, project_slug(dir))
-      Paths.ensure_state_dir!(dir)
-      File.write(Paths.state_file(dir, "last-log"), "#{log_dir}\n")
+      log_dir = wire_logs!(dir)
       log = File.join(log_dir, "loop.log")
       unless File.file?(log)
         puts "watch: no loop.log found at #{log} (nothing run here yet?)"
@@ -666,13 +653,6 @@ module Robur
       false
     end
 
-    # last_turn.out -> the last non-blank summary line, handling both
-    # plain-text agent output and the pi JSON stream (joining
-    # text_delta fragments). ponytail: only \n, \t, \\ and \" are
-    # unescaped from printf '%b' — full octal/hex escape support is not worth
-    # it for a status preview line; widen if a real transcript needs it.
-    # The agent's live prose: joined text_deltas for the pi JSON stream,
-    # raw content otherwise. nil when there is nothing yet.
     # [rows, cols]; IO.console is nil without a TTY (tests, pipes), and
     # winsize can raise on exotic terminals — the fallback keeps the board
     # bounded either way.
@@ -683,6 +663,10 @@ module Robur
       [24, 80]
     end
 
+    # The agent's live prose: joined text_deltas for the pi JSON stream, raw
+    # content otherwise. ponytail: only \n, \t, \\ and \" are unescaped —
+    # full octal/hex escape support is not worth it for a status preview
+    # line; widen if a real transcript needs it.
     def turn_text(turn_out)
       return nil unless File.file?(turn_out) && !File.zero?(turn_out)
 
@@ -705,6 +689,7 @@ module Robur
       end
     end
 
+    # last_turn.out -> the last non-blank summary line.
     def status_doing_now(turn_out)
       t = turn_text(turn_out)
       t && Render.summary(t, 1)
@@ -739,72 +724,21 @@ module Robur
                         .run(turn: turn, model: model, task: task)
     end
 
-    # _turn_usage is DRY now: the loop reads Observability.turn_usage_detail
-    # (cache-token fields) and keeps only this frozen TSV shape for metrics.tsv.
-    def turn_usage(path)
-      Observability.turn_usage(path)
-    end
-
-    # 12 frozen columns, plus the optional extension columns 13-15 when
-    # `usage:` is given (Observability::METRICS_EXTENSION_COLUMNS documents
-    # why).
-    def metrics_append(repo_dir, event, turn, tier, model, klass, took, task, tin, tout, cost,
-                       usage: nil)
-      f = Paths.metrics_file
-      FileUtils.mkdir_p(File.dirname(f))
-      row = [Time.now.strftime("%F %T"), File.basename(repo_dir), event, turn, tier, model,
-             klass, took, task, tin, tout, cost]
-      row.concat(Observability.extension_columns(usage)) if usage
-      File.write(f, "#{row.join("\t")}\n", mode: "a")
-    rescue StandardError
-      nil
-    end
-
-    # Integer mean of the took=Ns lines in loop.log.
-    def avg_turn_secs(log)
-      return 0 unless File.file?(log)
-
-      vals = Sys.read_scrubbed(log).to_s.scan(/took=(\d+)s/).map { |m| m[0].to_i }
-      vals.empty? ? 0 : vals.sum / vals.size
-    end
-
-    def fmt_dur(secs)
-      return "#{secs}s" if secs < 60
-      return "#{secs / 60}m" if secs < 3600
-
-      "#{secs / 3600}h#{(secs % 3600) / 60}m"
-    end
-
-    def render_bar(pct, w = 12)
-      pct = 0 if pct.negative?
-      pct = 100 if pct > 100
-      fill = pct * w / 100
-      (1..w).map { |i| i <= fill ? "▓" : "░" }.join
-    end
-
     # fanout/fanout-clean dispatch right after the log wiring and BEFORE the
     # run/once doctor preflight — neither is gated on preflight.
     def cmd_fanout(dir)
       dir = File.expand_path(dir || Dir.pwd)
-      log_dir = File.join(Paths.logs_dir, project_slug(dir))
-      FileUtils.mkdir_p(log_dir)
-      Paths.ensure_state_dir!(dir)
-      File.write(Paths.state_file(dir, "last-log"), "#{log_dir}\n")
+      wire_logs!(dir)
       conf = Robur::Config.load(dir, @overrides || {}).values
       @quiet = conf["QUIET"] == "1"
-      @loop_log = File.join(log_dir, "loop.log")
       Robur::Loop.fanout(dir, conf)
     end
 
     def cmd_fanout_clean(dir)
       dir = File.expand_path(dir || Dir.pwd)
-      log_dir = File.join(Paths.logs_dir, project_slug(dir))
-      FileUtils.mkdir_p(log_dir)
-      Paths.ensure_state_dir!(dir)
-      File.write(Paths.state_file(dir, "last-log"), "#{log_dir}\n")
+      wire_logs!(dir)
       conf = Robur::Config.load(dir, @overrides || {}).values
       @quiet = conf["QUIET"] == "1"
-      @loop_log = File.join(log_dir, "loop.log")
       Robur::Loop.fanout_clean(dir)
       0
     end
@@ -832,12 +766,8 @@ module Robur
     # classify, metrics, per-outcome dispatch).
     def cmd_once(dir)
       dir = File.expand_path(dir || Dir.pwd)
-      log_dir = File.join(Paths.logs_dir, project_slug(dir))
-      FileUtils.mkdir_p(log_dir)
-      Paths.ensure_state_dir!(dir)
-      File.write(Paths.state_file(dir, "last-log"), "#{log_dir}\n")
+      log_dir = wire_logs!(dir)
       @quiet = Robur::Config.load(dir, @overrides || {}).values["QUIET"] == "1" # conf before preflight
-      @loop_log = File.join(log_dir, "loop.log") # so preflight output is logged too
       emit "preflight (doctor) ..."
       require "stringio"
       buf = StringIO.new
@@ -858,7 +788,6 @@ module Robur
       plan = Plan.new(File.join(dir, conf["TRACKER_FILE"] || "PLAN.md"))
       models = Tier.chain_for("build", conf).to_s.split(",").reject(&:empty?)
       die "no models configured (-m chain, MODELS in #{Paths::REPO_CONF}, or global conf)." if models.empty?
-      health = ModelHealth.new(conf)
       log_dir = File.dirname(@loop_log)
       obs = Observability.new(log_dir)
       turn_out = File.join(log_dir, "last_turn.out")
@@ -915,7 +844,7 @@ module Robur
         File.write(Paths.state_file(dir, "stop_reason"), "#{stop_reason}\n")
         state = File.file?(Paths.state_file(dir, "last_task.state")) ? File.read(Paths.state_file(dir, "last_task.state")) : ""
         taskid = state[/\A[^\t]*/].to_s
-        metrics_append(dir, "run", "-", "-", last_model, stop_reason, elapsed_int(run_start), taskid,
+        obs.metrics_append(dir, "run", "-", "-", last_model, stop_reason, elapsed_int(run_start), taskid,
                        run_toks[:in], run_toks[:out], format("%.6f", run_toks[:cost]))
       end
       0 # exit code, not File.write's byte count
@@ -942,9 +871,9 @@ module Robur
       minfo = plan.current_milestone
       if minfo
         pct = (done_n + open_n).positive? ? done_n * 100 / (done_n + open_n) : 0
-        term_only "Step #{done_n}/#{done_n + open_n}  [#{render_bar(pct)} #{pct}%]   #{minfo[:name]}  (#{minfo[:done]}/#{minfo[:total]})"
+        term_only "Step #{done_n}/#{done_n + open_n}  [#{Render.bar(pct, 12)} #{pct}%]   #{minfo[:name]}  (#{minfo[:done]}/#{minfo[:total]})"
       else
-        term_only "Step #{done_n}/#{done_n + open_n}  [#{render_bar(done_n * 100 / (done_n + open_n))} #{done_n * 100 / (done_n + open_n)}%]"
+        term_only "Step #{done_n}/#{done_n + open_n}  [#{Render.bar(done_n * 100 / (done_n + open_n), 12)} #{done_n * 100 / (done_n + open_n)}%]"
       end
       taskid = task ? task.id : "?"
       tasktext = task ? task.text : "—"
@@ -956,7 +885,6 @@ module Robur
       turn_start = mono
       cmd = [conf["AGENT_CMD"], "--model", model] + Turn.mode_args(conf["AGENT_CMD"], kind: :step)
       cmd += ["--thinking", thinking] unless thinking.to_s.empty?
-      # P0 fix: REAL prompt, not the literal string "turn" (see Loop.run).
       prompt = conf["PROMPT_OVERRIDE"].to_s.empty? ? Robur::Prompt.for_turn(conf: conf, plan: plan, log_dir: log_dir) : conf["PROMPT_OVERRIDE"]
       cmd += ["--no-session", "-p", prompt]
       result = Turn.run(cmd: cmd, turn_file: turn_out, chdir: dir,
@@ -977,7 +905,7 @@ module Robur
       tin = detail[:input] + detail[:cache_read] + detail[:cache_write]
       tout = detail[:output]
       cost = format("%.6f", detail[:cost])
-      metrics_append(dir, "turn", turn, tier, model, klass, took, taskid, tin, tout, cost,
+      obs.metrics_append(dir, "turn", turn, tier, model, klass, took, taskid, tin, tout, cost,
                      usage: detail)
       run_toks[:in] += tin
       run_toks[:out] += tout
@@ -997,9 +925,8 @@ module Robur
       Paths.ensure_state_dir!(dir)
       File.write(Paths.state_file(dir, "last_task.state"), "#{taskid}\t#{klass}\n")
 
-      avg = avg_turn_secs(@loop_log)
-      eta = avg.zero? ? "ETA unknown" : "~#{open_n} turns / ~#{fmt_dur(open_n * avg)} left"
-      term_only "  ⏱ turn #{turn} · #{fmt_dur(took)}   avg #{fmt_dur(avg)}   #{eta}"
+      avg = Observability.avg_turn_secs(@loop_log)
+      term_only Render.timing(turn, took, avg, open_n)
 
       if !ENV.fetch("SUMMARY_LINES", "4").to_i.zero? && File.exist?(turn_out) && !File.zero?(turn_out)
         emit "--- summary ---"

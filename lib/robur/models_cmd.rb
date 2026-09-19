@@ -20,11 +20,9 @@ module Robur
     module_function
 
     def global_conf(home)
-      ENV["GLOBAL_CONF"] || File.join(home, "conf")
+      File.join(home, "conf")
     end
 
-    # parse_pi_models: `pi --list-models` table -> "provider/id" lines,
-    # skipping the header row (awk 'NF>=2 && $1!="provider"').
     def parse_pi_models(text)
       text.each_line.filter_map do |line|
         fields = line.split
@@ -33,9 +31,9 @@ module Robur
       end
     end
 
-    # pi_model_registry(refresh:) -> array of "provider/id", or nil when
-    # unavailable. Default: serve the 24h cache; refresh: true calls pi and
-    # rewrites the cache (nil on failure — no pi on PATH, or an empty table).
+    # pi_model_registry: 24h cache served by default; refresh: true calls pi
+    # and rewrites it. nil when unavailable (no cache, no pi on PATH, empty
+    # table).
     def pi_model_registry(home, refresh: false, sys: Sys::Proc.new)
       cache = File.join(home, "models.registry")
       unless refresh
@@ -53,8 +51,7 @@ module Robur
       nil # `pi` not on PATH
     end
 
-    # chain_add CHAIN MODEL POS -> the new chain. MODEL already present is
-    # removed first (so add --pos also moves).
+    # MODEL already present is removed first, so add --pos also moves.
     def chain_add(chain, model, pos = "last")
       out = split_chain(chain).reject { |m| m == model }
       case pos
@@ -73,7 +70,6 @@ module Robur
       out.join(",")
     end
 
-    # chain_remove CHAIN MODEL -> the chain without MODEL.
     def chain_remove(chain, model)
       split_chain(chain).reject { |m| m == model }.join(",")
     end
@@ -107,13 +103,10 @@ module Robur
                         "build" => "THINKING_BUILD", "light" => "THINKING_LIGHT" },
     }.freeze
 
-    # _tier_key KIND TIER -> the conf key, or nil (kind: models|thinking).
     def tier_key(kind, tier)
       TIER_KEYS.dig(kind, tier)
     end
 
-    # _chain_with_marks CHAIN REGISTRY -> "m1 [ok], m2 [UNKNOWN]" (no cost —
-    # see the module comment).
     def chain_with_marks(chain, reg)
       models = split_chain(chain)
       return "<empty>" if models.empty?
@@ -129,9 +122,8 @@ module Robur
 
     NONCODER_PATTERN = /fable|mythos|vision|image|-5v-|-5v\z|\A5v-/.freeze
 
-    # _is_noncoder_model PROVIDER/ID -> true for known non-coder families
-    # (creative-writing / vision / image); guards auto-derivation only, never
-    # an explicit MODEL_RANK entry.
+    # Known non-coder families (creative-writing / vision / image); guards
+    # auto-derivation only, never an explicit MODEL_RANK entry.
     def noncoder_model?(id)
       id.sub(%r{\A[^/]*/}, "") =~ NONCODER_PATTERN ? true : false
     end
@@ -152,8 +144,8 @@ module Robur
       kept
     end
 
-    # derived_rank HOME -> snapshot (stable mid-project) or derive live and
-    # write it.
+    # rank.derived snapshot: stable mid-project (re-derived only by
+    # `models rank refresh`).
     def derived_rank(home, reg, allowed_providers)
       snap = File.join(home, "rank.derived")
       return File.read(snap).each_line(chomp: true).reject(&:empty?) if File.file?(snap)
@@ -166,8 +158,6 @@ module Robur
       ranked
     end
 
-    # ranked_available_models -> MODEL_RANK order, then unranked models in
-    # registry order (no cost cache to sort unranked by — see module comment).
     def ranked_available_models(home, reg, model_rank, allowed_providers)
       return derived_rank(home, reg, allowed_providers) if model_rank.to_s.empty?
       return nil if reg.nil? || reg.empty?
@@ -182,7 +172,6 @@ module Robur
       ranked + unranked
     end
 
-    # suggest_chain TIER -> comma-separated chain for plan|build|light|review.
     def suggest_chain(home, tier, reg, model_rank, allowed_providers)
       ranked = ranked_available_models(home, reg, model_rank, allowed_providers)
       return nil if ranked.nil? || ranked.empty?
@@ -191,8 +180,6 @@ module Robur
       slice.empty? ? nil : slice.join(",")
     end
 
-    # refresh_rank_snapshot: refresh the pi registry and rewrite rank.derived
-    # from live derivation.
     def refresh_rank_snapshot(home, config, emit:, sys: Sys::Proc.new)
       reg = pi_model_registry(home, refresh: true, sys: sys)
       raise "pi registry refresh failed" if reg.nil?
