@@ -21,6 +21,7 @@ require "robur/state"
 require "robur/lifecycle"
 require "robur/commands"
 require "robur/models_cmd"
+require "robur/fleet"
 
 module Robur
   # The command-line surface: argument parsing, command dispatch, and the
@@ -50,6 +51,7 @@ module Robur
         changelog [REPO] Move EVERY finished milestone out of the tracker into CHANGELOG.md and
                         commit. One-off backfill; the loop archives one milestone per turn on its own.
         watch   [REPO]  Live board in a 2nd terminal: refreshes step/%/milestones/model/ETA every 2s while `run` works.
+        fleet            Fleet board: --dry-run prints why each roster repo will or will not run.
         stop    [REPO]  Signal a running loop to stop: bare = drain (after the current turn),
                         --now = abort it mid-turn. --clear removes the request.
         models          Model config UX: list | add <provider/id> | remove <provider/id> |
@@ -160,7 +162,7 @@ module Robur
     end
 
     COMMANDS = %w[init new plan doctor run once selftest stats watch status stop models fanout
-                  fanout-clean migrate-state changelog].freeze
+                  fanout-clean migrate-state changelog fleet].freeze
 
     # Flags that swallow the NEXT argv item as their value. Only the tolerant
     # pre-scan needs this; the authoritative parse is OptionParser and knows
@@ -230,6 +232,7 @@ module Robur
         p.on("--stream") { o["STREAM_AGENT"] = "1" }
         p.on("--cheap") { o["CHEAP_MODE"] = "1" }
         p.on("--auto") { o["AUTO_PLAN"] = "1" }
+        p.on("--dry-run") { o["FLEET_DRY_RUN"] = "1" }
         p.on("--apply") { o["MIGRATE_APPLY"] = "1" }
         p.on("--now") { o[:stop_now] = true }
         p.on("--clear") { o[:clear_stop] = true }
@@ -306,6 +309,8 @@ module Robur
       when "fanout-clean"
         warn_conf_issues(dir || ".")
         cmd_fanout_clean(dir)
+      when "fleet"
+        cmd_fleet
       when "stats"
         warn_conf_issues(dir || ".")
         cmd_stats(dir)
@@ -333,6 +338,18 @@ module Robur
         done = Migrate.apply!(actions)
         puts "  applied #{done.size} change(s)"
       end
+      0
+    end
+
+    # robur fleet [--dry-run] — the fleet surface. --dry-run is the ONLY flag
+    # this stage accepts; a bare `robur fleet` is the real cycle (M3), stubbed
+    # until then. Read-only: the board never writes or spawns.
+    def cmd_fleet
+      unless (@overrides || {})["FLEET_DRY_RUN"] == "1"
+        puts "not implemented yet (M3)"
+        return 0
+      end
+      Fleet.dry_run(roster: Fleet::Roster.new(Paths.fleet_conf), out: $stdout)
       0
     end
 
