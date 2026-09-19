@@ -19,19 +19,15 @@ class FleetPlannerTest < Minitest::Test
     @runs = 2
     @verdicts = {}
     @roster = RosterStub.new([])
-    @env_min_secs = ENV["AUTOPLAN_MIN_SECS"]
-    ENV.delete("AUTOPLAN_MIN_SECS")
   end
 
-  def teardown
-    ENV["AUTOPLAN_MIN_SECS"] = @env_min_secs
-  end
-
-  def planner(already_ran: [], max_runs: @runs, max_plans: 4, now: Time.at(1_000_000_000), paused: false)
+  def planner(already_ran: [], max_runs: @runs, max_plans: 4, min_secs: 21_600,
+              now: Time.at(1_000_000_000), paused: false)
     Robur::Fleet::Planner.new(
       roster: @roster,
       gate_for: ->(repo) { @verdicts.fetch(repo) { GateStub.new(:runnable, true, false) } },
-      budget: Robur::Fleet::Budget.new(max_runs: max_runs, max_plans: max_plans),
+      budget: Robur::Fleet::Budget.new(max_runs: max_runs, max_plans: max_plans,
+                                       autoplan_min_secs: min_secs),
       clock: Struct.new(:now).new(now),
       already_ran: already_ran,
       paused: paused
@@ -115,8 +111,10 @@ class FleetPlannerTest < Minitest::Test
     assert_equal(:backoff, d.reason)
   end
 
-  # Global/ENV only: default 21_600, ENV overrides. Never a repo-conf key.
-  def test_autoplan_min_secs_defaults_to_21600_and_reads_env
+  # Global-only key (T2.2): the min_secs flows from the CALLER's budget —
+  # Fleet.budget resolves it (ENV/conf/defaults); the planner decides with
+  # whatever it is handed and never re-reads the world.
+  def test_autoplan_min_secs_flows_from_the_budget
     active("/r/a")
     recorder = Class.new(GateStub) do
       attr_accessor :got_min
@@ -127,10 +125,9 @@ class FleetPlannerTest < Minitest::Test
       end
     end
     @verdicts["/r/a"] = g = recorder.new(:caught_up, true, true)
-    planner.decisions
+    planner(min_secs: 21_600).decisions
     assert_equal 21_600, g.got_min
-    ENV["AUTOPLAN_MIN_SECS"] = "60"
-    planner.decisions
+    planner(min_secs: 60).decisions
     assert_equal 60, g.got_min
   end
 

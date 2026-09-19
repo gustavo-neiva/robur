@@ -51,7 +51,9 @@ module Robur
 
         runs = 0
         plans = 0
-        min_secs = Integer(ENV.fetch("AUTOPLAN_MIN_SECS", AUTOPLAN_MIN_SECS_DEFAULT))
+        # T2.4: resolved by the caller's Fleet.budget — the planner never
+        # re-reads the world, or conf values would silently not apply here.
+        min_secs = @budget.autoplan_min_secs
         @roster.active.filter_map do |entry|
           if @already_ran.include?(entry.path)
             Decision.new(repo: entry.path, action: :skip, reason: :once_per_cycle)

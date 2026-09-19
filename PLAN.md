@@ -193,7 +193,7 @@ test/fleet/*_test.rb            one test file per class above
       constraints: flag path comes from Robur::Paths; the planner never stats the flag;
                    stdlib only.
 
-- [ ] T2.4 (normal, feat, serial) the fleet's budgets come from the human-owned conf, not from constants
+- [x] T2.4 (normal, feat, serial) the fleet's budgets come from the human-owned conf, not from constants
       touches: lib/robur/fleet.rb, test/fleet/budget_test.rb
       do: Nothing yet reads the seven global keys, so every budget in M1-M2 is
           a hardcoded default. Add `Fleet.budget` returning a Struct of
@@ -229,7 +229,7 @@ test/fleet/*_test.rb            one test file per class above
 > `Planner#cycle_plan` and does exactly what it says — it makes no decisions of
 > its own. Tasks sharing `cycle.rb` are `(serial)`.
 
-- [ ] T3.1 (normal, feat) one writer per checkout, and a busy repo is skipped not queued
+- [x] T3.1 (normal, feat) one writer per checkout, and a busy repo is skipped not queued
       touches: lib/robur/fleet/lock.rb, test/fleet/lock_test.rb
       do: Add `Fleet::Lock.acquire(repo)` -> a `Lease` with `#release`, or `nil`
           immediately when the checkout is already locked. Use a non-blocking
