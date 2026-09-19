@@ -53,6 +53,7 @@ module Robur
         watch   [REPO]  Live board in a 2nd terminal: refreshes step/%/milestones/model/ETA every 2s while `run` works.
         fleet            One cycle over the roster: run, auto-plan, run again. --dry-run prints the board only.
                         fleet pause|resume: stop/start the beat (see 'fleet --dry-run').
+                        fleet retry: clear every active repo's backoff now.
         stop    [REPO]  Signal a running loop to stop: bare = drain (after the current turn),
                         --now = abort it mid-turn. --clear removes the request.
         models          Model config UX: list | add <provider/id> | remove <provider/id> |
@@ -355,6 +356,10 @@ module Robur
       elsif verb == "resume"
         FileUtils.rm_f(Paths.fleet_paused_flag)
         puts "fleet resumed"
+        return 0
+      elsif verb == "retry"
+        roster = Fleet::Roster.new(Paths.fleet_conf)
+        puts "cleared #{roster.active.count { |e| Fleet::Backoff.new(e.path).clear! }}"
         return 0
       end
       roster = Fleet::Roster.new(Paths.fleet_conf)

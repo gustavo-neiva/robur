@@ -126,7 +126,7 @@ test/fleet/*_test.rb            one test file per class above
               — new test/fleet/cli_test.rb asserts pause, resume, and resume-when-absent.
       constraints: flag path via Robur::Paths; resume must not raise when already resumed.
 
-- [ ] T4.2 (trivial, feat, serial) `robur fleet retry` clears every backoff so a fixed fleet runs now
+- [x] T4.2 (trivial, feat, serial) `robur fleet retry` clears every backoff so a fixed fleet runs now
       touches: lib/robur/fleet.rb, lib/robur/cli.rb, test/fleet/cli_test.rb
       do: Add `robur fleet retry`: for every active roster entry, call
           `Fleet::Backoff#clear!` and print how many were cleared. This is the
